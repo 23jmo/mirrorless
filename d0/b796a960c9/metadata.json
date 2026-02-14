@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "d0b796a960c9",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".worktrees/agent-work/docs/plans/2025-02-14-mira-agent-spec.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d0/b796a960c9/0/metadata.json",
+      "transcript": "/d0/b796a960c9/0/full.jsonl",
+      "context": "/d0/b796a960c9/0/context.md",
+      "content_hash": "/d0/b796a960c9/0/content_hash.txt",
+      "prompt": "/d0/b796a960c9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 119,
+    "cache_creation_tokens": 161578,
+    "cache_read_tokens": 5917608,
+    "output_tokens": 5536,
+    "api_call_count": 85
+  }
+}

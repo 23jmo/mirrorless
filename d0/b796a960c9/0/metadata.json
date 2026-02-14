@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "d0b796a960c9",
+  "session_id": "d4fd94eb-d587-4996-9ee1-5a839385a720",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T10:55:05.835797Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".worktrees/agent-work/docs/plans/2025-02-14-mira-agent-spec.md"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "888f003d-0130-48a0-b5ac-bac3c03326b4",
+  "token_usage": {
+    "input_tokens": 119,
+    "cache_creation_tokens": 161578,
+    "cache_read_tokens": 5917608,
+    "output_tokens": 5536,
+    "api_call_count": 85
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T10:55:05.774054Z",
+    "agent_lines": 0,
+    "human_added": 1636,
+    "human_modified": 120,
+    "human_removed": 0,
+    "total_committed": 1636,
+    "agent_percentage": 0
+  }
+}

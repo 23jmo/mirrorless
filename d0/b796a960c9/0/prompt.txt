@@ -1,0 +1,1260 @@
+can you spin up 2 planning Agents to look into SERP API and the costs, and how we can potentially scrape data, clothing data and shopping data
+
+---
+
+<task-notification>
+<task-id>ae94ea4</task-id>
+<status>completed</status>
+<summary>Agent "Research scraping clothing/shopping data" completed</summary>
+<result>Now I have enough information to compile a comprehensive overview. Here is the full research report:
+
+---
+
+# Comprehensive Guide to Scraping Clothing & Shopping Data (2025-2026)
+
+## 1. Scraping Approaches Compared
+
+### A. SERP APIs (Google Shopping Scraping)
+
+**How it works:** You query a SERP API with a search term (e.g., "men's leather jacket") and it returns structured Google Shopping results including product titles, prices, images, sellers, ratings, and links.
+
+**Key providers and pricing:**
+
+| Provider | Starting Price | Notes |
+|----------|---------------|-------|
+| **SerpApi** | $25/mo (1K searches) to $275/mo (30K searches) | Dedicated Google Shopping endpoint; returns position, title, price, old price, source, thumbnail, rating, reviews, delivery info, extensions |
+| **Bright Data SERP API** | ~$1/1K requests | Also includes proxy infrastructure |
+| **Oxylabs Web Scraper API** | $0.50/1K results | Includes Google Shopping support |
+| **Scrapfly** | $30/mo (200K credits) to $500/mo (5.5M credits) | General-purpose but supports Shopping queries; extra credits needed for JS rendering (+5) and residential proxies (+25) |
+
+**Pros:**
+- Aggregates results across many retailers in one query
+- Structured JSON output, no parsing needed
+- Handles Google's anti-bot measures for you
+- Good for price comparison and competitive monitoring
+
+**Cons:**
+- Limited to what Google Shopping indexes (not all products)
+- Data depth is shallow -- you get listing-level data, not full product pages
+- No access to stock levels, full size runs, materials, or detailed descriptions
+- Cost scales linearly with query volume
+
+**Best for:** Price comparison, competitive monitoring across many retailers, trend discovery.
+
+---
+
+### B. Direct Retailer Scraping
+
+**How it works:** You build or use scrapers that visit individual retailer websites (Zara, H&M, ASOS, Nordstrom, etc.) and extract product data from their HTML or internal APIs.
+
+**Approaches:**
+- **HTTP-based scraping** (requests + BeautifulSoup/lxml): Works for server-rendered pages. Fast, lightweight, low cost.
+- **Internal/undocumented APIs**: Many retailers load product data via XHR/fetch requests to internal JSON APIs. Reverse-engineering these yields clean, structured data without HTML parsing. ASOS, H&M, and Zara all use internal APIs heavily.
+- **Browser automation** (Playwright/Puppeteer): Required for heavily JS-rendered sites. More resource-intensive.
+
+**Retailer-specific notes:**
+
+| Retailer | Difficulty | Notes |
+|----------|-----------|-------|
+| **ASOS** | Medium | Has internal APIs; product catalog is large (80K+ items); uses Akamai bot protection |
+| **Zara** | Medium-Hard | Heavy SPA architecture; internal APIs exist but rotate; Cloudflare protection |
+| **H&M** | Medium | Internal APIs available; moderate bot protection |
+| **Nordstrom** | Hard | Strong anti-bot (Akamai/PerimeterX); requires residential proxies |
+| **Nike** | Hard | Heavy anti-bot protection; frequently changes page structure |
+| **Uniqlo** | Medium | Relatively straightforward internal APIs |
+| **Shein** | Hard | Aggressive anti-bot; frequently changes structure |
+
+**Pros:**
+- Richest data: full descriptions, all images, size/color matrices, materials, reviews, stock status
+- Can capture entire catalogs
+- Can monitor price changes and stock over time
+- No per-query cost (beyond infrastructure)
+
+**Cons:**
+- High maintenance burden -- sites change frequently
+- Must handle anti-bot measures (CAPTCHAs, fingerprinting, rate limiting)
+- Legal grey area (see Section 3)
+- Each retailer requires a separate scraper
+- Some sites are extremely difficult to scrape reliably
+
+**Best for:** Deep product data, catalog monitoring, building a comprehensive fashion database.
+
+---
+
+### C. Marketplace APIs (Official)
+
+**Amazon Product Advertising API (PA-API 5.0):**
+- **Status:** Free to use but **being deprecated April 30, 2026** -- migrating to "Creators API"
+- **Requirements:** Must be an Amazon Associate (affiliate)
+- **Data available:** Item info, images, offers/pricing, browse nodes, variations, search refinements
+- **Limitations:** Rate-limited based on your revenue generation; must generate sales to maintain access; cannot store price data long-term per TOS
+- **Best for:** Affiliate sites that need real-time Amazon pricing
+
+**eBay APIs:**
+- **Browse API:** Product search, item details, images, prices, seller info
+- **Finding API:** Advanced search with filters
+- **Free tier** available with application key
+- **Rate limits:** Vary by API call type (typically 5,000 calls/day on basic tier)
+- **Data:** Product title, price, images, item specifics (size, color, brand), condition, seller info, shipping
+
+**Shopify Storefront API:**
+- Many DTC (direct-to-consumer) fashion brands run on Shopify
+- Public Storefront API available if the merchant enables it
+- Can access product data, variants, images, prices, availability
+
+**Pros:**
+- Legal and sanctioned
+- Structured, reliable data
+- No anti-bot concerns
+- Free or low cost
+
+**Cons:**
+- Amazon PA-API being deprecated in 2026
+- Limited to products on that marketplace
+- Rate limits can be restrictive
+- TOS restrictions on data storage and usage
+- You must comply with affiliate/attribution requirements
+
+---
+
+### D. Fashion-Specific Data Providers (Enterprise)
+
+These are enterprise-grade platforms that have already built the scraping infrastructure and provide analyzed, structured fashion data:
+
+| Provider | Focus | Key Features | Pricing Model |
+|----------|-------|--------------|---------------|
+| **EDITED** | Retail intelligence | Trend analysis, competitive benchmarking, assortment optimization, pricing strategy. Covers thousands of retailers. Offices in London, Dallas, Sofia. 51-200 employees. | Enterprise only; request demo. Estimated $30K-$100K+/year |
+| **Trendalytics** | AI trend forecasting | Predictive search/social data, TikTok intelligence, market movers, social media metrics, product development support | Enterprise; no public pricing. Estimated $20K-$60K+/year |
+| **Heuritech** | Visual AI trend prediction | Analyzes millions of social images monthly; detects ~2,000 fashion attributes (prints, colors, fabrics, shapes); forecasts 24 months ahead; claims 91%+ accuracy | SaaS platform or API; no public pricing |
+| **Retviews (Lectra)** | Competitive analysis | Real-time pricing intelligence, assortment planning, competitor alerts, product matching. 98.5% data accuracy claimed. 90% client adoption in 1 month. Used by Bally, Diesel, Etam | Enterprise; no public pricing |
+| **DataWeave** | Retail analytics | Pricing intelligence, digital shelf analytics, assortment analytics, content analytics. 99%+ product matching accuracy via LLMs + computer vision. Clients include Costco, Home Depot | Enterprise; no public pricing |
+| **Coresight Research** | Retail research/data | Proprietary datasets, store metrics, consumer surveys, market size data. Covers apparel, luxury, beauty, grocery | Subscription tiers; advisory retainers |
+
+**Pros:**
+- No scraping infrastructure to build or maintain
+- Pre-cleaned, structured, analyzed data
+- Trend forecasting and competitive intelligence built in
+- Legal -- they handle data licensing
+- Domain expertise and support
+
+**Cons:**
+- Very expensive (typically $20K-$100K+ per year)
+- Designed for enterprise brands/retailers, not startups
+- Data access may be limited to their platform (no raw data export in some cases)
+- May not cover niche or emerging brands
+
+---
+
+### E. Browser Automation (Puppeteer / Playwright)
+
+**How it works:** A headless or headed browser (Chromium, Firefox, WebKit) is programmatically controlled to navigate sites, wait for JS rendering, and extract data from the fully rendered DOM.
+
+**Tools:**
+- **Playwright** (Microsoft): Supports Chromium, Firefox, WebKit. Python, Node.js, Java, .NET. Currently the preferred choice for new projects.
+- **Puppeteer** (Google): Chromium/Chrome only. Node.js. Mature ecosystem.
+- **Selenium:** Older, slower, but widest language support. Less recommended for new projects.
+- **Crawlee** (Apify): Open-source framework built on Playwright/Puppeteer with built-in anti-detection, proxy rotation, session management, and autoscaling.
+
+**When required:**
+- Single-page applications (React/Vue/Angular stores like Zara, Nike)
+- Sites that load products via infinite scroll
+- Sites requiring user interactions (clicking size selectors, color swatches)
+- Sites with heavy client-side rendering
+
+**Anti-detection add-ons:**
+- `playwright-stealth` / `puppeteer-extra-plugin-stealth`: Patches browser fingerprints
+- Custom user-agent rotation
+- Realistic mouse movements and scrolling
+- Cookie and session management
+
+**Pros:**
+- Can handle any website regardless of JS complexity
+- Sees exactly what a human browser sees
+- Can interact with elements (dropdowns, filters, pagination)
+
+**Cons:**
+- Resource-intensive (each browser instance uses ~100-300MB RAM)
+- Slower than HTTP-based scraping (5-10x)
+- Higher proxy costs due to bandwidth
+- Still detectable by advanced anti-bot systems
+- Complex to scale
+
+---
+
+## 2. Data Available from Clothing Retailers
+
+A comprehensive scraping setup can typically extract these data points:
+
+### Core Product Data
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| Product name/title | Universal | Always available |
+| Brand | Universal | Sometimes part of title |
+| Price (current) | Universal | May require locale/currency handling |
+| Sale/discount price | Common | Often shown as strikethrough + new price |
+| Original/MSRP price | Common | Not always distinguished from regular price |
+| Product description | Universal | HTML formatted; varies in length |
+| SKU/Product ID | Universal | Internal identifiers |
+| Product URL | Universal | Canonical URL |
+
+### Visual Data
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| Primary image | Universal | Usually high-resolution |
+| Gallery images | Very common | 3-8 images typical; may include model shots |
+| Swatch images | Common | Small color/pattern thumbnails |
+| Video content | Rare | Growing trend but still uncommon |
+| 360-degree views | Rare | Mostly luxury retailers |
+
+### Variant Data
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| Available colors | Very common | May be names ("Midnight Blue") or hex codes |
+| Available sizes | Very common | Format varies widely (S/M/L, 0-16, 28-42, etc.) |
+| Size-specific stock | Common | Some sites show "Only 2 left" or "Out of stock" per size |
+| Color-specific images | Common | Each color variant typically has its own image set |
+| Color-specific prices | Occasional | Some colors may be priced differently |
+
+### Material & Specifications
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| Material/fabric composition | Common | "98% Cotton, 2% Elastane" -- often in description |
+| Care instructions | Common | Wash/dry/iron details |
+| Fit type | Common | "Slim Fit", "Regular", "Oversized" |
+| Measurements | Occasional | Size charts with cm/inch measurements |
+| Weight | Rare | More common for outerwear |
+| Country of origin | Occasional | Increasingly required by regulations |
+
+### Reviews & Social Proof
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| Average rating | Common | Usually 1-5 stars |
+| Review count | Common | Total number of reviews |
+| Individual reviews | Common | Text, rating, date, reviewer name |
+| Review images | Growing | Customer-uploaded photos |
+| Fit feedback | Growing | "Runs small/large" crowdsourced data |
+| Verified purchase flag | Common | Distinguishes verified buyers |
+
+### Taxonomy & Organization
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| Category hierarchy | Universal | e.g., Women > Clothing > Dresses > Midi Dresses |
+| Sub-category | Universal | Usually 2-4 levels deep |
+| Tags/attributes | Common | "Sustainable", "New Arrival", "Bestseller" |
+| Collection/season | Occasional | "Spring 2026", "Resort Collection" |
+| Related/similar products | Common | Cross-sell recommendations |
+
+### Availability & Logistics
+| Data Point | Availability | Notes |
+|-----------|-------------|-------|
+| In-stock status | Universal | Binary or quantity-based |
+| Delivery estimates | Common | "2-5 business days" |
+| Store availability | Occasional | For omnichannel retailers |
+| Return policy | Common | Usually site-wide, not per-product |
+
+---
+
+## 3. Legal Considerations
+
+### Key Legal Frameworks
+
+**Computer Fraud and Abuse Act (CFAA) -- United States:**
+- The landmark **hiQ Labs v. LinkedIn** (2022) decision established that scraping publicly available data does not violate the CFAA. The Supreme Court declined to hear LinkedIn's appeal.
+- However, this applies to *publicly accessible* data. Scraping behind a login wall (requiring credentials) could still violate the CFAA.
+- The CFAA prohibits "unauthorized access" to computer systems. Courts have increasingly interpreted this narrowly for public websites.
+
+**Terms of Service (ToS):**
+- Most retailers explicitly prohibit scraping in their ToS
+- Violating ToS is generally a breach of contract, not a criminal matter
+- However, ToS violations can lead to cease-and-desist letters, IP bans, and civil lawsuits
+- The enforceability of "browsewrap" ToS (where you don't explicitly agree) is debatable
+
+**robots.txt:**
+- A voluntary standard; not legally binding in the US
+- Ignoring robots.txt can be used as evidence of bad faith in legal proceedings
+- Best practice: always respect robots.txt directives
+- Some sites use robots.txt aggressively to block all bots
+
+**GDPR (EU) and Privacy Laws:**
+- Scraping personal data (reviewer names, user profiles) in the EU triggers GDPR compliance requirements
+- Product data (prices, descriptions) is generally not personal data
+- California's CCPA has similar protections for personal information
+
+**Copyright:**
+- Product images are copyrighted by the retailer/brand
+- Product descriptions may be copyrighted
+- Factual data (prices, sizes, colors) is generally not copyrightable
+- Using scraped images in your own app/site without permission is risky
+
+### Practical Legal Guidance
+
+1. **Safest:** Use official APIs (Amazon PA-API, eBay API) or licensed data providers (EDITED, Bright Data datasets)
+2. **Moderate risk:** Scrape publicly available factual data (prices, availability) while respecting robots.txt and rate limits
+3. **Higher risk:** Scraping and republishing copyrighted content (images, descriptions), scraping behind login walls, ignoring cease-and-desist requests
+4. **Recommendations:**
+   - Consult a lawyer if scraping is core to your business
+   - Keep scraping frequency reasonable (don't DDoS the site)
+   - Respect robots.txt
+   - Don't circumvent technical access controls
+   - Don't scrape personal data without a legal basis
+   - Attribute data sources where appropriate
+   - Be prepared to stop scraping a site if you receive a C&D
+
+---
+
+## 4. Technical Challenges
+
+### Anti-Bot Measures by Difficulty
+
+**Tier 1 -- Basic (easy to bypass):**
+- User-agent checking
+- IP-based rate limiting
+- Basic referrer checking
+- Simple cookie requirements
+
+**Tier 2 -- Intermediate:**
+- **Cloudflare** (used by Zara, many DTC brands): JavaScript challenges, browser fingerprinting, turnstile CAPTCHAs
+- **Akamai Bot Manager** (used by Nordstrom, Nike, many large retailers): Device fingerprinting, behavioral analysis, session validation
+- **DataDome** (growing adoption): ML-based bot detection, real-time behavioral analysis
+- Rate limiting with sliding windows
+- Dynamic CSS class names (changes with each deploy)
+
+**Tier 3 -- Advanced (difficult):**
+- **PerimeterX (now HUMAN)**: Advanced fingerprinting, proof-of-work challenges
+- Canvas fingerprinting
+- WebGL fingerprinting
+- TLS fingerprinting (JA3/JA4)
+- Behavioral analysis (mouse movements, scroll patterns, typing cadence)
+- Honeypot links/forms
+- Dynamic rendering that serves different content to bots
+
+### Content Loading Challenges
+
+- **Infinite scroll:** Products load as you scroll; requires browser automation or API reverse-engineering
+- **Lazy-loaded images:** Images only load when scrolled into view
+- **Dynamic filtering:** Size/color availability loaded via AJAX after initial page load
+- **Client-side rendering:** Entire product pages rendered in JavaScript
+- **A/B testing:** Different users see different page layouts
+- **Geo-blocking:** Different products/prices by region; requires regional proxies
+
+### Data Normalization Challenges
+
+- **Size formats:** S/M/L vs 0-16 vs 28-42 vs UK 8/10/12 vs EU 36/38/40
+- **Color names:** "Midnight" vs "Navy" vs "Dark Blue" -- same color, different names
+- **Material descriptions:** Inconsistent formatting across retailers
+- **Price formats:** Different currencies, tax inclusion varies by country
+- **Category taxonomies:** Every retailer has a different hierarchy
+
+---
+
+## 5. Cost Comparison
+
+### Approach 1: Build Your Own Scraper
+
+| Cost Component | Monthly Estimate | Notes |
+|---------------|-----------------|-------|
+| Developer time (build) | $5K-$20K one-time | Depends on number of retailers, complexity |
+| Developer time (maintain) | $2K-$5K/mo ongoing | Sites change frequently; expect breakage |
+| Proxy service | $100-$2,000/mo | Residential proxies: $1.50-$4/GB. Expect 50-500 GB/mo depending on scale |
+| Compute (cloud hosting) | $50-$500/mo | Browser automation requires more compute |
+| CAPTCHA solving | $50-$500/mo | If needed; services like 2Captcha at $2-3/1K solves |
+| Storage | $20-$100/mo | Database + image storage |
+| **Total (small scale, 5-10 retailers)** | **$300-$1,500/mo + dev time** | |
+| **Total (medium scale, 20-50 retailers)** | **$1,000-$5,000/mo + dev time** | |
+
+**Proxy pricing benchmarks (current):**
+
+| Provider | Residential Price/GB | Notes |
+|----------|---------------------|-------|
+| **Decodo (formerly Smartproxy)** | $1.50-$3.50/GB | 115M+ IPs, 195+ locations. Regular plans at $1.50-$2.00/GB. Pay-as-you-go at $3.50/GB |
+| **Bright Data** | $2.50-$5/GB (50% off promotional) | Largest pool (72M+ IPs) |
+| **Oxylabs** | $4-$8/GB | 100M+ IPs |
+
+### Approach 2: SERP APIs / Scraping APIs
+
+| Service | Monthly Cost | What You Get |
+|---------|-------------|-------------|
+| **SerpApi** | $25-$275/mo | 1K-30K Google Shopping searches |
+| **Oxylabs Web Scraper** | $50-$500/mo | Structured data from supported sites |
+| **Bright Data Web Unlocker** | Starts at $1/1K requests | Handles anti-bot for you |
+| **Scrapfly** | $30-$500/mo | 200K-5.5M API credits |
+| **Diffbot** | $0-$899/mo | 10K-1M credits; automatic data extraction |
+
+### Approach 3: Pre-Built Datasets
+
+| Provider | Cost | What You Get |
+|----------|------|-------------|
+| **Bright Data Fashion Datasets** | Starting $250/100K records | 77 fashion datasets, 5B+ total records. Sources include Zara, H&M, ASOS, luxury brands, Amazon. Full product data. Delivery via JSON/CSV/Parquet to S3/GCS/Snowflake |
+| **Bright Data Retail Insights** | Starting $250/mo | Analyzed retail intelligence |
+| **Bright Data Managed Acquisition** | Starting $1,500/mo | Custom data collection with their team |
+
+### Approach 4: Enterprise Data Providers
+
+| Provider | Estimated Annual Cost | What You Get |
+|----------|----------------------|-------------|
+| **EDITED** | $30K-$100K+/year | Full retail intelligence platform |
+| **Trendalytics** | $20K-$60K+/year | AI trend forecasting + market intelligence |
+| **Retviews (Lectra)** | $25K-$80K+/year | Competitive analysis, real-time pricing |
+| **Heuritech** | $30K-$100K+/year | Visual AI trend prediction |
+| **DataWeave** | $30K-$100K+/year | Pricing, assortment, digital shelf analytics |
+
+### Cost Comparison Summary
+
+| Approach | Setup Cost | Monthly Cost | Data Depth | Maintenance |
+|----------|-----------|-------------|-----------|-------------|
+| DIY scraping | High ($5-20K) | Low-Med ($300-5K) | Deepest | Very High |
+| SERP/Scraping APIs | Low | Med ($25-900) | Shallow-Med | Low |
+| Pre-built datasets | None | Med ($250-1.5K) | Deep | None |
+| Enterprise providers | None | High ($2-8K+) | Deep + analyzed | None |
+
+---
+
+## 6. Recommended Tech Stack
+
+### For Building Your Own Scraper
+
+**Core Language: Python**
+
+| Component | Recommended Tools | Alternatives |
+|-----------|------------------|-------------|
+| **HTTP requests** | `httpx` (async), `requests` | `aiohttp`, `urllib3` |
+| **HTML parsing** | `selectolax` (fastest), `BeautifulSoup4` | `lxml`, `parsel` |
+| **Browser automation** | `Playwright` (Python) | `Selenium`, `Puppeteer` (Node.js) |
+| **Scraping framework** | `Scrapy` (large scale), `Crawlee` (anti-detection) | `colly` (Go) |
+| **Anti-detection** | `playwright-stealth`, `curl_cffi` (TLS fingerprint matching) | `undetected-chromedriver` |
+| **Proxy management** | Decodo/Smartproxy, Bright Data, Oxylabs | NetNut, IPRoyal |
+| **CAPTCHA solving** | 2Captcha, Anti-Captcha, CapSolver | Manual solving (low scale) |
+| **Scheduling** | `Celery` + `Redis`, `APScheduler` | `Airflow`, `Prefect`, cron |
+| **Data storage** | `PostgreSQL` (structured), `MongoDB` (flexible) | `ClickHouse` (analytics), `S3` (images/raw) |
+| **Data validation** | `Pydantic` | `marshmallow`, `cerberus` |
+| **Image storage** | AWS S3, Cloudflare R2 | Google Cloud Storage, MinIO |
+| **Monitoring** | `Sentry` (errors), `Grafana` (metrics) | `Datadog`, custom alerts |
+
+### Architecture Recommendation
+
+```
+[Scheduler (Celery/Airflow)]
+        |
+        v
+[Task Queue (Redis/RabbitMQ)]
+        |
+        v
+[Scraper Workers (Python + Playwright/httpx)]
+        |
+        v
+[Proxy Rotation Layer (Smartproxy/Bright Data)]
+        |
+        v
+[Data Pipeline (Pydantic validation -> PostgreSQL)]
+        |
+        v
+[Image Pipeline (Download -> S3/R2)]
+        |
+        v
+[API Layer (FastAPI) -> Your Application]
+```
+
+### For Using Managed Services
+
+If you want to avoid building infrastructure, this stack is simpler:
+
+| Component | Recommended |
+|-----------|-------------|
+| **Data ingestion** | Bright Data Datasets API or Scraping API |
+| **Storage** | PostgreSQL or Snowflake |
+| **Processing** | Python + Pandas/Polars for data cleaning |
+| **API layer** | FastAPI or Next.js API routes |
+| **Scheduling** | Bright Data's built-in scheduling or simple cron |
+
+---
+
+## 7. Fashion-Specific Data Aggregators
+
+### Tier 1: Enterprise Platforms (Most Comprehensive)
+
+| Service | Specialization | Data Type | Access Method |
+|---------|---------------|-----------|---------------|
+| **EDITED** | Retail competitive intelligence | Products, pricing, trends from thousands of retailers worldwide | Web platform, API (enterprise) |
+| **Retviews (Lectra)** | Fashion competitive analysis | Real-time competitor pricing, assortments, markdowns, new products | Web platform |
+| **Trendalytics** | Trend forecasting | Search demand, social signals, TikTok data, market movers | Web platform |
+| **Heuritech** | Visual AI trend prediction | 2,000+ fashion attributes from social media images; 24-month forecasts | SaaS platform + API |
+| **DataWeave** | Retail analytics | Pricing, digital shelf, assortment, content quality across retailers | Web platform, API |
+
+### Tier 2: Data Providers with Fashion Coverage
+
+| Service | What They Offer | Pricing |
+|---------|----------------|---------|
+| **Bright Data Datasets** | 77 pre-built fashion datasets covering Zara, H&M, ASOS, luxury brands, Amazon, etc. 5B+ records. Product ID, brand, category, size, color, material, price, discount, availability, reviews, ratings, style tags, images | Starting $250/100K records; delivery via JSON/CSV/Parquet |
+| **Diffbot Knowledge Graph** | Automatically structured product data from across the web; can be filtered to fashion | $0-$899/mo depending on volume |
+| **Coresight Research** | Proprietary retail datasets, consumer surveys, store metrics | Subscription-based |
+
+### Tier 3: Niche/Emerging Providers
+
+| Service | Focus |
+|---------|-------|
+| **StyleSage** | Was a fashion analytics platform; acquired/evolved -- verify current status |
+| **WGSN** | Fashion trend forecasting (primarily design-focused, not data/API) |
+| **Tagwalk** | Fashion show/runway data and search |
+
+### Tier 4: Build-It-Yourself with APIs
+
+| Source | API/Method | Fashion Data Available |
+|--------|-----------|----------------------|
+| **Google Shopping** via SerpApi | API | Cross-retailer product listings, prices, ratings |
+| **Amazon** via PA-API 5.0 | Official API (deprecating April 2026) | Amazon fashion products, pricing, reviews |
+| **eBay** via Browse API | Official API | Secondhand/resale fashion, pricing |
+| **Shopify stores** via Storefront API | Official API (per-store) | DTC brand product catalogs |
+
+---
+
+## Summary Recommendations by Use Case
+
+| Your Goal | Best Approach | Estimated Cost |
+|-----------|--------------|----------------|
+| **Quick price comparison prototype** | SerpApi Google Shopping | $25-$75/mo |
+| **Monitor 5-10 specific retailers** | DIY scraper (Python + Playwright + Smartproxy) | $200-$800/mo + dev time |
+| **Large-scale fashion database** | Bright Data fashion datasets | $250-$1,500/mo |
+| **Enterprise competitive intelligence** | EDITED or Retviews | $30K-$100K/year |
+| **Trend forecasting** | Trendalytics or Heuritech | $20K-$100K/year |
+| **One-time data collection** | Bright Data managed acquisition or Apify actors | $1,500+ one-time |
+| **Real-time stock monitoring** | DIY scraper with scheduling | $500-$2,000/mo + significant dev time |
+
+The most practical path for most startups and small teams is to start with **Bright Data's pre-built fashion datasets** for historical/bulk data ($250/mo starting) combined with a **targeted DIY scraper** for a handful of priority retailers where you need real-time or very specific data. Enterprise platforms like EDITED and Trendalytics are only justified if you are a fashion brand or retailer making buying/pricing decisions at scale.</result>
+<usage>total_tokens: 32504
+tool_uses: 50
+duration_ms: 323475</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ae94ea4.output
+
+---
+
+<task-notification>
+<task-id>ae6d09d</task-id>
+<status>completed</status>
+<summary>Agent "Research SERP API and costs" completed</summary>
+<result>I now have substantial data. Let me compile the comprehensive research report.
+
+---
+
+# Comprehensive SERP API Research Report
+
+## 1. What is a SERP API?
+
+A **SERP API** (Search Engine Results Page API) is a service that programmatically queries search engines (Google, Bing, Yahoo, etc.) and returns structured data (typically JSON) from the results pages. Instead of building and maintaining your own web scraping infrastructure -- dealing with proxies, CAPTCHAs, IP rotation, and anti-bot measures -- a SERP API handles all of that and delivers clean, parsed data.
+
+**Core use cases:**
+- SEO monitoring and rank tracking
+- Competitive intelligence
+- Price monitoring and e-commerce product research
+- Market research and trend analysis
+- Ad intelligence (tracking paid placements)
+- Academic research
+
+---
+
+## 2. Provider-by-Provider Breakdown
+
+### A. SerpApi (serpapi.com) -- The Market Leader
+
+**Supported Search Engines:** Google, Bing, Yahoo, DuckDuckGo, Yandex, Baidu, Naver. Also supports marketplace platforms: Amazon, eBay, Walmart, Home Depot, Tripadvisor, Yelp, YouTube, Apple App Store.
+
+**Google Search Types:** Web, Images, Shopping, News, Videos, Local/Maps, Patents, Knowledge Graph, Direct Answers, Recipes, Events, Finance, Flights, Hotels, Jobs, Trending Topics.
+
+**Pricing Tiers:**
+
+| Plan | Monthly Cost | Searches/Month | Cost per Search | Throughput |
+|------|-------------|----------------|-----------------|------------|
+| **Free** | $0 | 250 | $0.00 | 50/hour |
+| Starter | $25 | 1,000 | $0.025 | 200/hour |
+| Developer | $75 | 5,000 | $0.015 | 1,000/hour |
+| Production | $150 | 15,000 | $0.010 | 3,000/hour |
+| Big Data | $275 | 30,000 | ~$0.009 | 6,000/hour |
+| Enterprise | Custom | Custom | Custom | Custom |
+
+**Key Details:**
+- Only successful searches count toward quota
+- Full refund within 7 days if <20% searches used
+- "U.S. Legal Shield" included on all plans
+- "ZeroTrace Mode" on Free and Enterprise tiers
+- Response time: ~1.67 seconds (fastest in market)
+- 99.988% uptime reported
+- JSON output only
+
+**Strengths:** Widest search engine coverage, fastest response times, excellent documentation, mature product, strong structured data parsing.
+
+**Weaknesses:** Most expensive per-search at lower tiers, no HTML output option, small free tier (250 searches).
+
+---
+
+### B. Serper.dev -- The Budget Speed Champion
+
+**Supported Search Engines:** Google only
+
+**Search Types:** Web, Images, News, Maps/Places, Videos, Shopping, Scholar, Patents, Autocomplete
+
+**Pricing:**
+- **Free tier:** 2,500 queries (no credit card required)
+- Paid pricing is not publicly listed on their marketing pages; they advertise themselves as "the world's fastest and cheapest Google Search API"
+- Based on known industry data: approximately **$1-2 per 1,000 queries** at paid tiers, making it one of the cheapest options
+- Response time: 1-2 seconds
+
+**Strengths:** Extremely affordable, generous free tier (2,500 queries), very fast, simple API, great for prototyping.
+
+**Weaknesses:** Google-only (no Bing, Yahoo, etc.), less comprehensive data parsing than SerpApi, pricing not transparent on website.
+
+---
+
+### C. SearchAPI.io (searchapi.io) -- The Value Middle Ground
+
+**Supported Search Engines:** Google (with Google Shopping, Google Scholar, Google News, etc.)
+
+**Pricing Tiers:**
+
+| Plan | Monthly Cost | Searches/Month | Cost per 1K Searches |
+|------|-------------|----------------|---------------------|
+| **Free** | $0 | 100 | -- |
+| Developer | $40 | 10,000 | $4.00 |
+| Production | $100 | 35,000 | $3.00 (approx) |
+| BigData | $250 | 100,000 | $2.50 |
+| Scale | $500 | 250,000 | $2.00 |
+| Octo 500K | $900 | 500,000 | $1.80 |
+| Octo 1M | $1,500 | 1,000,000 | $1.50 |
+| Octo 2M | $2,800 | 2,000,000 | $1.40 |
+| Octo 5M | $5,000 | 5,000,000 | $1.00 |
+
+**Key Details:**
+- Only successful (200 status) requests are billed
+- Rate limit: max 20% of monthly credits per hour
+- 99.9% SLA on Developer+ plans
+- Legal protection guarantee (up to $2M coverage) on Production+
+- `zero_retention` parameter for compliance
+- Geo-targeting and premium proxies included
+
+**Strengths:** Excellent price scaling for high volume, strong Google Shopping support, good documentation, legal protection.
+
+**Weaknesses:** Smaller free tier (100 searches), primarily Google-focused, newer/less established than SerpApi.
+
+---
+
+### D. Bright Data SERP API -- The Enterprise Powerhouse
+
+**Supported Search Engines:** Google, Bing, DuckDuckGo, Yandex, Baidu, Yahoo, Naver (7 engines across 195 countries)
+
+**Search Types:** Web, Shopping, Maps, Hotels, Images, Trends, Reviews, News, Flights, Videos, Jobs, Google Ads
+
+**Pricing:**
+
+| Tier | Monthly Cost | Cost per 1K Results |
+|------|-------------|-------------------|
+| Pay-as-you-go | Variable | $1.50 |
+| 380K results/mo | $499 | $1.30 |
+| 900K results/mo | $999 | $1.10 |
+| 2M results/mo | $1,999 | $1.00 |
+| Enterprise | Custom | Custom |
+
+**Key Details:**
+- Matching bonus: up to $500 on first deposit of $500+
+- Output formats: JSON, HTML, and Markdown
+- No concurrent request limits
+- Async mode with 99.99% success rate (48-hour collection window)
+- City-level geo-targeting across 195 countries
+- Pay only for successful delivery
+- Response time: under 5 seconds typical, as fast as 1 second
+
+**Strengths:** Massive infrastructure, 7 search engines, 195 countries, no concurrency limits, async mode, Markdown output option.
+
+**Weaknesses:** High minimum for volume plans ($499/mo), lower success rate (98.42%) compared to competitors reporting 100%, higher per-result cost at low volumes.
+
+---
+
+### E. Oxylabs SERP Scraper API -- The Enterprise Competitor
+
+**Pricing:**
+- Starts from **$49/month**
+- **$0.50 per 1,000 results** (at the low end, this is the cheapest per-result for parsed data)
+- Oxylabs blog comparison states: $1.35 per 1K results at their SERP tier
+- 100% success rate reported
+- Response time: ~6.04 seconds
+
+**Supported Engines:** Google (including Shopping), Bing, Baidu, Yandex
+
+**Key Details:**
+- AI-powered "OxyCopilot" assistant for building scrapers
+- Google Shopping search supported
+- Structured JSON output
+- Extensive proxy infrastructure
+
+**Strengths:** Very competitive pricing at scale, high success rate, enterprise-grade infrastructure, AI assistant for scraper creation.
+
+**Weaknesses:** Slower response times (~6 seconds), enterprise-oriented (less friendly for small projects), pricing tiers not fully transparent.
+
+---
+
+### F. Rayobyte -- The Budget Option
+
+**Pricing:**
+- **$0.0018 per scrape** ($1.80 per 1K)
+- **5,000 free scrapes** to start
+- No monthly commitment required
+
+**Performance:** 100% success rate, ~6.53 second response time
+
+**Strengths:** No monthly commitment, very affordable, good free allowance.
+
+**Weaknesses:** Basic features, slower response times, less sophisticated data parsing.
+
+---
+
+### G. ScaleSerp / ValueSerp (now Traject Data)
+
+These have been acquired by **Traject Data**. ScaleSerp was historically popular for its generous free tier (formerly 250 free searches/month on ValueSerp). Current pricing is hard to pin down as their websites have been migrated. Historically:
+
+- **ScaleSerp:** ~$29/month for 1,000 searches, scaling to $999/month for 100,000 searches
+- **ValueSerp:** Positioned as the "best value" option with similar tiered pricing
+
+---
+
+## 3. Pricing Comparison Summary
+
+| Provider | Free Tier | Cheapest Paid | Cost per 1K (Low Vol) | Cost per 1K (High Vol) | Response Time |
+|----------|-----------|--------------|----------------------|----------------------|---------------|
+| **SerpApi** | 250/mo | $25/mo (1K) | $25.00 | ~$9.17 | ~1.7s |
+| **Serper.dev** | 2,500 queries | ~$1-2/1K est. | ~$1-2 | ~$1 | 1-2s |
+| **SearchAPI.io** | 100/signup | $40/mo (10K) | $4.00 | $1.00 | Moderate |
+| **Bright Data** | Trial | $499/mo (380K) | $1.50 (PAYG) | $1.00 | <5s |
+| **Oxylabs** | Trial | $49/mo | ~$1.35 | ~$0.50 | ~6s |
+| **Rayobyte** | 5,000 | PAYG | $1.80 | $1.80 | ~6.5s |
+
+---
+
+## 4. Rate Limits Summary
+
+| Provider | Free Tier Rate | Paid Rate Limits |
+|----------|---------------|-----------------|
+| **SerpApi** | 50/hour | 200-6,000/hour (by plan) |
+| **Serper.dev** | Not published | Not published |
+| **SearchAPI.io** | Limited | Max 20% of monthly credits/hour |
+| **Bright Data** | -- | No concurrent request limits |
+| **Oxylabs** | -- | Enterprise-scale, not published |
+
+---
+
+## 5. Shopping-Specific Capabilities
+
+This is critical for your use case. Here is what each provider offers for Google Shopping:
+
+### SerpApi Google Shopping API
+**Endpoint:** `/search?engine=google_shopping`
+
+**Shopping search parameters:**
+- `min_price` / `max_price` -- price range filters
+- `sort_by` -- price low-to-high or high-to-low
+- `free_shipping` -- filter for free shipping only
+- `on_sale` -- filter for sale items
+- `small_business` -- filter for small business products
+
+**Data fields returned per shopping result:**
+- `title` -- product name
+- `product_id` -- unique product identifier
+- `product_link` -- link to product page
+- `price` / `extracted_price` -- current price (string and numeric)
+- `old_price` / `extracted_old_price` -- original price when on sale
+- `source` -- retailer name (e.g., "Nordstrom", "ASOS")
+- `source_icon` -- retailer logo
+- `rating` -- star rating (e.g., 4.4)
+- `reviews` -- review count
+- `snippet` -- review summary text
+- `thumbnail` / `thumbnails` -- product images
+- `tag` -- sale badges (e.g., "51% OFF")
+- `delivery` -- shipping info
+- `extensions` -- extra metadata
+- `immersive_product_page_token` -- token for detailed product drill-down
+
+**Immersive Product API (drill-down):**
+- Full product `title`, `brand`, `price_range`
+- `variants` -- **size, color, capacity options** (critical for clothing)
+- Per-variant `available` stock status
+- Multiple seller comparison: `price`, `original_price`, `discount`, `shipping`, `tax`, `total`
+- `payment_methods` per seller
+- `critic_ratings` and `user_reviews` with images
+- `videos` (YouTube reviews)
+- `discussions_and_forums` (Reddit mentions)
+- `related_searches`
+
+### SearchAPI.io Google Shopping
+**Endpoint:** `engine=google_shopping`
+
+**Parameters:** `price_min`, `price_max`, `is_on_sale`, `is_free_delivery`, `is_small_business`, `sort_by` (price_low_to_high, price_high_to_low, rating_high_to_low), `condition` (new/used)
+
+**Data returned:** Shopping ads, product listings, popular products, interactive filters, pricing, ratings, reviews, delivery info, product tokens for detailed lookups. Related sub-APIs: Google Product, Google Product Offers, Google Product Reviews, Google Shopping Filters.
+
+### Bright Data Google Shopping
+Listed as a dedicated search type. Supports Shopping results across 195 countries. JSON, HTML, and Markdown output. Specific field-level documentation was not accessible but follows standard Google Shopping data structure.
+
+### Serper.dev Shopping
+Has a dedicated Shopping endpoint. Returns standard shopping result fields. Less detailed documentation publicly available.
+
+---
+
+## 6. Clothing/Fashion Data Availability
+
+For clothing and fashion product scraping specifically, here is what matters and how each provider handles it:
+
+### What You Need for Fashion Data:
+1. **Size variants** -- S, M, L, XL, numerical sizes, etc.
+2. **Color variants** -- with color swatches/images per color
+3. **Price tracking** -- current price, original price, discount percentage
+4. **Product images** -- multiple angles, on-model shots
+5. **Brand information** -- brand name, brand page
+6. **Material/composition** -- fabric details
+7. **Ratings and reviews** -- customer feedback, fit information
+8. **Merchant availability** -- which stores carry the item and at what price
+9. **Sale/promotion tags** -- clearance, seasonal sales
+
+### Provider Assessment for Fashion:
+
+**SerpApi (Best for Fashion):**
+- The **Immersive Product API** explicitly returns `variants` including size and color options with availability status
+- Returns multi-seller price comparisons (critical for fashion price monitoring)
+- `old_price` / `extracted_old_price` for tracking markdowns
+- `tag` field captures sale badges ("51% OFF")
+- Multiple thumbnail images
+- Also supports **Amazon**, **Walmart**, and **eBay** product APIs, allowing cross-marketplace fashion price comparison
+- **Limitation:** Google Shopping shows what Google indexes; not all fashion retailers participate in Google Shopping feeds equally
+
+**SearchAPI.io (Strong Alternative):**
+- Dedicated Google Product, Product Offers, and Product Reviews sub-APIs
+- Condition filtering (new/used -- relevant for resale fashion)
+- Rating-based sorting
+- Product tokens for drill-down into individual items
+
+**Bright Data (Best for Scale):**
+- If you need to scrape thousands of fashion product pages across 195 countries for international pricing, Bright Data's infrastructure is unmatched
+- Async mode means you can submit bulk queries and collect results within 48 hours
+- Markdown output can be useful for processing product descriptions
+
+**Serper.dev (Best for Budget Prototyping):**
+- If you are building a fashion price comparison tool and want to prototype cheaply, the 2,500 free queries and ~$1-2/1K pricing is hard to beat
+- Shopping endpoint available
+- Less detailed variant/size data compared to SerpApi's Immersive Product API
+
+### Key Limitation for Fashion Data:
+**No SERP API can replace direct retailer scraping for complete fashion data.** Google Shopping results are aggregated from merchant product feeds, which means:
+- Not all size/color variants may be indexed
+- Real-time stock levels are approximate
+- Detailed material/fabric composition is rarely in Google Shopping data
+- Fit information (true to size, runs small) is not captured
+- Many direct-to-consumer fashion brands (e.g., Everlane, Reformation) have limited Google Shopping presence
+
+For comprehensive fashion data, you would likely need a **hybrid approach**: SERP API for discovery and price monitoring + direct scraping of individual retailer sites for detailed product attributes.
+
+---
+
+## 7. Recommendations by Use Case
+
+| Use Case | Best Provider | Why |
+|----------|--------------|-----|
+| **Budget prototyping** | Serper.dev | 2,500 free queries, cheapest per search |
+| **Best data quality** | SerpApi | Immersive Product API with variants, fastest response |
+| **High volume (100K+/mo)** | SearchAPI.io | Best price scaling ($1/1K at 5M tier) |
+| **Enterprise / global** | Bright Data or Oxylabs | 195 countries, async, no concurrency limits |
+| **Fashion price monitoring** | SerpApi + SearchAPI.io | Best variant/size data + affordable scaling |
+| **Multi-engine search** | SerpApi or Bright Data | Most search engine coverage |
+
+---
+
+## 8. Hidden Fees and Gotchas
+
+- **SerpApi:** Only successful searches are billed (good). But at $25/1K searches on the Starter plan, costs add up fast for high-volume use.
+- **SearchAPI.io:** The 20%-of-monthly-credits-per-hour rate limit can be restrictive if you need burst capacity.
+- **Bright Data:** The $499/mo minimum for volume pricing is a significant commitment. Pay-as-you-go at $1.50/1K is reasonable but still has a learning curve with their async system.
+- **Oxylabs:** Enterprise-oriented; expect sales calls and potentially custom contracts.
+- **All providers:** Searches that return no results may or may not count toward your quota depending on the provider -- check each provider's policy.
+- **Google Shopping specifics:** Some providers charge a shopping search the same as a regular search; others may charge differently. With SerpApi, a Google Shopping search costs one search credit, same as any other search.</result>
+<usage>total_tokens: 33617
+tool_uses: 77
+duration_ms: 337663</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ae6d09d.output
+
+---
+
+let's start building a scraper prototype with serper.dev - maybe make a new worktree for this
+
+---
+
+Base directory for this skill: /Users/johnathanmo/.claude/plugins/cache/claude-plugins-official/superpowers/4.3.0/skills/brainstorming
+
+# Brainstorming Ideas Into Designs
+
+## Overview
+
+Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
+
+Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval.
+
+<HARD-GATE>
+Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
+</HARD-GATE>
+
+## Anti-Pattern: "This Is Too Simple To Need A Design"
+
+Every project goes through this process. A todo list, a single-function utility, a config change — all of them. "Simple" projects are where unexamined assumptions cause the most wasted work. The design can be short (a few sentences for truly simple projects), but you MUST present it and get approval.
+
+## Checklist
+
+You MUST create a task for each of these items and complete them in order:
+
+1. **Explore project context** — check files, docs, recent commits
+2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
+3. **Propose 2-3 approaches** — with trade-offs and your recommendation
+4. **Present design** — in sections scaled to their complexity, get user approval after each section
+5. **Write design doc** — save to `docs/plans/YYYY-MM-DD-<topic>-design.md` and commit
+6. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+
+## Process Flow
+
+```dot
+digraph brainstorming {
+    "Explore project context" [shape=box];
+    "Ask clarifying questions" [shape=box];
+    "Propose 2-3 approaches" [shape=box];
+    "Present design sections" [shape=box];
+    "User approves design?" [shape=diamond];
+    "Write design doc" [shape=box];
+    "Invoke writing-plans skill" [shape=doublecircle];
+
+    "Explore project context" -> "Ask clarifying questions";
+    "Ask clarifying questions" -> "Propose 2-3 approaches";
+    "Propose 2-3 approaches" -> "Present design sections";
+    "Present design sections" -> "User approves design?";
+    "User approves design?" -> "Present design sections" [label="no, revise"];
+    "User approves design?" -> "Write design doc" [label="yes"];
+    "Write design doc" -> "Invoke writing-plans skill";
+}
+```
+
+**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
+
+## The Process
+
+**Understanding the idea:**
+- Check out the current project state first (files, docs, recent commits)
+- Ask questions one at a time to refine the idea
+- Prefer multiple choice questions when possible, but open-ended is fine too
+- Only one question per message - if a topic needs more exploration, break it into multiple questions
+- Focus on understanding: purpose, constraints, success criteria
+
+**Exploring approaches:**
+- Propose 2-3 different approaches with trade-offs
+- Present options conversationally with your recommendation and reasoning
+- Lead with your recommended option and explain why
+
+**Presenting the design:**
+- Once you believe you understand what you're building, present the design
+- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced
+- Ask after each section whether it looks right so far
+- Cover: architecture, components, data flow, error handling, testing
+- Be ready to go back and clarify if something doesn't make sense
+
+## After the Design
+
+**Documentation:**
+- Write the validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
+- Use elements-of-style:writing-clearly-and-concisely skill if available
+- Commit the design document to git
+
+**Implementation:**
+- Invoke the writing-plans skill to create a detailed implementation plan
+- Do NOT invoke any other skill. writing-plans is the next step.
+
+## Key Principles
+
+- **One question at a time** - Don't overwhelm with multiple questions
+- **Multiple choice preferred** - Easier to answer than open-ended when possible
+- **YAGNI ruthlessly** - Remove unnecessary features from all designs
+- **Explore alternatives** - Always propose 2-3 approaches before settling
+- **Incremental validation** - Present design, get approval before moving on
+- **Be flexible** - Go back and clarify when something doesn't make sense
+
+---
+
+yes approach A - just make sure api can do what i need: api key is: f57bcc6696888cac8c4af746fcb7a3345ada8a31
+
+---
+
+yes
+
+---
+
+Base directory for this skill: /Users/johnathanmo/.claude/plugins/cache/claude-plugins-official/superpowers/4.3.0/skills/using-git-worktrees
+
+# Using Git Worktrees
+
+## Overview
+
+Git worktrees create isolated workspaces sharing the same repository, allowing work on multiple branches simultaneously without switching.
+
+**Core principle:** Systematic directory selection + safety verification = reliable isolation.
+
+**Announce at start:** "I'm using the using-git-worktrees skill to set up an isolated workspace."
+
+## Directory Selection Process
+
+Follow this priority order:
+
+### 1. Check Existing Directories
+
+```bash
+# Check in priority order
+ls -d .worktrees 2>/dev/null     # Preferred (hidden)
+ls -d worktrees 2>/dev/null      # Alternative
+```
+
+**If found:** Use that directory. If both exist, `.worktrees` wins.
+
+### 2. Check CLAUDE.md
+
+```bash
+grep -i "worktree.*director" CLAUDE.md 2>/dev/null
+```
+
+**If preference specified:** Use it without asking.
+
+### 3. Ask User
+
+If no directory exists and no CLAUDE.md preference:
+
+```
+No worktree directory found. Where should I create worktrees?
+
+1. .worktrees/ (project-local, hidden)
+2. ~/.config/superpowers/worktrees/<project-name>/ (global location)
+
+Which would you prefer?
+```
+
+## Safety Verification
+
+### For Project-Local Directories (.worktrees or worktrees)
+
+**MUST verify directory is ignored before creating worktree:**
+
+```bash
+# Check if directory is ignored (respects local, global, and system gitignore)
+git check-ignore -q .worktrees 2>/dev/null || git check-ignore -q worktrees 2>/dev/null
+```
+
+**If NOT ignored:**
+
+Per Jesse's rule "Fix broken things immediately":
+1. Add appropriate line to .gitignore
+2. Commit the change
+3. Proceed with worktree creation
+
+**Why critical:** Prevents accidentally committing worktree contents to repository.
+
+### For Global Directory (~/.config/superpowers/worktrees)
+
+No .gitignore verification needed - outside project entirely.
+
+## Creation Steps
+
+### 1. Detect Project Name
+
+```bash
+project=$(basename "$(git rev-parse --show-toplevel)")
+```
+
+### 2. Create Worktree
+
+```bash
+# Determine full path
+case $LOCATION in
+  .worktrees|worktrees)
+    path="$LOCATION/$BRANCH_NAME"
+    ;;
+  ~/.config/superpowers/worktrees/*)
+    path="~/.config/superpowers/worktrees/$project/$BRANCH_NAME"
+    ;;
+esac
+
+# Create worktree with new branch
+git worktree add "$path" -b "$BRANCH_NAME"
+cd "$path"
+```
+
+### 3. Run Project Setup
+
+Auto-detect and run appropriate setup:
+
+```bash
+# Node.js
+if [ -f package.json ]; then npm install; fi
+
+# Rust
+if [ -f Cargo.toml ]; then cargo build; fi
+
+# Python
+if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+if [ -f pyproject.toml ]; then poetry install; fi
+
+# Go
+if [ -f go.mod ]; then go mod download; fi
+```
+
+### 4. Verify Clean Baseline
+
+Run tests to ensure worktree starts clean:
+
+```bash
+# Examples - use project-appropriate command
+npm test
+cargo test
+pytest
+go test ./...
+```
+
+**If tests fail:** Report failures, ask whether to proceed or investigate.
+
+**If tests pass:** Report ready.
+
+### 5. Report Location
+
+```
+Worktree ready at <full-path>
+Tests passing (<N> tests, 0 failures)
+Ready to implement <feature-name>
+```
+
+## Quick Reference
+
+| Situation | Action |
+|-----------|--------|
+| `.worktrees/` exists | Use it (verify ignored) |
+| `worktrees/` exists | Use it (verify ignored) |
+| Both exist | Use `.worktrees/` |
+| Neither exists | Check CLAUDE.md → Ask user |
+| Directory not ignored | Add to .gitignore + commit |
+| Tests fail during baseline | Report failures + ask |
+| No package.json/Cargo.toml | Skip dependency install |
+
+## Common Mistakes
+
+### Skipping ignore verification
+
+- **Problem:** Worktree contents get tracked, pollute git status
+- **Fix:** Always use `git check-ignore` before creating project-local worktree
+
+### Assuming directory location
+
+- **Problem:** Creates inconsistency, violates project conventions
+- **Fix:** Follow priority: existing > CLAUDE.md > ask
+
+### Proceeding with failing tests
+
+- **Problem:** Can't distinguish new bugs from pre-existing issues
+- **Fix:** Report failures, get explicit permission to proceed
+
+### Hardcoding setup commands
+
+- **Problem:** Breaks on projects using different tools
+- **Fix:** Auto-detect from project files (package.json, etc.)
+
+## Example Workflow
+
+```
+You: I'm using the using-git-worktrees skill to set up an isolated workspace.
+
+[Check .worktrees/ - exists]
+[Verify ignored - git check-ignore confirms .worktrees/ is ignored]
+[Create worktree: git worktree add .worktrees/auth -b feature/auth]
+[Run npm install]
+[Run npm test - 47 passing]
+
+Worktree ready at /Users/jesse/myproject/.worktrees/auth
+Tests passing (47 tests, 0 failures)
+Ready to implement auth feature
+```
+
+## Red Flags
+
+**Never:**
+- Create worktree without verifying it's ignored (project-local)
+- Skip baseline test verification
+- Proceed with failing tests without asking
+- Assume directory location when ambiguous
+- Skip CLAUDE.md check
+
+**Always:**
+- Follow directory priority: existing > CLAUDE.md > ask
+- Verify directory is ignored for project-local
+- Auto-detect and run project setup
+- Verify clean test baseline
+
+## Integration
+
+**Called by:**
+- **brainstorming** (Phase 4) - REQUIRED when design is approved and implementation follows
+- **subagent-driven-development** - REQUIRED before executing any tasks
+- **executing-plans** - REQUIRED before executing any tasks
+- Any skill needing isolated workspace
+
+**Pairs with:**
+- **finishing-a-development-branch** - REQUIRED for cleanup after work complete
+
+---
+
+do it for me in a .env.example
+
+---
+
+and then run the cli and test it
+
+---
+
+commit this
+
+---
+
+push it and make a PR
+
+---
+
+merge it
+
+---
+
+clean up the worktree
+
+---
+
+pull main, create new git worktree for agent work
+
+---
+
+Now I want to build Mira, the personal stylist agent and the brain behind the whole operation. 
+
+Mira can see/parse:
+Gestures
+Voice input from user 
+Poses struck by the user 
+
+Mira has access to:
+All user data 
+
+Mira’s personality:
+Roasts you, jokey, teasey, but friendly and boosts confidence at the end of the day
+
+
+Mira’s tools:
+Calling serp api: gets list of products matching a description, returns json of the products which we can display 
+Searching user gmail: (query) → just search the user’s emails for something specific 
+General web search prob
+ /interview
+
+---
+
+Base directory for this skill: /Users/johnathanmo/.claude/skills/interview
+
+Follow the user instructions and interview me in detail using the AskUserQuestionTool about literally anything: technical implementation, UI & UX, concerns, tradeoffs, etc. but make sure the questions are not obvious. be very in-depth and continue interviewing me continually until it's complete. then, write the spec to a file. <instructions></instructions>
