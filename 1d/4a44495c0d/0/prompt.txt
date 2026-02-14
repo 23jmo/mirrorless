@@ -1,0 +1,225 @@
+Implement the following plan:
+
+# Plan: Poke-Style Tiered Purchase Memory for Mira
+
+## Context
+
+Mira's personality depends on referencing specific purchases ("You spent $85 on a COS shirt..."), but currently only 20 items make it into the system prompt. Users with 100+ purchases have 80% of their history invisible to Mira.
+
+**Inspiration**: [Poke by The Interaction Company](https://www.shloked.com/writing/openpoke) uses tiered memory — recent data at full fidelity, older data progressively compressed, plus on-demand retrieval into the full archive. We'll adapt this pattern for Mira's purchase data.
+
+**Current bottleneck**: DB fetches 50 → filter keeps ~25 → hard cap at 20 → ~500 tokens used out of 200K available (<0.3% of context).
+
+---
+
+## Changes (4 components)
+
+### 1. Purchase Summary Stats — `backend/agent/memory.py`
+
+Add `load_purchase_statistics()` that computes aggregates over the **full** purchase history via SQL:
+- Total count + total spend + avg/min/max price
+- Top 10 brands by frequency (with spend per brand)
+- Category breakdown
+- Monthly spending trend (last 6 months)
+
+This runs in `asyncio.gather` alongside the existing loads — one extra Neon round-trip.
+
+**Reuse**: Import `_NON_FASHION_BRANDS` from `prompts.py` and generate a SQL filter clause from it, so the exclusion list stays in one place.
+
+Also increase `load_user_purchases` LIMIT from 50 → 200 (more data for tiering).
+
+### 2. Tiered Prompt Display — `backend/agent/prompts.py`
+
+Replace the flat `[:20]` list with `_build_tiered_purchases()`:
+
+| Tier | Window | Format | Cap |
+|------|--------|--------|-----|
+| Recent | Last 30 days | Full: brand, item, price, date, category | 25 items |
+| Older | 30–90 days | Compact: brand + item + price | 30 items |
+| Historical | 90+ days | Brand counts only: "Nike x4, Zara x3" | All brands |
+
+Preceded by the aggregate stats section from Component 1. Followed by a note telling Claude about the `search_purchases` tool.
+
+Add `purchase_stats` parameter to `build_system_prompt()`.
+
+**Token budget**: ~1,500 tokens (vs current ~500). Still <1% of 200K context.
+
+### 3. `search_purchases` Tool — `backend/agent/tools.py`
+
+New Claude tool for on-demand DB retrieval. This is the Poke-style "archive as retrieval infrastructure" pattern — Claude can query ANY purchase ever scraped.
+
+**Input schema**:
+- `query` (string) — free-text search against brand/item_name via ILIKE
+- `brand` (string) — exact brand filter
+- `category` (string) — exact category filter
+- `min_price` / `max_price` (number) — price range
+- `date_from` / `date_to` (string) — date range
+- `limit` (int, default 20, max 50)
+
+**Output**: Matching purchases + `total_matching` count.
+
+**SQL**: Dynamic WHERE clause with parameterized inputs. Uses existing `NeonHTTPClient`. Wrap in try/except matching `_search_gmail` pattern.
+
+Add `NeonHTTPClient` import to tools.py. Add to `TOOL_DEFINITIONS` list and `execute_tool()` dispatch.
+
+### 4. Enhanced Narrative — `backend/scraper/profile_builder.py`
+
+Replace the 1-sentence narrative with `_build_enhanced_narrative()` that includes:
+- Brand loyalty pattern (dominant brand % or diverse shopper)
+- Shopping frequency (items/month)
+- Splurge vs. basics pattern
+
+This is stored in `style_profiles.narrative_summary` and already flows into the system prompt at `prompts.py:127-128`.
+
+---
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `backend/agent/memory.py` | Add `load_purchase_statistics()`, `_fashion_filter_clause()` helper. Increase LIMIT to 200. |
+| `backend/agent/prompts.py` | Add `_build_tiered_purchases()`. Update `build_system_prompt()` signature to accept `purchase_stats`. |
+| `backend/agent/tools.py` | Add `search_purchases` tool definition + `_search_purchases()` handler. Add `NeonHTTPClient` import. Update `execute_tool()` dispatch. |
+| `backend/agent/orchestrator.py` | Import `load_purchase_statistics`. Add to `asyncio.gather`. Pass `purchase_stats` to prompt builder in both `start_session()` and `handle_event()`. |
+| `backend/scraper/profile_builder.py` | Add `_build_enhanced_narrative()`. Update `build_style_profile()` to call it. |
+
+## Implementation Order
+
+1. `memory.py` — new query function + helper (no dependencies)
+2. `prompts.py` — tiered display (depends on stats shape from step 1)
+3. `tools.py` — search tool (independent)
+4. `profile_builder.py` — enhanced narrative (independent)
+5. `orchestrator.py` — wire everything together (depends on steps 1-2)
+
+## Verification
+
+1. Start backend, open `/chat`, start session → check debug system prompt for tiered format + stats section
+2. Verify aggregate stats are accurate (total count matches DB)
+3. Test `search_purchases` via a voice message like "What have I bought from Nike?" → Mira should use the tool and reference results
+4. Verify Mira naturally references purchases from all tiers (not just recent)
+5. Test with user who has 0 purchases → confirm empty fallback still works
+6. Check session start latency hasn't regressed significantly (the stats query runs in parallel)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+## Context
+
+- Current git status: On branch main
+Your branch is behind 'origin/main' by 2 commits, and can be fast-forwarded.
+  (use "git pull" to update your local branch)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   agent/memory.py
+	modified:   agent/orchestrator.py
+	modified:   agent/prompts.py
+	modified:   agent/tools.py
+	modified:   main.py
+	modified:   scraper/profile_builder.py
+	modified:   scraper/purchase_parser.py
+	modified:   tests/test_mira.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	../.claude/
+	../.entire/
+	judges/
+	migrations/004_add_summary_reaction.sql
+	migrations/005_create_judges.sql
+	migrations/006_create_demo_user.sql
+	test_gmail_diag.py
+	../docs/plans/2026-02-14-scraper-oauth-wiring.md
+	../frontend/src/app/chat/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): <persisted-output>
+Output too large (50.4KB). Full output saved to: /Users/johnathanmo/.REDACTED.txt
+
+Preview (first 2KB):
+diff --git a/backend/agent/memory.py b/backend/agent/memory.py
+index 71b5872..6fc1781 100644
+--- a/backend/agent/memory.py
++++ b/backend/agent/memory.py
+@@ -2,9 +2,22 @@
+ 
+ import json
+ 
++from agent.prompts import _NON_FASHION_BRANDS
+ from models.database import NeonHTTPClient
+ 
+ 
++def _fashion_filter_clause(param_offset: int = 1) -> tuple[str, list[str]]:
++    """Generate a SQL WHERE clause to exclude non-fashion brands.
++
++    Returns (clause_str, params_list) where clause_str uses $N placeholders
++    starting from param_offset.
++    """
++    brands = sorted(_NON_FASHION_BRANDS)
++    placeholders = ", ".join(f"${i}" for i in range(param_offset, param_offset + len(brands)))
++    clause = f"LOWER(brand) NOT IN ({placeholders})"
++    return clause, brands
++
++
+ async def save_session_summary(
+     db: NeonHTTPClient,
+     session_id: str,
+@@ -51,24 +64,20 @@ async def load_past_sessions(db: NeonHTTPClient, user_id: str) -> list[dict]:
+ 
+ 
+ async def load_user_profile(db: NeonHTTPClient, user_id: str) -> dict:
+-    """Load user profile and style data."""
+-    # Fetch user basic info
+-    user_rows = await db.execute(
+-        "SELECT id, name, email FROM users WHERE id = $1",
++    """Load user profile and style data in a single query."""
++    rows = await db.execute(
++        "SELECT u.id, u.name, u.email, "
++        "sp.brands, sp.price_range, sp.style_tags, sp.size_info, sp.narrative_summary "
++        "FROM users u "
++        "LEFT JOIN style_profiles sp ON sp.user_id = u.id "
++        "WHERE u.id = $1",
+         [user_id],
+     )
+-    if not user_rows:
++    if not rows:
+         return {}
+ 
+-    user = user_rows[0]
+-
+-    # Fetch style profile
+-    style_rows = await db.execute(
+-        "SELECT brands, price_range, style_tags, size_info, narrative_summary "
+-        "FROM style_profiles WHERE user_id = $1",
+-        [user_id],
+-    )
+-    style = style_rows[0] if style_rows else {}
++    user = rows[0]
++    style = user  # All columns are in the same row now
+ 
+...
+</persisted-output>
+- Current branch: main
+- Recent commits: 66ba3b9 Merge pull request #4 from 23jmo/feature/agent-work
+9d38f24 Resolve merge conflict in main.py — keep Mira events + CORS wrapping
+c2e6f01 Add Mira integration tests
+0a145f3 Implement Mira AI stylist agent
+2d2dc1e feat: per-email streaming scrape with incremental full-history support
+d10e9da docs
+9f53927 Merge pull request #3 from 23jmo/feature/data-scraping
+ec06e22 merge: resolve conflict in main.py — keep both auth/queue/users and scraper routers
+e0c3394 docs: add data scraping pipeline implementation plan
+037bb2f chore: update scraper module exports and .env.example
+
+## Your task
+
+Based on the above changes, create a single git commit.
+
+You have the capability to call multiple tools in a single response. Stage and create the commit using a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
+
+---
+
+lowk commit and push everything
