@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from routers import auth, queue, users
+
 app = FastAPI(title="Mirrorless API", version="0.1.0")
 
 app.add_middleware(
@@ -10,6 +12,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth.router)
+app.include_router(queue.router)
+app.include_router(users.router)
 
 
 @app.get("/health")
