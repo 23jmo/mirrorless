@@ -19,7 +19,11 @@ import type { OutfitRecommendation } from "@/types/outfit";
 
 const SCREEN_WIDTH = 1920;
 const SCREEN_HEIGHT = 1080;
-const PHONE_URL = process.env.NEXT_PUBLIC_PHONE_URL || "http://localhost:3000/phone";
+const PHONE_URL =
+  process.env.NEXT_PUBLIC_PHONE_URL ||
+  (typeof window !== "undefined"
+    ? `${window.location.origin}/phone`
+    : "http://localhost:3000/phone");
 
 export default function MirrorPage() {
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
