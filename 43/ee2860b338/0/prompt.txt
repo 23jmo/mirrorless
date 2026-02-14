@@ -1,0 +1,143 @@
+Implement the following plan:
+
+# Plan: Google Calendar Scraping for Mira Agent (IMPLEMENTATION IN PROGRESS)
+
+> Steps 1-7 are COMPLETE. Only step 8 (unit tests) remains.
+
+## Context
+
+Mira (the AI stylist) currently knows users through their purchase history — she roasts their buys and ties recommendations to past spending. But purchase history alone is reactive. **Calendar awareness makes Mira proactive**: "I see you've got dinner at Nobu on Saturday — let me find you something that says 'I belong here.'" This creates the "oh shit, that's hella cool" moment where users realize Mira genuinely knows their life, not just their receipts.
+
+The `calendar.readonly` OAuth scope is **already requested** in both frontend and backend — no auth changes needed. This plan adds the scraping, storage, prompt injection, and tooling to make Mira calendar-aware.
+
+**Working directory:** `/Users/johnathanmo/mirrorless/.worktrees/gcal-scrape` (branch: `gcal-scrape`)
+
+---
+
+## Files to Create/Modify
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `backend/migrations/007_create_calendar_events.sql` | **CREATE** | New table for calendar events |
+| `backend/scraper/calendar_fetch.py` | **CREATE** | Google Calendar API fetch + normalize |
+| `backend/scraper/db.py` | **MODIFY** | Add `store_calendar_events()`, `get_calendar_events()` |
+| `backend/agent/memory.py` | **MODIFY** | Add `load_calendar_events()`, `refresh_calendar_events()` |
+| `backend/agent/prompts.py` | **MODIFY** | Add `_format_calendar_events()`, update `build_system_prompt()`, update personality |
+| `backend/agent/orchestrator.py` | **MODIFY** | Wire calendar into session start + prompt rebuilds |
+| `backend/agent/tools.py` | **MODIFY** | Add `search_calendar` tool definition + handler |
+| `backend/tests/test_calendar_fetch.py` | **CREATE** | Unit tests for calendar normalization |
+
+---
+
+## Step 1: Migration — `backend/migrations/007_create_calendar_events.sql`
+
+New table mirroring the `purchases` pattern (CASCADE delete, unique constraint for upserts):
+
+```sql
+CREATE TABLE calendar_events (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  google_event_id text NOT NULL,
+  title           text NOT NULL,
+  start_time      timestamptz NOT NULL,
+  end_time        timestamptz,
+  location        text,
+  description     text,          -- truncated to 500 chars
+  attendee_count  integer DEFAULT 0,  -- non-self attendees only (no PII)
+  is_all_day      boolean DEFAULT false,
+  status          text,          -- confirmed/tentative/cancelled
+  scraped_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_calendar_events_user_google_id ON calendar_events(user_id, google_event_id);
+CREATE INDEX idx_calendar_events_user_start ON calendar_events(user_id, start_time);
+```
+
+- Uses `ON CONFLICT DO UPDATE` (not `DO NOTHING` like purchases) because calendar events change after creation
+- `attendee_count` instead of a full attendees list — avoids PII, Mira only needs "dinner for 2" vs "conference with 200"
+
+---
+
+## Step 2: Calendar Fetch Module — `backend/scraper/calendar_fetch.py`
+
+Mirrors `gmail_auth.py:46-57` (`build_gmail_service`) pattern:
+
+- `build_calendar_service(token_data)` — same `Credentials` + `build()` pattern, just `("calendar", "v3")`
+- `fetch_events(service, days_back=7, days_forward=14, max_results=50)` — calls Calendar API v3 `events().list()` with `singleEvents=True` (expands recurring), `orderBy="startTime"`
+- `_normalize_event(item)` — extracts title, start/end times, location, description (truncated 500 chars), attendee_count (excluding self), is_all_day, status
+
+Key: `singleEvents=True` is critical — it expands "Weekly team standup" into individual instances so Mira sees the actual upcoming one.
+
+---
+
+## Step 3: DB Operations — Add to `backend/scraper/db.py`
+
+Two new functions following existing patterns (parameterized `$N` queries, `NeonHTTPClient`):
+
+- `store_calendar_events(db, user_id, events)` — `INSERT ... ON CONFLICT (user_id, google_event_id) DO UPDATE SET ...` (upsert, updates title/time/location/etc on re-scrape)
+- `get_calendar_events(db, user_id, days_back=7, days_forward=14)` — time-windowed query, ordered by `start_time ASC`
+
+---
+
+## Step 4: Agent Memory — Add to `backend/agent/memory.py`
+
+Two new functions:
+
+- `load_calendar_events(db, user_id)` — queries DB for events past 7 days through next 14 days, excludes cancelled. Same pattern as `load_user_purchases()`.
+- `refresh_calendar_events(db, user_id, token_data)` — live-fetches from Google Calendar API, stores in DB, returns events. Uses `ThreadPoolExecutor` + `run_in_executor` (same pattern as `pipeline.py`) since `googleapiclient` is synchronous. Runs at session start for freshness.
+
+---
+
+## Step 5: Prompts — Modify `backend/agent/prompts.py`
+
+Three changes:
+
+**5a.** Add `_format_calendar_events(events)` helper — splits events into "Upcoming" (next 14 days, cap 10) and "Recent" (past 7 days, cap 5). Formats each as: `- Title (Day Month Date at Time) at Location [N others]`
+
+**5b.** Update `build_system_prompt()` (line 192) — add `calendar_events: list[dict] | None = None` param. Inject calendar section between purchase history (line 248) and past sessions (line 250).
+
+**5c.** Update `MIRA_PERSONALITY` — add calendar awareness lines:
+- "You KNOW their calendar. Reference upcoming events to drive outfit recommendations."
+- Example lines for Mira's voice
+- Weave an upcoming event into the OPEN step of the session flow
+
+---
+
+## Step 6: Orchestrator — Modify `backend/agent/orchestrator.py`
+
+Three changes:
+
+**6a.** Import `refresh_calendar_events` from `agent.memory` (line 20-27)
+
+**6b.** In `start_session()` (line 89-95): after the `asyncio.gather()` that loads profile/purchases/etc, add a phase 2 that calls `refresh_calendar_events(db, user_id, oauth_token)` — needs `oauth_token` from phase 1. Wrapped in try/except so calendar failure doesn't block session.
+
+**6c.** Add `calendar_events` to `session.user_context` (line 102) and pass it to both `build_system_prompt()` call sites:
+- `start_session()` at line 111
+- `handle_event()` at line 190
+
+---
+
+## Step 7: Tool — Add `search_calendar` to `backend/agent/tools.py`
+
+Three changes:
+
+**7a.** Add tool definition to `TOOL_DEFINITIONS` — inputs: `query` (text search on title/location), `date_from`, `date_to`, `limit`
+
+**7b.** Add dispatch in `execute_tool()` — `elif tool_name == "search_calendar"`
+
+**7c.** Add `_search_calendar(tool_input, user_context)` handler — dynamic SQL with parameterized queries (same `conditions/params/param_idx` pattern as `_search_purchases()`). Queries `calendar_events` table, excludes cancelled, returns results sorted by `start_time ASC`.
+
+---
+
+## Verification
+
+1. **Run migration** against Neon: `psql $DATABASE_URL -f backend/migrations/007_create_calendar_events.sql`
+2. **Unit tests**: `pytest backend/tests/test_calendar_fetch.py -v` — test `_normalize_event()` with timed events, all-day events, no-title events, long descriptions
+3. **Integration test via test harness**: `cd backend && python -m agent.test_harness --mock` — verify Mira references calendar events in her opening roast
+4. **Manual E2E**: Start backend, trigger a session for a user with Google OAuth token, confirm:
+   - Calendar events appear in `debug_system_prompt` Socket.io event
+   - Mira references upcoming events in conversation
+   - `search_calendar` tool works when Mira invokes it
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
