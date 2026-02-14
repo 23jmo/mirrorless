@@ -1,0 +1,89 @@
+Implement the following plan:
+
+# Plan: Frontend Visibility Fix + Tool Call Logging
+
+## Context
+
+After implementing the Mira agent overhaul (AGENT branch), the user started both frontend and backend but:
+1. **Can't see the frontend** — the root page (`/`) is a bare `<h1>Mirrorless</h1>` with no styling. The real test UI lives at `/chat` but there's nothing guiding the user there.
+2. **No tool call visibility** — `backend/agent/tools.py` has zero logging. When Mira calls `search_clothing`, `present_items`, etc., the backend terminal is silent. The user wants to see tool activity in real time.
+
+---
+
+## Step 1: Make the root page a navigation hub
+
+**File**: `frontend/src/app/page.tsx`
+
+Replace the bare heading with a simple dark-themed navigation page linking to all available routes. Keep it minimal (inline styles, matching the `/chat` page aesthetic):
+- Link to `/chat` — "Chat with Mira (test UI)"
+- Link to `/mirror` — "Mirror Display"
+- Link to `/phone` — "Phone Onboarding"
+- Show connection status badge (socket URL from env)
+- Styled to match the dark `#0a0a0a` background used in `/chat`
+
+This way when the user opens `localhost:3000` they immediately see something and can navigate to the test interface.
+
+---
+
+## Step 2: Add tool call logging to the backend
+
+**File**: `backend/agent/tools.py`
+
+Add `print()` statements with `[mira-tools]` prefix (consistent with the existing `[mira]` convention in orchestrator.py) to each tool function:
+
+- **`_search_clothing()`**: Log query, num_results, and result count on success
+- **`_present_items()`**: Log number of curated items being sent to frontend
+- **`_search_gmail()`**: Log query and result count
+- **`_search_purchases()`**: Log filters used and result count
+
+**File**: `backend/agent/orchestrator.py`
+
+Enhance `_handle_tool_calls()` — add a log line BEFORE each tool execution showing the tool name and input (truncated), so the terminal shows the full lifecycle:
+```
+[mira] Tool call: search_clothing({"query": "mens black sneakers...", ...})
+[mira-tools] search_clothing: query="mens black sneakers under $120" → 12 results
+[mira] Tool call: present_items({"items": [...]})
+[mira-tools] present_items: sending 3 curated items to frontend
+```
+
+---
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `frontend/src/app/page.tsx` | Replace bare heading with nav hub |
+| `backend/agent/tools.py` | Add `[mira-tools]` print logging to all 4 tool functions |
+| `backend/agent/orchestrator.py` | Add tool name + input logging before `execute_tool()` call |
+
+---
+
+## Verification
+
+1. Open `http://localhost:3000/` — should see dark-themed nav page with links
+2. Click "Chat with Mira" — should navigate to `/chat` page
+3. Start a session on `/chat` — backend terminal should show tool call logs like:
+   ```
+   [mira] Tool call: search_clothing({"query": "..."})
+   [mira-tools] search_clothing: query="..." → 12 results
+   ```
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/ece6ecba-9794-4079-a701-111dcb31ebdd.jsonl
+
+---
+
+I notice it's doing this a lot: 
+[mira] Tool call: present_items({})
+[mira-tools] present_items: no items provided
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=300) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Tool call: present_items({})
+[mira-tools] present_items: no items provided
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=300) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Tool call: present_items({})
+[mira-tools] present_items: no items provided
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=300) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+
+---
+
+[Request interrupted by user for tool use]
