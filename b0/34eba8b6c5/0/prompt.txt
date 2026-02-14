@@ -1,0 +1,170 @@
+[Request interrupted by user for tool use]
+
+---
+
+Implement the following plan:
+
+# Per-Email Streaming + Full History Scraping
+
+## Context
+
+The scraping pipeline currently has two UX problems:
+1. **No real-time feedback** — `fast_scrape` blocks for ~15s then returns all results at once. Socket events (`emit_scrape_progress`, `emit_scrape_complete`) exist but are **never called**.
+2. **Limited date range** — `fast_scrape` only queries the last 6 months (`newer_than:6m`). Deep scrape covers full history but runs silently in the background with no visibility.
+
+**Goal**: Stream each parsed email to the frontend as it's found (via Socket.io), and remove date limits so we scrape full history in one pass.
+
+## Architecture Change
+
+**Before**: POST `/api/scrape/start` → blocks ~15s → returns all results → fires background deep_scrape (invisible)
+**After**: POST `/api/scrape/start` → returns immediately `{status: "started"}` → entire scrape runs as background task → streams per-email Socket.io events → emits `scrape_complete` with final profile
+
+This means the frontend switches from HTTP-response-driven to fully Socket.io-driven for results.
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `backend/scraper/pipeline.py` | Remove date limits from queries, add per-email callback to `_fetch_receipts_sync`, merge fast/deep into single streaming scrape |
+| `backend/scraper/routes.py` | Make POST `/start` return immediately, wire up Socket.io emissions in background task |
+| `backend/scraper/socket_events.py` | Add `emit_purchase_found` event for per-email streaming |
+| `frontend/src/lib/api.ts` | Update `Purchase` interface with new fields (merchant, order_status) |
+| `frontend/src/components/phone/ScrapeResults.tsx` | Listen for `purchase_found` events, build results table incrementally |
+
+## Step 1: Remove date limits from queries (`pipeline.py`)
+
+Remove `newer_than:6m` from `RECEIPT_QUERIES`. Merge `RECEIPT_QUERIES` and `DEEP_RECEIPT_QUERIES` into a single list since we no longer need two tiers:
+
+```python
+RECEIPT_QUERIES = [
+    "subject:(order confirmation)",
+    "subject:(order shipped)",
+    "subject:(your order)",
+    "subject:(receipt from)",
+    "subject:(purchase confirmed)",
+    "from:(noreply OR no-reply OR orders@ OR receipt@) subject:(order OR receipt OR confirmation)",
+    "subject:(subscription) category:updates",
+]
+```
+
+Keep `BRAND_SCAN_QUERY = "category:promotions newer_than:12m"` — promotions older than 12m aren't useful.
+
+## Step 2: Add per-email callback to pipeline (`pipeline.py`)
+
+Refactor `fast_scrape` to accept an `on_email` callback that fires for each email that produces purchases:
+
+```python
+async def fast_scrape(token_data: dict, on_email=None) -> ScrapeResult:
+```
+
+Inside the email parsing loop, after `extract_purchases(email)` succeeds, call:
+```python
+if on_email and new_purchases:
+    await on_email(email, new_purchases)
+```
+
+Remove `deep_scrape` entirely — the merged `fast_scrape` with full-history queries replaces it. Increase `max_per_query` to 20 (since we're scraping all history now, more results per query).
+
+## Step 3: Add `emit_purchase_found` socket event (`socket_events.py`)
+
+New event that fires for each email parsed:
+
+```python
+async def emit_purchase_found(sio, user_id: str, email_subject: str, purchases: list[dict], total_so_far: int):
+    await sio.emit("purchase_found", {
+        "user_id": user_id,
+        "email_subject": email_subject,
+        "purchases": purchases,
+        "total_so_far": total_so_far,
+    }, room=user_id)
+```
+
+## Step 4: Rewire routes (`routes.py`)
+
+Change POST `/api/scrape/start` to:
+1. Validate token exists
+2. Kick off `_background_scrape(user_id, token_data, sio)` as asyncio task
+3. Return immediately: `{"status": "started"}`
+
+The background task:
+- Gets `sio` from `app.state.sio` (already available — set in `main.py`)
+- Emits `scrape_progress` with `phase: "searching"` at start
+- Passes `on_email` callback that emits `purchase_found` for each parsed email
+- Stores purchases to DB after each email (not in bulk at the end)
+- Emits `scrape_complete` with the final profile when done
+- Emits `scrape_progress` with `phase: "error"` if something fails
+
+Access `sio` via request: add `request: Request` param to the route handler, then `request.app.state.sio`.
+
+## Step 5: Update frontend types (`api.ts`)
+
+Add new fields to `Purchase` interface:
+```typescript
+export interface Purchase {
+  brand: string;
+  merchant: string | null;     // NEW
+  item_name: string;
+  category: string | null;
+  price: number | null;
+  date: string | null;
+  order_status: string | null; // NEW
+}
+```
+
+## Step 6: Stream results in frontend (`ScrapeResults.tsx`)
+
+Major change: results build incrementally from socket events instead of from HTTP response.
+
+- Remove the `scrapeGmail()` HTTP call that waits for results
+- Replace with a simple POST to `/api/scrape/start` (fire-and-forget, just triggers the scrape)
+- Listen for new `purchase_found` event — append each purchase to a growing `purchases` state array
+- Show the purchases table immediately as items arrive (rows animate in)
+- On `scrape_complete`, set phase to "profiling" briefly then "complete", set the final profile
+- Keep the existing progress step UI but update phases based on socket events
+
+State changes:
+```
+"searching" → (first purchase_found) → "parsing" → (scrape_complete) → "profiling" → "complete"
+```
+
+The purchases table renders from local state (accumulated via socket events) instead of from the HTTP response.
+
+## What stays the same
+
+- `gmail_fetch.py` — no changes (HTML fallback already done)
+- `purchase_parser.py` — no changes (enrichment already done)
+- `brand_scanner.py` — no changes
+- `profile_builder.py` — no changes
+- `db.py` — no changes (dedup already in place)
+- All migrations — already applied
+
+## Verification
+
+1. Run tests: `cd backend && pytest tests/ -v` — update mocks for new route behavior
+2. Start backend: `uvicorn main:app --reload`
+3. Start frontend: `cd frontend && npm run dev`
+4. Trigger scrape from phone → verify:
+   - POST `/start` returns immediately with `{status: "started"}`
+   - `purchase_found` socket events fire as each email is parsed
+   - Table rows appear one-by-one on the phone
+   - `scrape_complete` fires with profile at the end
+   - Full email history is scraped (not limited to 6 months)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+okay nice this works - can we also store the last scrape for each user - only scrape new emails from now on.
+
+---
+
+run for me, then test, then push
+
+---
+
+is parallel agents mode on? can we turn that off
+
+---
+
+yea turn off superpowers
