@@ -44,6 +44,33 @@ async def disconnect(sid):
     print(f"[socket] Client disconnected: {sid}")
 
 
+@sio.event
+async def request_snapshot(sid, data):
+    """Backend requests a camera snapshot from the mirror."""
+    user_id = data.get("user_id")
+    if user_id:
+        await sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+        print(f"[socket] Requested snapshot from mirror for user {user_id}")
+
+
+@sio.event
+async def camera_snapshot(sid, data):
+    """Mirror sends back a camera snapshot."""
+    user_id = data.get("user_id")
+    image_base64 = data.get("image_base64")
+    print(f"[socket] Received snapshot from {user_id}: {len(image_base64) if image_base64 else 0} bytes")
+    # Store in memory for agent to consume (will be used by orchestrator)
+
+
+@sio.event
+async def session_ready(sid, data):
+    """Mirror display reports it's loaded and ready."""
+    user_id = data.get("user_id")
+    if user_id:
+        await sio.enter_room(sid, f"mirror_{user_id}")
+        print(f"[socket] Mirror ready for user {user_id}")
+
+
 # Wrap FastAPI with Socket.io, then wrap everything with CORS
 _asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 socket_app = CORSMiddleware(
