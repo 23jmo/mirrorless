@@ -3,6 +3,7 @@ from starlette.middleware.cors import CORSMiddleware
 import socketio
 
 from routers import auth, queue, users
+from routers.images import router as images_router
 from scraper.routes import router as scraper_router
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=[])
@@ -13,6 +14,7 @@ app.include_router(auth.router)
 app.include_router(queue.router)
 app.include_router(users.router)
 app.include_router(scraper_router)
+app.include_router(images_router)
 
 # Make sio accessible to routes
 app.state.sio = sio

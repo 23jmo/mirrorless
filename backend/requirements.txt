@@ -12,5 +12,7 @@ serpapi==0.1.5
 deepgram-sdk==3.8.0
 beautifulsoup4==4.12.3
 pydantic==2.10.4
+rembg==2.0.57
+Pillow==11.0.0
 pytest==8.3.4
 pytest-asyncio==0.24.0
