@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "2b6803558461",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/scraper/profile_builder.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2b/6803558461/0/metadata.json",
+      "transcript": "/2b/6803558461/0/full.jsonl",
+      "context": "/2b/6803558461/0/context.md",
+      "content_hash": "/2b/6803558461/0/content_hash.txt",
+      "prompt": "/2b/6803558461/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 82652,
+    "cache_read_tokens": 564504,
+    "output_tokens": 3094,
+    "api_call_count": 14
+  }
+}
