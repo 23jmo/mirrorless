@@ -3,14 +3,19 @@
   "checkpoint_id": "b034eba8b6c5",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 8,
+  "checkpoints_count": 10,
   "files_touched": [
     "backend/agent/memory.py",
     "backend/agent/orchestrator.py",
     "backend/agent/prompts.py",
     "backend/agent/tools.py",
+    "backend/judges/__init__.py",
+    "backend/judges/db.py",
+    "backend/judges/routes.py",
+    "backend/judges/scraper.py",
     "backend/main.py",
     "backend/migrations/003_add_last_scraped_at.sql",
+    "backend/migrations/005_create_judges.sql",
     "backend/migrations/006_create_demo_user.sql",
     "backend/scraper/__init__.py",
     "backend/scraper/db.py",
@@ -51,13 +56,20 @@
       "context": "/b0/34eba8b6c5/3/context.md",
       "content_hash": "/b0/34eba8b6c5/3/content_hash.txt",
       "prompt": "/b0/34eba8b6c5/3/prompt.txt"
+    },
+    {
+      "metadata": "/b0/34eba8b6c5/4/metadata.json",
+      "transcript": "/b0/34eba8b6c5/4/full.jsonl",
+      "context": "/b0/34eba8b6c5/4/context.md",
+      "content_hash": "/b0/34eba8b6c5/4/content_hash.txt",
+      "prompt": "/b0/34eba8b6c5/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 236,
-    "cache_creation_tokens": 621345,
-    "cache_read_tokens": 11977178,
-    "output_tokens": 16201,
-    "api_call_count": 174
+    "input_tokens": 7747,
+    "cache_creation_tokens": 1285008,
+    "cache_read_tokens": 20889118,
+    "output_tokens": 43506,
+    "api_call_count": 340
   }
 }

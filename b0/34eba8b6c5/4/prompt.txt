@@ -1,0 +1,1930 @@
+Implement the following plan:
+
+# Plan: Judge Database & Web Scraper
+
+## Context
+
+We're building a judge/organizer directory for the Mirrorless hackathon project (TreeHacks). The goal is to scrape biographical data and a photo for ~50 judges and organizers from the web, store it in Neon Postgres, and expose it via REST endpoints. This data can be used on the mirror display or phone UI to show who's judging.
+
+## New Files to Create
+
+| File | Purpose |
+|------|---------|
+| `backend/migrations/004_create_judges.sql` | Database migration |
+| `backend/judges/__init__.py` | Module init |
+| `backend/judges/db.py` | Database CRUD operations |
+| `backend/judges/scraper.py` | Serper search + Claude extraction |
+| `backend/judges/routes.py` | FastAPI endpoints + Pydantic models |
+
+## Existing Files to Modify
+
+| File | Change |
+|------|--------|
+| `backend/main.py` | Add `from judges.routes import router as judges_router` and `app.include_router(judges_router)` |
+
+## Step 1: Database Migration (`004_create_judges.sql`)
+
+```sql
+CREATE TABLE judges (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name          text NOT NULL,
+  role          text NOT NULL DEFAULT 'judge'
+                  CHECK (role IN ('judge', 'organizer')),
+  title         text,              -- "CEO", "Software Engineer", etc.
+  organization  text,              -- "Google", "Stanford", etc.
+  bio           text,              -- 2-3 sentence bio
+  photo_url     text,              -- URL to best headshot found
+  linkedin_url  text,
+  twitter_url   text,
+  website_url   text,
+  source_urls   jsonb DEFAULT '[]',  -- URLs where data was found
+  scrape_status text NOT NULL DEFAULT 'pending'
+                  CHECK (scrape_status IN ('pending', 'scraped', 'failed', 'manual')),
+  scrape_error  text,
+  scraped_at    timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_judges_name_role ON judges(lower(name), role);
+CREATE INDEX idx_judges_role ON judges(role);
+CREATE INDEX idx_judges_scrape_status ON judges(scrape_status);
+```
+
+## Step 2: Database Operations (`judges/db.py`)
+
+Follow the pattern from `backend/scraper/db.py` — each function takes a `db` (NeonHTTPClient) parameter with `$1, $2` parameterized queries.
+
+Functions:
+- **`seed_judges(db, judges_list)`** — Bulk insert names with `ON CONFLICT DO NOTHING` (idempotent)
+- **`get_pending_judges(db)`** — Fetch judges with `scrape_status = 'pending'`
+- **`update_judge_data(db, judge_id, data)`** — Update with scraped data, set status to `'scraped'`
+- **`mark_judge_failed(db, judge_id, error)`** — Set status to `'failed'` with error message
+- **`get_all_judges(db, role=None)`** — List all, optionally filtered by role
+- **`get_judge_by_id(db, judge_id)`** — Single lookup by UUID
+- **`manual_update_judge(db, judge_id, updates)`** — For PUT endpoint, sets status to `'manual'`
+
+## Step 3: Web Scraper (`judges/scraper.py`)
+
+### Hardcoded Judge List
+The full list of 50+ names with their roles embedded as a constant `JUDGES_LIST`.
+
+### Scraping Pipeline (per judge)
+
+1. **Serper Web Search** → `POST https://google.serper.dev/search`
+   - Query: `"{name}" TreeHacks Stanford 2025 judge` (or `organizer`)
+   - For ambiguous names ("Ben", "Brandon"): `"{name}" TreeHacks 2025`
+   - Returns top 5 organic results (title, snippet, link)
+
+2. **Serper Image Search** → `POST https://google.serper.dev/images`
+   - Query: `"{name}" TreeHacks headshot`
+   - Returns top 5 image results (imageUrl, title)
+
+3. **Claude Haiku Extraction** — same pattern as `purchase_parser.py:_extract_with_llm`
+   - Feed web + image results into a prompt
+   - Ask for JSON: `{title, organization, bio, best_photo_url, linkedin_url, twitter_url, website_url, confidence, source_urls}`
+   - `max_tokens=512`, model `claude-haiku-4-5-20251001`
+
+### Rate Limiting
+- `asyncio.Semaphore(2)` for concurrent Serper calls
+- 1-second sleep between batches of 3 judges
+- ~100 Serper calls total (well within 2,500/month free tier)
+- ~$0.02 total Claude API cost
+
+### Ambiguous Name Handling
+Names with no last name ("Ben", "Brandon", "Dj Isaac") get:
+- "TreeHacks" appended to the name as context (e.g., `"Ben TreeHacks"`)
+- Same search pipeline as other judges, just with this extra qualifier
+- Claude returns `confidence: "low"` if results are still unclear
+- Low-confidence entries stored with note in `scrape_error` for manual review
+
+## Step 4: API Routes (`judges/routes.py`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/judges/scrape` | Trigger scraping (background task via `asyncio.create_task`) |
+| GET | `/judges/status` | Scrape progress: `{total, pending, scraped, failed}` |
+| GET | `/judges` | List all judges (optional `?role=judge\|organizer` filter) |
+| GET | `/judges/{judge_id}` | Single judge by UUID |
+| PUT | `/judges/{judge_id}` | Manual update/correction |
+
+**Note:** `/judges/status` must be defined before `/judges/{judge_id}` in the router to avoid FastAPI treating "status" as a UUID.
+
+### Pydantic Models (inline in routes.py, same pattern as `scraper/routes.py`)
+- `ScrapeJudgesRequest` — optional `names: list[str]`, `retry_failed: bool`
+- `JudgeUpdateRequest` — all optional fields for manual edits
+- `JudgeResponse` — full judge record
+
+## Step 5: Register Router in `main.py`
+
+Add two lines to `backend/main.py`:
+```python
+from judges.routes import router as judges_router
+app.include_router(judges_router)
+```
+
+## Step 6: Run Migration
+
+Execute `004_create_judges.sql` against Neon via the Neon MCP `run_sql` tool.
+
+## Implementation Order
+
+1. Migration file → run it
+2. `judges/__init__.py`
+3. `judges/db.py`
+4. `judges/scraper.py` (largest file, ~200 lines)
+5. `judges/routes.py`
+6. `main.py` router registration
+7. Test: `POST /judges/scrape` → poll `GET /judges/status` → `GET /judges`
+
+## Verification
+
+1. Run the migration against Neon
+2. Start the backend: `uvicorn main:app --reload`
+3. `POST /judges/scrape` — triggers background scraping
+4. `GET /judges/status` — monitor progress
+5. `GET /judges` — verify scraped data and photos
+6. `GET /judges?role=organizer` — verify role filtering
+7. `PUT /judges/{id}` — test manual correction for low-confidence entries
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+[Request interrupted by user]
+
+---
+
+wait honeslty, can YOU just scrape all the judges with 10 parallel agents at a time? use your webfetch tools and stuff that you are very good at
+
+---
+
+<task-notification>
+<task-id>acfb524</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Gautam Kumar bio" completed</summary>
+<result>I'm unable to find a specific "Gautam Kumar" who is confirmed as a judge at TreeHacks 2025. The search results show multiple professionals named Gautam Kumar with various roles in software development, but none specifically identified as a TreeHacks 2025 judge.
+
+The TreeHacks 2025 judge list appears to be either not publicly available or not indexed well by search engines. Without being able to definitively confirm which Gautam Kumar (if any) is the specific judge you're asking about, I cannot provide accurate information.
+
+Here's what I found:
+- TreeHacks 2025 did occur at Stanford University
+- Multiple people named Gautam Kumar work as software developers with different organizations
+- One personal website (gautam-cs.github.io) belongs to a full-stack developer who worked at Artelus
+
+Since I cannot definitively identify the correct Gautam Kumar judge at TreeHacks 2025, here is the JSON with low confidence:
+
+```json
+{"name": "Gautam Kumar", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 122102
+tool_uses: 4
+duration_ms: 31036</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/acfb524.output
+
+---
+
+<task-notification>
+<task-id>a0e40f9</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Greg Feingold bio" completed</summary>
+<result>Based on my extensive search, I was unable to find any confirmation that Greg Feingold is a judge at TreeHacks 2025. However, I did find detailed information about Greg Feingold from Anthropic. Here is the JSON response:
+
+```json
+{"name": "Greg Feingold", "role": "judge", "title": "Community Programs Lead", "organization": "Anthropic", "bio": "Greg Feingold leads Anthropic's community programs, building Claude adoption through developer engagement initiatives. Previously, he served as Community Program Manager at Perplexity and Global Community Lead for TikTok's AR ecosystem, where he cultivated developer relations and ecosystem growth across multiple platforms.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/greg-feingold-3a890a91/", "twitter_url": "https://x.com/GregFeingold", "website_url": "https://gregd.fyi/", "confidence": "low"}
+```
+
+**Note:** I could not verify that Greg Feingold is actually a judge at TreeHacks 2025. My confidence is low because:
+- Extensive searches for TreeHacks 2025 judges returned no specific judges list
+- No search results connected Greg Feingold to TreeHacks as a judge
+- The information about him comes from his professional profiles at Anthropic, not from TreeHacks materials</result>
+<usage>total_tokens: 126942
+tool_uses: 13
+duration_ms: 35870</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0e40f9.output
+
+---
+
+<task-notification>
+<task-id>abad483</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Shrey Pandya bio" completed</summary>
+<result>Based on my extensive search, I was unable to find confirmation that Shrey Pandya is a judge at TreeHacks 2025. However, I did find significant information about the Shrey Pandya who is prominent in tech (Growth Engineer at Browserbase). Since I cannot verify the TreeHacks 2025 judge claim, here is what I found:
+
+```json
+{
+  "name": "Shrey Pandya",
+  "role": "judge",
+  "title": "Growth Engineer",
+  "organization": "Browserbase",
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/shreypandya/",
+  "twitter_url": "https://x.com/shreypandya",
+  "website_url": "https://github.com/shrey150",
+  "confidence": "low"
+}
+```
+
+**Note:** I could not find direct confirmation that Shrey Pandya is listed as a judge for TreeHacks 2025. The search results show that TreeHacks 2025 had 300+ judges from major companies like NVIDIA, Meta, OpenAI, Walmart, and Tesla, but no public judges list was accessible. The information above is for the prominent Shrey Pandya in tech (Growth Engineer at Browserbase, based in San Francisco, University of Michigan graduate), but I cannot confirm if this is the person listed as a TreeHacks 2025 judge. Confidence is set to "low" due to this verification gap.</result>
+<usage>total_tokens: 125951
+tool_uses: 12
+duration_ms: 36355</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/abad483.output
+
+---
+
+<task-notification>
+<task-id>ab65d97</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Kyle Jeong bio" completed</summary>
+<result>Based on my comprehensive search, I cannot find evidence that Kyle Jeong is a judge at TreeHacks 2025. The search results show no public list of TreeHacks 2025 judges that includes his name. However, I found detailed information about Kyle Jeong himself. Here is the JSON response:
+
+```json
+{"name": "Kyle Jeong", "role": "judge", "title": "Engineering & Growth", "organization": "Browserbase", "bio": "21-year-old software engineer and UCLA student studying Math and Computer Science. Works on browser infrastructure at Browserbase and is Founder/President of VEST at UCLA, building the startup and builder community.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/kyle-jeong/", "twitter_url": "https://x.com/kylejeong21", "website_url": "https://kylejeong.com/", "confidence": "low"}
+```
+
+**Note:** I could not verify that Kyle Jeong is actually a judge at TreeHacks 2025. While I found extensive information about Kyle Jeong as a software engineer at Browserbase, my searches did not reveal a public list of TreeHacks 2025 judges that confirms his participation in that role. The confidence is set to "low" because the premise of the request (that he is a TreeHacks 2025 judge) could not be verified.</result>
+<usage>total_tokens: 126114
+tool_uses: 12
+duration_ms: 47429</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ab65d97.output
+
+---
+
+<task-notification>
+<task-id>a0628bc</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Sabrina Farmin bio" completed</summary>
+<result>Based on my research, I found information about Sabrina Farmin from Cloudflare, but I could not find any evidence that she is a judge at TreeHacks 2025. The search results about TreeHacks 2025 did not list her among judges or mentors. Here is what I found about Sabrina Farmin:
+
+```json
+{
+  "name": "Sabrina Farmin",
+  "role": "judge",
+  "title": "Senior Event Marketing Manager / Global Developer Events Lead",
+  "organization": "Cloudflare",
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/sfarmin/",
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note:** I could not verify that Sabrina Farmin is actually a judge at TreeHacks 2025. While I found her professional profile at Cloudflare where she works in event marketing and developer community engagement, the TreeHacks 2025 website and search results did not confirm her as a judge. The confidence level is "low" because I cannot confirm the core premise of your search request.</result>
+<usage>total_tokens: 125480
+tool_uses: 10
+duration_ms: 35646</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0628bc.output
+
+---
+
+<task-notification>
+<task-id>a17942a</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Rajesh Bhatia bio" completed</summary>
+<result>Based on my extensive search, I cannot find any verified information confirming that Rajesh Bhatia is a judge at TreeHacks 2025. While I found a Rajesh Bhatia at Apple with 25+ years in AI/ML who has taken Stanford courses, there is no public information linking him to TreeHacks 2025 as a judge.
+
+Here is the JSON response:
+
+```json
+{"name": "Rajesh Bhatia", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+The confidence is "low" because I could not find any public information confirming this person's involvement with TreeHacks 2025, despite searching multiple sources including the official TreeHacks website, judge applications, and social media.</result>
+<usage>total_tokens: 124974
+tool_uses: 10
+duration_ms: 41186</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a17942a.output
+
+---
+
+<task-notification>
+<task-id>ad22792</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Sarah Josief bio" completed</summary>
+<result>Based on my research, I was unable to find definitive evidence that Sarah Josief is a judge at TreeHacks 2025. What I found is:
+
+- **Sarah Josief** is an **Event Program Manager** at **Cerebras Systems** (based in California with 24+ years of experience)
+- She has a LinkedIn profile: https://www.linkedin.com/in/sarah-josief-b2261aa7
+- She has a Twitter/X account: @sjosief (https://x.com/sjosief)
+
+However, I could not verify:
+- Her connection to TreeHacks 2025 as a judge
+- A photo/headshot URL
+- A personal website
+- A detailed bio
+
+I could not find TreeHacks 2025's complete judges list in public sources. It's possible this information hasn't been published publicly or requires access to the official TreeHacks event page.
+
+Here is what I can confirm as JSON:
+
+```json
+{"name": "Sarah Josief", "role": "judge", "title": "Event Program Manager", "organization": "Cerebras Systems", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/sarah-josief-b2261aa7", "twitter_url": "https://x.com/sjosief", "website_url": null, "confidence": "low"}
+```
+
+The confidence is low because I could not verify her involvement with TreeHacks 2025 or find biographical/photo information to confirm this is the correct person in that context.</result>
+<usage>total_tokens: 127155
+tool_uses: 16
+duration_ms: 50021</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ad22792.output
+
+---
+
+<task-notification>
+<task-id>a4c694d</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Craig Dennis bio" completed</summary>
+<result>Based on my extensive search, I was unable to find evidence that a "Craig Dennis" is a judge at TreeHacks 2025. While I found detailed information about Craig Dennis from Cloudflare (a Developer Educator, AI), there is no confirmation in any search results linking him to being a judge at TreeHacks 2025. The TreeHacks 2025 event website and public judge listings do not include his name.
+
+Here is the JSON response based on what I could verify:
+
+```json
+{"name": "Craig Dennis", "role": "judge", "title": "Developer Educator, AI", "organization": "Cloudflare", "bio": "Software teacher, backend developer, and self-taught polyglot who encourages learners of all skill levels to embrace a growth mindset. Previously worked as a Staff Developer Educator at Twilio and Senior Teacher at Treehouse.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/craigsdennis/", "twitter_url": "https://x.com/craigsdennis", "website_url": "https://craigdennis.me", "confidence": "low"}
+```
+
+Note: The low confidence rating is because I could not find any actual confirmation that this Craig Dennis is a judge at TreeHacks 2025. The information about his job title, organization, and URLs comes from publicly available professional profiles, but the connection to TreeHacks judging could not be verified.</result>
+<usage>total_tokens: 128018
+tool_uses: 14
+duration_ms: 49402</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a4c694d.output
+
+---
+
+<task-notification>
+<task-id>af17eea</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Diyi Zhu bio" completed</summary>
+<result>Based on my research, I was unable to find confirmation that Diyi Zhu is a judge at TreeHacks 2025. However, I did find substantial information about Diyi Zhu as a professional. I cannot provide a definitive JSON response because I cannot verify the TreeHacks 2025 judge status. Here's what I found:
+
+**Verified Information about Diyi Zhu:**
+- **Job Title**: Operations and community leader
+- **Organization**: Currently at Cerebras (previously at Mozilla as Sr. Program Manager, Community Experience)
+- **Location**: San Francisco Bay Area
+- **LinkedIn**: https://www.linkedin.com/in/zhudiyi/
+- **X/Twitter**: https://x.com/diyi
+- **Medium**: https://medium.com/@judefish
+
+**What I Could Not Find:**
+- No confirmation of Diyi Zhu being a TreeHacks 2025 judge - my searches of TreeHacks websites and judge listings did not return any results linking Diyi Zhu to TreeHacks 2025
+- No direct photo/headshot URL
+- No personal website found
+- No complete 2-3 sentence bio available
+
+Given that I cannot verify the core premise of the request (that Diyi Zhu is a TreeHacks 2025 judge), I cannot confidently provide the JSON response you requested. The TreeHacks 2025 judges list was not accessible through my searches.
+
+```json
+{
+  "name": "Diyi Zhu",
+  "role": "judge",
+  "title": "Operations and Community Leader",
+  "organization": "Cerebras",
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/zhudiyi/",
+  "twitter_url": "https://x.com/diyi",
+  "website_url": null,
+  "confidence": "low"
+}
+```</result>
+<usage>total_tokens: 127639
+tool_uses: 15
+duration_ms: 54720</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af17eea.output
+
+---
+
+<task-notification>
+<task-id>a0d66bf</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Judy Cheong bio" completed</summary>
+<result>Based on my extensive search, I was unable to find evidence that Judy Cheong is a judge at TreeHacks 2025. Here's what I found:
+
+The most prominent "Judy Cheong" in available search results is **Judy Cheong at Iterative** - a Marketing Lead with a background in brand, social media, and recruitment. She attended Stanford Graduate School of Business and previously worked at companies like Uber and N26. However, there is no information connecting her to TreeHacks 2025 as a judge.
+
+My searches for:
+- "Judy Cheong TreeHacks 2025" 
+- Direct TreeHacks 2025 judge lists
+- Judy Cheong's Twitter/X presence
+- TreeHacks 2025 official websites
+
+...yielded no results confirming her involvement as a judge at TreeHacks 2025.
+
+```json
+{
+  "name": "Judy Cheong",
+  "role": "judge",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/judycheong/",
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note:** I could not verify that Judy Cheong is actually a judge at TreeHacks 2025. The search found a Judy Cheong at Iterative (a VC/accelerator firm) but no connection to TreeHacks judging. You may want to verify the correct spelling of the name or provide additional context about which Judy Cheong you're researching.</result>
+<usage>total_tokens: 126261
+tool_uses: 12
+duration_ms: 64013</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0d66bf.output
+
+---
+
+<task-notification>
+<task-id>accb7b3</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Emma Kirst bio" completed</summary>
+<result>Based on my research, I found information about Emma Kirst from Human Capital, but I could not verify that she is specifically a judge at TreeHacks 2025. Here is what I found:
+
+```json
+{
+  "name": "Emma Kirst",
+  "role": "judge",
+  "title": "Principal, Investment",
+  "organization": "Human Capital",
+  "bio": "Emma Kirst is a venture capital professional at Human Capital, a multi-stage venture capital firm based in the San Francisco Bay Area. She focuses on investing in Consumer Internet and Enterprise companies, with a track record of recognizing innovative startups. Her background includes experience as a Venture Partner at Contrary and education from the University of Michigan.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/emma-kirst/",
+  "twitter_url": "https://x.com/theemma_kirst",
+  "website_url": "https://human.capital",
+  "confidence": "low"
+}
+```
+
+**Note:** While I found detailed information about Emma Kirst from Human Capital, I could not confirm that she is specifically listed as a judge for TreeHacks 2025. The confidence is "low" because the TreeHacks 2025 judge roster was not accessible in my searches. If you have additional information about where the TreeHacks judges are listed, I can search more specifically.</result>
+<usage>total_tokens: 121398
+tool_uses: 5
+duration_ms: 22884</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/accb7b3.output
+
+---
+
+<task-notification>
+<task-id>a80cc43</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Dev Chauhan bio" completed</summary>
+<result>Based on my extensive search, I was unable to locate a verified public profile for "Dev Chauhan" as a judge at TreeHacks 2025. While I found multiple professionals named Dev Chauhan with various backgrounds (including a software engineer at Graviton Research Capital with an IIT Kanpur background), I could not find definitive evidence connecting any specific Dev Chauhan to TreeHacks 2025 judging, nor could I locate comprehensive details like job title, organization, biography, LinkedIn URL, photo, Twitter URL, or personal website that would be required for your request.
+
+The TreeHacks 2025 judge roster does not appear to be publicly listed on their official website or in publicly indexed sources.
+
+```json
+{
+  "name": "Dev Chauhan",
+  "role": "judge",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```</result>
+<usage>total_tokens: 129426
+tool_uses: 13
+duration_ms: 43738</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a80cc43.output
+
+---
+
+<task-notification>
+<task-id>a682559</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Kelsea An bio" completed</summary>
+<result>Based on my extensive research, I was unable to find verification that Kelsea An is a judge at TreeHacks 2025. I did find that there is a Kelsea An who works as a Research Assistant at Stanford Institute for Human-Centered Artificial Intelligence (HAI), with a LinkedIn profile at https://www.linkedin.com/in/kelseaan/, but I cannot confirm her role as a TreeHacks 2025 judge or find her job title, organization, bio, photo URL, or social media information.
+
+Given the inability to verify the core premise (that she is a TreeHacks 2025 judge) and the lack of available public information about her beyond her LinkedIn profile affiliation with Stanford HAI, here is the response:
+
+```json
+{"name": "Kelsea An", "role": "judge", "title": "Research Assistant", "organization": "Stanford Institute for Human-Centered Artificial Intelligence (HAI)", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/kelseaan/", "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 126126
+tool_uses: 15
+duration_ms: 59955</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a682559.output
+
+---
+
+<task-notification>
+<task-id>a08dbcd</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Felicia Chang bio" completed</summary>
+<result>I was unable to find information confirming that Felicia Chang is a judge at TreeHacks 2025. After searching multiple variations, no results connect Felicia Chang specifically to the TreeHacks 2025 judging panel.
+
+The search results show several people named Felicia Chang with various professional backgrounds (photographers, data professionals, psychologists, etc.), but none matching a judge role at TreeHacks 2025.
+
+Here is the JSON response:
+
+```json
+{"name": "Felicia Chang", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 122115
+tool_uses: 4
+duration_ms: 20863</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a08dbcd.output
+
+---
+
+<task-notification>
+<task-id>a8988c7</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Olivia Petrie bio" completed</summary>
+<result>Based on my extensive search efforts, I was unable to find publicly available information about an "Olivia Petrie" who is a judge at TreeHacks 2025. The search results did not return any verified information connecting this name to the Stanford hackathon or to a judging role there.
+
+Here is the JSON response with the available information:
+
+```json
+{"name": "Olivia Petrie", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+The low confidence rating reflects that I could not verify this person's involvement with TreeHacks 2025 through publicly available web sources. While I found several people named Olivia Petrie (including one at Elastic), none of them were confirmed to be judges at TreeHacks 2025. The TreeHacks 2025 judges list does not appear to be publicly indexed in search results.</result>
+<usage>total_tokens: 124762
+tool_uses: 9
+duration_ms: 59115</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a8988c7.output
+
+---
+
+<task-notification>
+<task-id>aa1e0d4</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Abhi Gangani bio" completed</summary>
+<result>Based on my extensive search, I was unable to find evidence that Abhi Gangani is a judge at TreeHacks 2025. While I found detailed information about Abhi Gangani as a professional in the AI/blockchain space, I could not locate:
+
+1. A public judges list for TreeHacks 2025
+2. Any connection between Abhi Gangani and TreeHacks 2025 as a judge
+3. A headshot/photo URL for Abhi Gangani
+4. Twitter/X or personal website URLs for Abhi Gangani
+
+Here is the JSON response based on what I could verify:
+
+```json
+{"name": "Abhi Gangani", "role": "judge", "title": "Gen AI Engineer", "organization": "Fetch.ai", "bio": "AI Agents Developer with over four years of experience in software development, data analysis, machine learning, and AWS cloud. Specializes in AI agents, blockchain, and Web3 technologies. Published technical articles on building AI assistants and integrating technologies with Fetch.ai ecosystem.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/abhi-gangani-084ba9147/", "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+**Note:** The confidence is "low" because I could not find evidence that Abhi Gangani is actually a TreeHacks 2025 judge. The TreeHacks 2025 judges list does not appear to be publicly available online. The information provided is based on Abhi Gangani's professional profile, but the TreeHacks 2025 judge connection cannot be verified.</result>
+<usage>total_tokens: 129370
+tool_uses: 17
+duration_ms: 56785</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/aa1e0d4.output
+
+---
+
+<task-notification>
+<task-id>a4de563</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Ryan Tran bio" completed</summary>
+<result>Based on my extensive search, I was unable to find confirmed information about a "Ryan Tran" who is a judge at TreeHacks 2025. While I found multiple people named Ryan Tran in tech roles (at SpaceX, Intel, Google, OpenAI, and Microsoft), and I found details about TreeHacks 2025 at Stanford University, there is no publicly available information connecting a specific Ryan Tran to being a judge at TreeHacks 2025.
+
+Here is the JSON response:
+
+```json
+{"name": "Ryan Tran", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 124061
+tool_uses: 8
+duration_ms: 51755</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a4de563.output
+
+---
+
+<task-notification>
+<task-id>ace779e</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Jess Waterman bio" completed</summary>
+<result>Based on my extensive search, I was unable to find any publicly available information confirming that a person named "Jess Waterman" is a judge at TreeHacks 2025. I found:
+
+1. **Jessica Waterman at Greylock** (https://www.linkedin.com/in/jwaterman/) - She works in talent acquisition at Greylock Partners and is involved with Greylock X (a fellowship for founders), but there is no publicly available information linking her to TreeHacks judging.
+
+2. **No public judges list** - TreeHacks 2025 did not publish a comprehensive public judges list in the search results. The event mentioned judges from NVIDIA, Meta, OpenAI, Walmart, Liquid AI, and Tesla, but individual judge names were not publicly disclosed.
+
+Without being able to confirm that Jess Waterman is actually a TreeHacks 2025 judge, I cannot reliably gather the requested information. Here is the result with low confidence:
+
+```json
+{"name": "Jess Waterman", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 125398
+tool_uses: 11
+duration_ms: 50181</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ace779e.output
+
+---
+
+<task-notification>
+<task-id>a7d5dce</task-id>
+<status>completed</status>
+<summary>Agent "Scrape David Yi bio" completed</summary>
+<result>Based on my research, I found information about David Yi who is a venture capital founder and investor. However, I could not find definitive confirmation that this specific David Yi is a judge at TreeHacks 2025. The search results did not return the TreeHacks 2025 judge list with David Yi's name explicitly mentioned.
+
+Based on the most likely candidate (David Yi - venture capital founder and investor), here is the JSON response:
+
+```json
+{"name": "David Yi", "role": "judge", "title": "General Partner & Co-founder", "organization": "Ethos Fund", "bio": "David Yi is an entrepreneur and investor who co-founded Ethos Fund to bridge opportunities between Vietnam and the US tech ecosystems. He has shaped over $10 billion in opportunities across Asia and America, raised $300M+ in venture capital, and currently mentors founders and serves on the board of Family Future Fund.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/thedavidyi/", "twitter_url": "https://twitter.com/TheDavidYi", "website_url": "https://www.thedavidyi.com/", "confidence": "low"}
+```
+
+**Note:** Confidence is set to "low" because while I found detailed information about David Yi as a prominent venture capital founder and investor, I could not confirm his specific involvement as a judge at TreeHacks 2025 through the search results. The TreeHacks 2025 official judge list did not explicitly mention David Yi in the available search results.</result>
+<usage>total_tokens: 126135
+tool_uses: 11
+duration_ms: 48093</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a7d5dce.output
+
+---
+
+<task-notification>
+<task-id>a304a0a</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Sana Wajid bio" completed</summary>
+<result>Based on my extensive research, I found that while Sana Wajid is a prominent figure in AI and hackathon judging (particularly at Fetch.ai-sponsored events), I cannot confirm she was a judge specifically at TreeHacks 2025. The search results show no direct connection between Sana Wajid and TreeHacks 2025 on the official TreeHacks website.
+
+However, I did find substantial information about a Sana Wajid who is Chief Development Officer at Fetch.ai and judges at various AI hackathons. Without confirmation of her involvement with TreeHacks 2025 specifically, I cannot provide a confident response.
+
+```json
+{
+  "name": "Sana Wajid",
+  "role": "judge",
+  "title": "Chief Development Officer",
+  "organization": "Fetch.ai",
+  "bio": "Chief Development Officer at Fetch.ai with over 15 years of experience in product management and development, overseeing the firm's strategy and connecting tech talent to decentralized AI solutions. Serves as SVP of Fetch.ai Innovation Lab.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/sana-wajid-ab1b6169/",
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+Note: The low confidence is because I could not verify Sana Wajid's involvement with TreeHacks 2025 specifically. The information provided is accurate for the Sana Wajid at Fetch.ai, but there is no confirmation in public sources that she was a judge at TreeHacks 2025.</result>
+<usage>total_tokens: 128867
+tool_uses: 14
+duration_ms: 71150</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a304a0a.output
+
+---
+
+<task-notification>
+<task-id>a01fde6</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Kshipra Dhame bio" completed</summary>
+<result>Based on my extensive search, I was unable to find definitive confirmation that Kshipra Dhame is a judge at TreeHacks 2025. However, I did find professional information about Kshipra Dhame from Fetch.ai. Here's what I can provide:
+
+```json
+{
+  "name": "Kshipra Dhame",
+  "role": "judge",
+  "title": "Developer Advocate",
+  "organization": "Fetch.ai",
+  "bio": "AI Engineer with 3+ years of experience building systems that combine LLMs. Developer Advocate at Fetch.ai contributing to the AI agent ecosystem. Active technical writer publishing on Medium about RAG-based AI agents and Fetch.ai technology.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/kshipra-dhame-734602189/",
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note on confidence:** I found verified information about Kshipra Dhame's professional background at Fetch.ai, but I could not locate her in official TreeHacks 2025 judges lists, nor could I find her personal website, headshot, or verified Twitter/X handle. The confidence is "low" because the TreeHacks 2025 judge affiliation could not be confirmed through my searches.</result>
+<usage>total_tokens: 126629
+tool_uses: 12
+duration_ms: 65689</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a01fde6.output
+
+---
+
+<task-notification>
+<task-id>a6fe312</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Prithvi Chaudhari bio" completed</summary>
+<result>Based on my extensive search, I cannot find any evidence that a person named "Prithvi Chaudhari" is or was a judge at TreeHacks 2025. The most relevant person I found at Stanford is **Akshay Chaudhari** (not Prithvi), who is an Assistant Professor of Radiology and Biomedical Data Science, but there is no evidence in any publicly available sources that he served as a TreeHacks 2025 judge either.
+
+Without being able to confirm that "Prithvi Chaudhari" is actually a TreeHacks 2025 judge, I cannot provide accurate information about this person. Here is what I can return:
+
+```json
+{"name": "Prithvi Chaudhari", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+**Note:** My search could not locate any public information confirming that a person named "Prithvi Chaudhari" is a judge at TreeHacks 2025. The TreeHacks 2025 judges list does not appear to be publicly available online. You may want to:
+- Check the official TreeHacks website or contact them directly
+- Verify the spelling of the name
+- Ask TreeHacks organizers for the official judges roster</result>
+<usage>total_tokens: 130327
+tool_uses: 19
+duration_ms: 66435</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a6fe312.output
+
+---
+
+<task-notification>
+<task-id>ae6853a</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Connor Ling bio" completed</summary>
+<result>Based on my research, I was unable to find confirmation that Connor Ling is a judge at TreeHacks 2025. While I found detailed information about Connor Ling as an AI investor, I could not locate any public documentation listing him as a judge for the event. The TreeHacks 2025 judges list does not appear to be publicly available online.
+
+Here is the JSON response based on what I could verify:
+
+```json
+{"name": "Connor Ling", "role": "judge", "title": "Investor", "organization": "Neo", "bio": "AI-focused investor and entrepreneur who moved to San Francisco in January 2025 to join Neo as an investor. Declined his offer to Stanford Graduate School of Business and previously worked identifying early-stage AI startups.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/connorling/", "twitter_url": "https://x.com/conconconling", "website_url": null, "confidence": "low"}
+```
+
+Note: Confidence is set to "low" because while I found extensive information about Connor Ling as an investor, I could not verify his role as a TreeHacks 2025 judge through publicly available sources. The TreeHacks 2025 judges list does not appear to be publicly published online.</result>
+<usage>total_tokens: 125584
+tool_uses: 10
+duration_ms: 41988</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ae6853a.output
+
+---
+
+<task-notification>
+<task-id>af9b6d8</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Janelle Battad bio" completed</summary>
+<result>Based on my research, I cannot find evidence that Janelle Battad is a judge at TreeHacks 2025. The TreeHacks 2025 judges list is not publicly available online, and direct searches combining "Janelle Battad" and "TreeHacks" do not return any results showing her as a judge at this event.
+
+Here's what I found about Janelle Battad:
+
+```json
+{
+  "name": "Janelle Battad",
+  "role": "recruiter",
+  "title": "Recruiter",
+  "organization": "Fireworks AI",
+  "bio": "Recruiter specializing in AI/ML talent acquisition with experience managing complex recruiting pipelines. Previously worked at Meta as an Executive Sourcer and PhD Recruiter for Artificial Intelligence, and at Character.AI as a Technical Sourcer.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/janellebattad/",
+  "twitter_url": "https://twitter.com/janellebatts",
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note:** I could not verify that Janelle Battad is a judge at TreeHacks 2025, as the official judges list is not publicly indexed. The information above is based on her professional LinkedIn profile and recruitment industry background. The confidence is low because I cannot confirm her role as a TreeHacks judge.</result>
+<usage>total_tokens: 124914
+tool_uses: 10
+duration_ms: 37638</usage>
+</task-notification>
+Full transcript available at: REDACTED.output
+
+---
+
+<task-notification>
+<task-id>a7d82f4</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Maddie Bernheim bio" completed</summary>
+<result>Based on my extensive search, I was unable to find confirmation that Maddie Bernheim is a judge at TreeHacks 2025. The search results show that:
+
+1. Maddie Bernheim is a Stanford University graduate/master's student in Environmental Communication
+2. She works in Strategic Initiatives at Meridian
+3. She is a journalist for The Stanford Daily and Peninsula Press
+4. She has LinkedIn and social media profiles
+
+However, I found no publicly available documentation listing her as a TreeHacks 2025 judge. TreeHacks 2025 may not have published a public judges list online, or Maddie Bernheim may not be a judge for this event.
+
+Given the lack of confirmation about her TreeHacks 2025 judge role, here is the JSON response:
+
+```json
+{"name": "Maddie Bernheim", "role": "judge", "title": "Strategic Initiatives", "organization": "Meridian", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/madelinebernheim/", "twitter_url": null, "website_url": "https://linktr.ee/maddie.bernheim", "confidence": "low"}
+```
+
+Note: Confidence is set to "low" because I could not find any public listing confirming Maddie Bernheim's role as a TreeHacks 2025 judge. The information provided is based on her known professional background, but her association with TreeHacks 2025 as a judge is unverified.</result>
+<usage>total_tokens: 127149
+tool_uses: 13
+duration_ms: 42972</usage>
+</task-notification>
+Full transcript available at: REDACTED.output
+
+---
+
+<task-notification>
+<task-id>ae015b5</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Vincent Po bio" completed</summary>
+<result>Based on my extensive search, I was unable to find evidence that Vincent Po is a judge at TreeHacks 2025. While I found detailed information about Vincent Po (Head of Scholars Program at Neo, founder of Agentic Fabriq YC F25, photographer/founder of Portrait of a Young Couple), there is no confirmation in available sources that he served as a judge at TreeHacks 2025.
+
+The search results did not reveal a public judges list for TreeHacks 2025, and Vincent Po was not mentioned in any TreeHacks-related content. It's possible:
+1. The judges list was not published publicly
+2. Vincent Po was involved but not listed publicly
+3. There may be confusion with another Vincent or another event
+
+Here is the JSON response with the information I could verify:
+
+```json
+{"name": "Vincent Po", "role": "judge", "title": "Head of Scholars Program", "organization": "Neo", "bio": "Vincent Po is Head of Scholars Program at Neo, a premier tech community backing exceptional young talent. He previously took leave from MIT to build Agentic Fabriq (YC F25), and founded Portrait of a Young Couple, a photojournalism project documenting couples globally.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/vincent-po/", "twitter_url": null, "website_url": "http://www.vincentpo.com/", "confidence": "low"}
+```</result>
+<usage>total_tokens: 129707
+tool_uses: 16
+duration_ms: 47691</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ae015b5.output
+
+---
+
+<task-notification>
+<task-id>a0029a5</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Matt Luat bio" completed</summary>
+<result>Based on my extensive search, I was unable to find any public information confirming that Matt Luat is a judge at TreeHacks 2025. Here's what I found:
+
+1. Matt Luat exists and has a professional profile - he is a Manager of G&A (General & Administrative) at Midjourney, a licensed CPA with experience in finance and operations.
+2. His LinkedIn URL is: https://www.linkedin.com/in/mattluat/
+3. His Twitter/X URL is: https://twitter.com/mattluat
+4. TreeHacks 2025 did occur (February 14-16, 2025), but the judges list is not publicly available in search results or on their website/Devpost.
+
+Since I could not find Matt Luat listed as a TreeHacks 2025 judge in any public sources, and could not find his headshot/bio information related to the event, here is the JSON response:
+
+```json
+{"name": "Matt Luat", "role": "judge", "title": "Manager of G&A", "organization": "Midjourney", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/mattluat/", "twitter_url": "https://twitter.com/mattluat", "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 128585
+tool_uses: 17
+duration_ms: 64954</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0029a5.output
+
+---
+
+<task-notification>
+<task-id>af0f4c6</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Chad Rushing bio" completed</summary>
+<result>I've thoroughly searched for Chad Rushing as a TreeHacks 2025 judge, but I was unable to find comprehensive professional information about them. While I confirmed from the TreeHacks 2025 website that Chad Rushing is involved with the event in some capacity (judge/speaker/mentor), the available public information is very limited.
+
+Here's what I found:
+- The TreeHacks 2025 website confirms Chad Rushing's involvement with the event
+- However, detailed professional information (job title, organization, bio, LinkedIn URL, photo, Twitter, website) is not publicly available in search results
+- Multiple people named Chad Rushing exist with different professional backgrounds, but none clearly match the TreeHacks 2025 judge
+
+```json
+{
+  "name": "Chad Rushing",
+  "role": "judge",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```</result>
+<usage>total_tokens: 131770
+tool_uses: 18
+duration_ms: 70377</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af0f4c6.output
+
+---
+
+<task-notification>
+<task-id>a597e71</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Claudia Dalmau bio" completed</summary>
+<result>Based on my extensive search, I was unable to find any public evidence that Claudia Dalmau (the tech professional from Dune Security and The Interaction Company) was a judge at TreeHacks 2025. While I found substantial information about Claudia Dalmau Gomez's professional background, I could not confirm her involvement with TreeHacks 2025 or locate her photo, personal website, or verify her specific Twitter handle for the tech professional (only found a generic @DalmauClaudia account which may or may not be hers).
+
+Here's what I found:
+
+```json
+{
+  "name": "Claudia Dalmau",
+  "role": "judge",
+  "title": "Operations and Compliance Lead",
+  "organization": "Dune Security",
+  "bio": "Originally from Valencia, Spain, Claudia Dalmau Gomez holds a law degree from London and a master's in law from Munich. She leads operations and compliance at Dune Security, an early-stage cybersecurity startup, and previously served as Chief of Staff. She has lived and worked across Spain, the UK, Singapore, Germany, and New York.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/claudia-dalmau-knownas-clauderocks/",
+  "twitter_url": "https://x.com/dalmauclaudia",
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note on confidence:** I set confidence to "low" because I could not find any public documentation confirming Claudia Dalmau as a TreeHacks 2025 judge. The TreeHacks 2025 judge roster does not appear to be publicly available online, and my searches found no mention of her involvement with the event. The information provided is based on her professional background from LinkedIn and the Rotary Club of New York, but her specific role at TreeHacks 2025 could not be verified.</result>
+<usage>total_tokens: 133484
+tool_uses: 23
+duration_ms: 75437</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a597e71.output
+
+---
+
+<task-notification>
+<task-id>aabce22</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Daniel Sigman bio" completed</summary>
+<result>Based on my extensive research, I was unable to find any evidence that Daniel Sigman (the Princeton geosciences professor) serves as a judge at TreeHacks 2025. The search results do not show Daniel Sigman listed as a judge or mentor for TreeHacks 2025. 
+
+However, I did find substantial information about **Daniel M. Sigman, the Princeton geoscientist**. Here's what I can provide based on the available information:
+
+```json
+{
+  "name": "Daniel M. Sigman",
+  "role": "judge",
+  "title": "Dusenbury Professor of Geological and Geophysical Sciences",
+  "organization": "Princeton University",
+  "bio": "Daniel M. Sigman is a biogeochemist at Princeton University who explores the interaction of biomass and climate in shaping Earth's geologic history. He is a leader in nitrogen isotopic studies for understanding modern ocean biogeochemistry and paleoceanography, and received a MacArthur Foundation fellowship in 2009.",
+  "photo_url": "https://environment.princeton.edu/wp-content/uploads/2016/06/sigman_Retina.jpg",
+  "linkedin_url": null,
+  "twitter_url": "https://twitter.com/sigman_lab",
+  "website_url": "https://sigman.princeton.edu/",
+  "confidence": "low"
+}
+```
+
+**Note on confidence:** My confidence is "low" because I could not find any public documentation confirming that Daniel Sigman serves as a judge at TreeHacks 2025. The TreeHacks website does not publicly list judges by name, and no search results connect Daniel Sigman to TreeHacks. If this person is indeed a judge, that information may not be publicly available or may be listed under a different name variation.</result>
+<usage>total_tokens: 128443
+tool_uses: 22
+duration_ms: 73502</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/aabce22.output
+
+---
+
+<task-notification>
+<task-id>a0bd3f1</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Zach Gulsby bio" completed</summary>
+<result>Based on my research, I was able to find information about Zachary Gulsby who is associated with RunPod and TreeHacks 2025. However, I could not locate some specific fields like a professional bio statement or a direct headshot URL. Here is what I found:
+
+```json
+{"name": "Zach Gulsby", "role": "judge", "title": "Head of Partnerships", "organization": "RunPod", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/zachary-gulsby/", "twitter_url": "https://x.com/zgulsby", "website_url": null, "confidence": "medium"}
+```
+
+Note: While I confirmed Zach Gulsby is associated with TreeHacks 2025, the publicly available information is limited. His LinkedIn profile and Twitter/X handle are accessible, but a professional bio statement and direct photo URL were not readily available in public sources. The confidence is set to "medium" because while the TreeHacks 2025 connection was confirmed, detailed biographical information could not be fully verified.</result>
+<usage>total_tokens: 129943
+tool_uses: 18
+duration_ms: 52551</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0bd3f1.output
+
+---
+
+<task-notification>
+<task-id>a0e7cd5</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Lauren Goldberg bio" completed</summary>
+<result>Based on my extensive search, I cannot find any publicly available information confirming that a "Lauren Goldberg" is a judge at TreeHacks 2025. I searched multiple variations including:
+
+- Direct searches for "Lauren Goldberg" + TreeHacks 2025
+- TreeHacks 2025 judges lists and announcements
+- Multiple Lauren Goldberg professionals with various backgrounds
+
+While I found several professionals named Lauren Goldberg (including a CEO at Suzie Kondi, an executive assistant at Y Combinator, and others), none of them are publicly listed as judges for TreeHacks 2025. The TreeHacks 2025 judges list does not appear to be publicly available online, or this particular Lauren Goldberg may not be widely documented in searchable web results.
+
+```json
+{"name": "Lauren Goldberg", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 126906
+tool_uses: 12
+duration_ms: 42764</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0e7cd5.output
+
+---
+
+<task-notification>
+<task-id>aab6cc8</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Sandy Orozco bio" completed</summary>
+<result>Based on my extensive search, I was unable to find definitive information confirming that Sandy Orozco is a judge at TreeHacks 2025. I found multiple individuals named Sandy Orozco with different professional backgrounds (including one at Visa, one in law/government work, one at Aspen Institute), but none with clear documentation of being a TreeHacks 2025 judge.
+
+Here is the result:
+
+```json
+{
+  "name": "Sandy Orozco",
+  "role": "judge",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note:** Despite thorough searching, I could not verify that Sandy Orozco is a judge at TreeHacks 2025. The TreeHacks 2025 official judges list was not publicly available in my search results, and while I found multiple professionals named Sandy Orozco, none had documented involvement with TreeHacks 2025. The confidence level is low because I cannot confirm the basic premise that this person is a TreeHacks 2025 judge.</result>
+<usage>total_tokens: 128807
+tool_uses: 15
+duration_ms: 53266</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/aab6cc8.output
+
+---
+
+<task-notification>
+<task-id>ab56297</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Hong Yi Chen bio" completed</summary>
+<result>Based on my research, I was unable to confirm that Hong Yi Chen is a judge at TreeHacks 2025. The TreeHacks 2025 judges list is not publicly available online. However, I found detailed information about Hong Yi Chen (the Growth & Product professional at Warp). Here is the JSON with the available information:
+
+```json
+{"name": "Hong Yi Chen", "role": "judge", "title": "Growth Product Manager", "organization": "Warp", "bio": "Hong Yi Chen is a Growth Product Manager at Warp building the Agentic Development Environment. A University of Waterloo Computer Science and Business alumnus, he has worked in product and engineering roles at Tesla, Uplift, and other companies, and previously helped organize Hack the North.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/hong-yi-chen/", "twitter_url": "https://x.com/hongyichen_", "website_url": "https://www.hongyichen.me/", "confidence": "low"}
+```
+
+Note: The confidence is "low" because I could not verify that this Hong Yi Chen is actually a TreeHacks 2025 judge—the official judges list for TreeHacks 2025 is not publicly available online. The information provided is based on the professional Hong Yi Chen at Warp.</result>
+<usage>total_tokens: 125824
+tool_uses: 15
+duration_ms: 51772</usage>
+</task-notification>
+Full transcript available at: REDACTED.output
+
+---
+
+<task-notification>
+<task-id>a4d34da</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Ojus Save bio" completed</summary>
+<result>Based on my research, I found that while Ojus Save is a prominent developer relations professional, I could not verify that he is actually a judge at TreeHacks 2025. The search results did not reveal a publicly available judges list for TreeHacks 2025, and no sources connected Ojus Save to being a judge at the event.
+
+Here's what I did confirm about Ojus Save:
+- **Current Title**: Lead Developer Advocate at Zoom Video Communications (formerly at Render)
+- **Organization**: Zoom
+- **Location**: San Jose/Santa Clara, CA
+- **Twitter/X**: @ojusave
+- **Website**: saveoj.us
+- **LinkedIn**: linkedin.com/in/ojus/
+
+However, since I cannot confirm he is actually a TreeHacks 2025 judge, here is the requested JSON:
+
+```json
+{"name": "Ojus Save", "role": "judge", "title": "Lead Developer Advocate", "organization": "Zoom", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/ojus/", "twitter_url": "https://x.com/ojusave", "website_url": "https://saveoj.us/", "confidence": "low"}
+```
+
+**Note**: I could not find evidence that Ojus Save is a judge at TreeHacks 2025. The official TreeHacks judges list does not appear to be publicly available. I recommend verifying this information directly with the TreeHacks organization or checking the official event website.</result>
+<usage>total_tokens: 125121
+tool_uses: 10
+duration_ms: 43866</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a4d34da.output
+
+---
+
+<task-notification>
+<task-id>a885599</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Jeff Gardner bio" completed</summary>
+<result>Based on my extensive search efforts, I was unable to find definitive confirmation that a "Jeff Gardner" is listed as a judge at TreeHacks 2025. While I found information about various Jeff Gardners in tech and business (particularly one at Cerbo, an Executive Chairman/Investor at SpringTime Ventures), I could not locate:
+
+1. A public judges list for TreeHacks 2025 that specifically names Jeff Gardner
+2. Confirmation that any of the Jeff Gardners I found is associated with judging TreeHacks 2025
+3. The specific details you requested (bio, organization, photo, LinkedIn, Twitter, website) that definitively connect Jeff Gardner to TreeHacks 2025
+
+Here is the JSON response with low confidence:
+
+```json
+{"name": "Jeff Gardner", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+The TreeHacks 2025 judges panel information does not appear to be publicly listed online, and I could not confirm Jeff Gardner's involvement with the event through available web sources.</result>
+<usage>total_tokens: 128103
+tool_uses: 16
+duration_ms: 61689</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a885599.output
+
+---
+
+<task-notification>
+<task-id>a228cc9</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Advait Maybhate bio" completed</summary>
+<result>Based on my research, I was able to find substantial information about Advait Maybhate, though I could not definitively confirm his role as a judge at TreeHacks 2025 specifically. Here's the JSON object with the information I found:
+
+```json
+{
+  "name": "Advait Maybhate",
+  "role": "judge",
+  "title": "Software Engineer",
+  "organization": "Warp",
+  "bio": "A rambunctious software engineer at Warp who loves building cool stuff. He has extensive hackathon experience as a hacker, organizer, mentor, and judge, with notable roles at Hack the North and as JAMHacks founder.",
+  "photo_url": "https://media.licdn.REDACTED",
+  "linkedin_url": "https://www.linkedin.com/in/advait-m/",
+  "twitter_url": "https://x.com/AdvaitMaybhate",
+  "website_url": "https://advai.tm/",
+  "confidence": "medium"
+}
+```
+
+**Note:** While I found extensive information about Advait Maybhate's background and confirmed he has experience judging hackathons, I could not directly access the TreeHacks 2025 judges list to definitively confirm his role as a judge for that specific event. The confidence is "medium" rather than "high" due to this limitation.</result>
+<usage>total_tokens: 125949
+tool_uses: 13
+duration_ms: 37868</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a228cc9.output
+
+---
+
+<task-notification>
+<task-id>ac20968</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Amanda Yiu bio" completed</summary>
+<result>Based on my extensive search, I was unable to find evidence that Amanda Yiu is a judge at TreeHacks 2025. The TreeHacks website and public records do not contain a published judges list with her name, and searches for "Amanda Yiu" combined with "TreeHacks" return no results connecting her to the event.
+
+```json
+{
+  "name": "Amanda Yiu",
+  "role": "judge",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note:** The search revealed that TreeHacks 2025 does not appear to have published a public judges list. While Amanda Yiu exists as a professional name (I found multiple people with this name working in tech, climate tech, and consulting), I could not verify any connection to TreeHacks 2025 specifically.</result>
+<usage>total_tokens: 123249
+tool_uses: 7
+duration_ms: 45717</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ac20968.output
+
+---
+
+<task-notification>
+<task-id>aeb0a4a</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Megan Ehrlich bio" completed</summary>
+<result>Based on my extensive search, I found that Megan Ehrlich is an Executive Assistant at Y Combinator. However, I could not find reliable evidence that she is specifically a judge at TreeHacks 2025. The TreeHacks 2025 judges list does not appear to be publicly available online, and no search results directly confirm her role as a TreeHacks judge.
+
+Here's what I could confirm about Megan Ehrlich:
+- Current role: Executive Assistant at Y Combinator
+- Past role: Server Engineer at Raya
+- Background: Former professional ballet dancer with San Francisco Ballet
+
+However, without confirmation that she is actually a judge at TreeHacks 2025, I cannot provide accurate information for all the requested fields.
+
+```json
+{
+  "name": "Megan Ehrlich",
+  "role": "judge",
+  "title": "Executive Assistant",
+  "organization": "Y Combinator",
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/meganehrlich/",
+  "twitter_url": null,
+  "website_url": "https://www.meganehrlich.com/",
+  "confidence": "low"
+}
+```
+
+The confidence is "low" because I could not verify that Megan Ehrlich is actually a judge at TreeHacks 2025—the judges list is not publicly available online.</result>
+<usage>total_tokens: 127869
+tool_uses: 13
+duration_ms: 51132</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/aeb0a4a.output
+
+---
+
+<task-notification>
+<task-id>a5151e8</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Max Forsey bio" completed</summary>
+<result>Based on my research, I have found information about Max Forsey. However, I was unable to locate a direct photo URL. Here is the JSON response with the information I was able to confirm:
+
+```json
+{"name": "Max Forsey", "role": "judge", "title": "Head of Developer Relations", "organization": "Runpod", "bio": "Max Forsey researches and builds AI tools to extend human capabilities. He is co-founder and CTO of Sameday AI, an AI-powered call answering platform for home service businesses. He holds a BS in Computer Science from Brigham Young University and has contributed to mechanistic interpretability research.", "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/max-forsey/", "twitter_url": "https://x.com/max_4c", "website_url": "https://www.maxforsey.com/", "confidence": "high"}
+```</result>
+<usage>total_tokens: 129692
+tool_uses: 20
+duration_ms: 72939</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a5151e8.output
+
+---
+
+<task-notification>
+<task-id>af7c220</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Ben TreeHacks judge" completed</summary>
+<result>Based on my extensive search attempts, I was unable to find specific information about a judge named "Ben" at TreeHacks 2025. The search results indicate that while TreeHacks 2025 had 300+ mentors and judges, and was supported by 40 sponsoring companies, individual judge names are not publicly listed on the available websites or search results.
+
+Here is the JSON response with the limited information available:
+
+```json
+{"name": "Ben", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 123291
+tool_uses: 6
+duration_ms: 32877</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af7c220.output
+
+---
+
+<task-notification>
+<task-id>abfbf13</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Marvin von Hagen bio" completed</summary>
+<result>Based on my extensive search, I cannot find confirmation that Marvin von Hagen was a judge at TreeHacks 2025. While I found comprehensive information about Marvin von Hagen himself, there is no public information linking him to being a judge at this event. The TreeHacks 2025 judges list does not appear to be publicly available online.
+
+Here's what I can provide based on verified information about Marvin von Hagen:
+
+```json
+{
+  "name": "Marvin von Hagen",
+  "role": "judge",
+  "title": "Co-Founder",
+  "organization": "The Interaction Company of California",
+  "bio": "Co-founder of The Interaction Company of California and founder of TUM Boring, which won Elon Musk's Not-a-Boring Competition. Forbes 30 Under 30 in AI (2026). Previously worked at Tesla and MIT Center for Collective Intelligence.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/marvinvonhagen/",
+  "twitter_url": "https://x.com/marvinvonhagen",
+  "website_url": "https://marvinvonhagen.com/",
+  "confidence": "low"
+}
+```
+
+**Note on confidence:** I set confidence to "low" because I could not verify that Marvin von Hagen was actually a judge at TreeHacks 2025. While the information about his professional background, LinkedIn, Twitter, and website are accurate, his role as a TreeHacks 2025 judge could not be confirmed through public sources.</result>
+<usage>total_tokens: 125970
+tool_uses: 12
+duration_ms: 43220</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/abfbf13.output
+
+---
+
+<task-notification>
+<task-id>a83940f</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Michi Vinocour bio" completed</summary>
+<result>Based on my research, I was unable to confirm that Michelle Vinocour (also known as "Michi Vinocour") was a judge at TreeHacks 2025. While I found extensive information about Michelle Vinocour - who is the Managing Director of Cardinal Ventures and a Stanford student/alumni - there is no publicly available information linking her to the TreeHacks 2025 judging panel.
+
+Here's what I can provide based on the information I found:
+
+```json
+{
+  "name": "Michelle Vinocour",
+  "role": "judge",
+  "title": "Managing Director",
+  "organization": "Cardinal Ventures",
+  "bio": "Michelle Vinocour is a Masters student at Stanford studying Management Science and Engineering and Symbolic Systems with a focus on Human-Centered AI. She serves as Managing Director of Cardinal Ventures, Stanford's premier student-run startup accelerator, and founded the Deeptech Fellowship which has helped multiple teams gain admission to YCombinator.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/michellevinocour/",
+  "twitter_url": "https://x.com/michivinocour",
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note on confidence level:** I set confidence to "low" because while I found substantial information about Michelle Vinocour as a prominent figure at Stanford and Cardinal Ventures, I could not independently verify that she was actually a judge at TreeHacks 2025. The TreeHacks 2025 judges list does not appear to be publicly available online. If you have a source confirming her role as a TreeHacks 2025 judge, I can search for additional details.</result>
+<usage>total_tokens: 124961
+tool_uses: 10
+duration_ms: 45126</usage>
+</task-notification>
+Full transcript available at: REDACTED.output
+
+---
+
+<task-notification>
+<task-id>a46ff0e</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Robin Lee bio" completed</summary>
+<result>Based on my extensive search, I was unable to find definitive public information confirming that "Robin Lee" is a judge at TreeHacks 2025. The TreeHacks website does not appear to publicly list all judges by name, and direct searches for "Robin Lee" + "TreeHacks 2025" did not return results connecting them.
+
+The most likely candidate based on venture capital background would be Robin Lee from Atalanta Ventures in Los Angeles, but I cannot confirm her involvement with TreeHacks 2025.
+
+Here is my response:
+
+```json
+{
+  "name": "Robin Lee",
+  "role": "judge",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note:** I was unable to find public information confirming Robin Lee's participation as a judge at TreeHacks 2025. TreeHacks 2025 does not appear to have published a detailed public list of judges by name on their official websites. Without additional context or a public source identifying this person, I cannot reliably provide the requested details. If you have access to the judges list or additional information, that would help narrow the search.</result>
+<usage>total_tokens: 131107
+tool_uses: 20
+duration_ms: 74490</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a46ff0e.output
+
+---
+
+<task-notification>
+<task-id>a9a4f58</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Brandon TreeHacks judge" completed</summary>
+<result>Based on my extensive search, I was unable to find specific information about a judge named "Brandon" at TreeHacks 2025. The search results show that TreeHacks 2025 had judges and mentors from major companies (NVIDIA, Meta, OpenAI, Walmart, Liquid AI, Tesla), but the individual names of judges, particularly someone named Brandon, are not publicly listed in accessible online sources.
+
+Here is the JSON response with available information:
+
+```json
+{"name": "Brandon", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 122732
+tool_uses: 7
+duration_ms: 38030</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a9a4f58.output
+
+---
+
+<task-notification>
+<task-id>a5f7f4c</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Martin Ceballos bio" completed</summary>
+<result>Based on my comprehensive search, I was unable to find a Martin Ceballos who is listed as a judge at TreeHacks 2025. The TreeHacks 2025 event featured 300+ mentors and judges from major companies (NVIDIA, Meta, OpenAI, Walmart, Liquid AI, Tesla), but a complete public judges roster with individual names does not appear to be available online.
+
+While I found several professionals named Martin Ceballos (including Martin Angel Ceballos at Fetch.ai as an intern, and various other professionals in different industries), none of them were identified in my search as being associated with TreeHacks 2025 as a judge.
+
+Here is the JSON response:
+
+```json
+{"name": "Martin Ceballos", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 125070
+tool_uses: 9
+duration_ms: 54779</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a5f7f4c.output
+
+---
+
+<task-notification>
+<task-id>a960fa2</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Jerry Yao bio" completed</summary>
+<result>Based on my research, I was able to confirm that Jerry Yao is associated with TreeHacks 2025 at Stanford through his LinkedIn profile (https://www.linkedin.com/in/mjyao/), but I was unable to access detailed information about his role, title, organization, bio, photo, Twitter, or personal website due to LinkedIn's access restrictions and limited public information available.
+
+Here is the JSON response based on what I could find:
+
+```json
+{"name": "Jerry Yao", "role": "organizer", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/mjyao/", "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+The confidence is set to "low" because while I confirmed Jerry Yao is associated with TreeHacks at Stanford through his LinkedIn profile, I could not retrieve sufficient details about his specific title, organization, bio, photo, or other social media profiles due to access limitations.</result>
+<usage>total_tokens: 125749
+tool_uses: 13
+duration_ms: 38366</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a960fa2.output
+
+---
+
+<task-notification>
+<task-id>a3cd3a8</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Matthew Yu bio" completed</summary>
+<result>Based on my extensive search, I was unable to find reliable information confirming Matthew Yu as a TreeHacks 2025 organizer or locate detailed biographical information about this specific person in connection with TreeHacks. The search results did not return any public profiles, bios, or social media accounts that definitively identify Matthew Yu as a TreeHacks organizer.
+
+```json
+{
+  "name": "Matthew Yu",
+  "role": "organizer",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```</result>
+<usage>total_tokens: 125230
+tool_uses: 11
+duration_ms: 36381</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a3cd3a8.output
+
+---
+
+<task-notification>
+<task-id>aa37bf8</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Michael Yu bio" completed</summary>
+<result>Based on my search, I found information about Michael Yu who is a Stanford student, but I could not confirm that he is an organizer of TreeHacks 2025. The search results show that Michael Yu was a participant/winner at TreeHacks 2025 (his "Miru" indoor navigation app won the Vespa AI Prize), but there is no evidence that he is an organizer of the event.
+
+The available information suggests:
+- Michael Yu is a Stanford student studying Physics & Computer Science
+- He was a hackathon participant at TreeHacks 2025, not an organizer
+- His LinkedIn is https://www.linkedin.com/in/michaelyu7/
+- His personal website is https://www.yumichael.com/
+
+Since I cannot confirm Michael Yu is actually a TreeHacks 2025 organizer (only that he was a participant), here is the JSON response with low confidence:
+
+```json
+{"name": "Michael Yu", "role": "organizer", "title": null, "organization": "Stanford University", "bio": null, "photo_url": null, "linkedin_url": "https://www.linkedin.com/in/michaelyu7/", "twitter_url": null, "website_url": "https://www.yumichael.com/", "confidence": "low"}
+```</result>
+<usage>total_tokens: 124375
+tool_uses: 8
+duration_ms: 37817</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/aa37bf8.output
+
+---
+
+<task-notification>
+<task-id>a51c20e</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Maxwell Spivakovsky bio" completed</summary>
+<result>Based on my comprehensive search, I cannot find reliable information confirming Maxwell Spivakovsky as an organizer at TreeHacks 2025. While I found:
+
+- A Maxwell Spivakovsky who is a Stanford student (class of '29) from Menlo Park
+- His Instagram handle @mspiv
+- His status as a U.S. Presidential Scholars Program candidate (January 2025)
+- A separate Maxwell Spivakovsky who is Senior Director at Galileo Financial Technologies
+
+I could not locate:
+- Confirmation of his specific role as a TreeHacks 2025 organizer
+- A bio specifically about his TreeHacks role
+- His LinkedIn profile URL for Maxwell Spivakovsky
+- A direct headshot/photo URL
+- His Twitter/X or personal website
+
+Here is the JSON response with the available information:
+
+```json
+{"name": "Maxwell Spivakovsky", "role": "organizer", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+The confidence is set to "low" because while I confirmed Maxwell Spivakovsky exists as a Stanford student, I could not verify his specific role as a TreeHacks 2025 organizer or find the requested biographical details and contact information.</result>
+<usage>total_tokens: 127008
+tool_uses: 14
+duration_ms: 51981</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a51c20e.output
+
+---
+
+<task-notification>
+<task-id>af83c1d</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Grace Wang bio" completed</summary>
+<result>Based on my research, I was unable to find confirmed information that Grace Wang is specifically an organizer at TreeHacks 2025. I found a Ph.D. student named Grace Wang (with personal site gragragrace.com) who studies Human-Centered AI and Art at Stanford, but there is no clear evidence linking her to TreeHacks organization.
+
+I did find a LinkedIn profile reference to "Grace Wang - TreeHacks" at linkedin.com/in/gliwang, but the actual profile content is not accessible through search results. Without being able to verify the specific Grace Wang you're asking about and confirm her role as a TreeHacks organizer, I cannot provide accurate information.
+
+```json
+{
+  "name": "Grace Wang",
+  "role": "organizer",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/gliwang",
+  "twitter_url": null,
+  "website_url": "https://gragragrace.com/",
+  "confidence": "low"
+}
+```
+
+Note: I found a Grace Wang who is a Ph.D. student in Computer Science at Stanford (gracewng@stanford.edu) researching Human-Centered AI and creativity, but I could not confirm her role as a TreeHacks 2025 organizer. The confidence is "low" because the information could not be verified.</result>
+<usage>total_tokens: 126675
+tool_uses: 15
+duration_ms: 63090</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af83c1d.output
+
+---
+
+<task-notification>
+<task-id>aff4ecb</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Madison Lea Ho bio" completed</summary>
+<result>Based on my extensive search, I was unable to find verified information confirming that Madison Lea Ho is an organizer at TreeHacks 2025. While I found detailed information about Madison Ho (a Stanford student majoring in CS/AI with significant achievements in squash and involvement in student organizations), there is no confirmation of her being listed as a TreeHacks 2025 organizer in any public sources.
+
+Here is what I found about Madison Ho:
+
+```json
+{
+  "name": "Madison Lea Ho",
+  "role": "organizer",
+  "title": null,
+  "organization": "Stanford University",
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/madison-ho/",
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```
+
+**Note on confidence:** Set to "low" because while Madison Ho is a Stanford student (CS/AI major with experience at Lux Capital, Stanford Management Group VP, Stanford Women in Investing CIO, and CSA All-American squash player), I could not verify her role as a TreeHacks 2025 organizer through public searches. The TreeHacks 2025 website and official sources do not list specific organizers publicly, and direct searches for her involvement with TreeHacks 2025 returned no results.</result>
+<usage>total_tokens: 129571
+tool_uses: 18
+duration_ms: 59589</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/aff4ecb.output
+
+---
+
+<task-notification>
+<task-id>ac78e0e</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Erin Shen bio" completed</summary>
+<result>Based on my comprehensive search, I was unable to find specific information about an "Erin Shen" who is listed as an organizer for TreeHacks 2025 at Stanford. Here's what I found:
+
+1. TreeHacks 2025 does exist as Stanford's premier hackathon held February 14-16, 2025
+2. While TreeHacks has an organizing team, the specific names of individual organizers are not publicly detailed on their website or in available search results
+3. Multiple people named "Erin Shen" exist online, including a Stanford University junior (Institute for Youth in Policy intern) and various professionals, but none explicitly identified as a TreeHacks 2025 organizer
+4. The TreeHacks LinkedIn company page lists 29 employees but does not provide individual names
+
+```json
+{
+  "name": "Erin Shen",
+  "role": "organizer",
+  "title": null,
+  "organization": null,
+  "bio": null,
+  "photo_url": null,
+  "linkedin_url": null,
+  "twitter_url": null,
+  "website_url": null,
+  "confidence": "low"
+}
+```</result>
+<usage>total_tokens: 129064
+tool_uses: 17
+duration_ms: 68293</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ac78e0e.output
+
+---
+
+<task-notification>
+<task-id>af17536</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Samyok Nepal bio" completed</summary>
+<result>Based on my research, I found information about Samyok Nepal, but I was unable to locate a TreeHacks 2025 judges list with a photo URL. Let me compile the information I have found:
+
+```json
+{
+  "name": "Samyok Nepal",
+  "role": "judge",
+  "title": "Software Engineer",
+  "organization": "Interaction",
+  "bio": "Software engineer focused on building AI products with real-world impact. Recognized as one of MLH's Top 50 hackers globally in 2023, Samyok has won over 20 hackathons and leads mentorship initiatives through Code the Gap and curriculum development at Art of Problem Solving.",
+  "photo_url": null,
+  "linkedin_url": "https://www.linkedin.com/in/samyok/",
+  "twitter_url": "https://x.com/nepalsamyok",
+  "website_url": "https://yok.dev",
+  "confidence": "medium"
+}
+```
+
+**Note on confidence level:** I confirmed Samyok Nepal is a judge at TreeHacks 2025 via the TreeHacks 2025 website, verified his current role as Software Engineer at Interaction in Palo Alto, found his LinkedIn, Twitter/X, and personal website URLs. However, I could not locate a direct headshot photo URL despite checking multiple sources including GitHub, his personal portfolio, and MLH's profile. His graduation year listed on MLH was 2025, which may need updating. The confidence is "medium" rather than "high" due to the missing photo URL and inability to fully verify all current details.</result>
+<usage>total_tokens: 130403
+tool_uses: 23
+duration_ms: 88904</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af17536.output
+
+---
+
+<task-notification>
+<task-id>a5f5500</task-id>
+<status>completed</status>
+<summary>Agent "Scrape remaining 5 organizers" completed</summary>
+<result>Based on my research, I was unable to find definitive confirmation that all five people listed are organizers of TreeHacks 2025. The web searches revealed information about some of these individuals associated with Stanford and technology/entrepreneurship work, but TreeHacks 2025's organizing team information is not publicly available in the search results. Here is the JSON with the information I was able to gather:
+
+```json
+[
+  {
+    "name": "Sahana Mantha",
+    "role": "organizer",
+    "title": "Founder & CEO",
+    "organization": "Foundation For Girls",
+    "bio": "Stanford '29 student from Charlotte, North Carolina who co-founded Foundation For Girls with her sister to support homeless single mothers. She was recognized as a USGA-AJGA Presidents' Leadership Award Winner and Cameron Impact Scholar Finalist.",
+    "photo_url": null,
+    "linkedin_url": "https://www.linkedin.com/in/sahanamantha/",
+    "twitter_url": "https://x.com/sahana_mantha",
+    "website_url": null,
+    "confidence": "medium"
+  },
+  {
+    "name": "Shrish Premkrishna",
+    "role": "organizer",
+    "title": "Full Stack AI Engineer",
+    "organization": "Stanford University / GravitechX",
+    "bio": "CS/AI student at Stanford who is Co-Team Lead at GravitechX and Founder of Livermore High School's AI Club. Passionate about creating impact in education, tech, and startups, and leading environmental initiatives in the Tri-Valley using drones and satellite data.",
+    "photo_url": null,
+    "linkedin_url": "https://www.linkedin.com/in/shrishp/",
+    "twitter_url": null,
+    "website_url": "https://shrish.io/",
+    "confidence": "medium"
+  },
+  {
+    "name": "Thryambak Ganapathy",
+    "role": "organizer",
+    "title": "Undergraduate Student",
+    "organization": "Stanford University",
+    "bio": "Incoming Stanford freshman from Fremont, California planning to study computer science and biology. Passionate about neuroscience and innovating interventions for neurodivergence spectrum disorders, with experience in ADHD digital therapeutics and accessibility features.",
+    "photo_url": null,
+    "linkedin_url": "https://www.linkedin.com/in/thryambak-ganapathy/",
+    "twitter_url": null,
+    "website_url": null,
+    "confidence": "low"
+  },
+  {
+    "name": "Toryn Thompson",
+    "role": "organizer",
+    "title": "Full-Stack & ML Engineer",
+    "organization": "SV Angel / Stanford",
+    "bio": "Stanford class of 2030 member who was named to the Forbes 30 Under 30 List. Proficient in full-stack engineering, UI/UX design, and has mentored at TreeHacks 2026. Passionate about building technology solutions.",
+    "photo_url": null,
+    "linkedin_url": "https://www.linkedin.com/in/torynt/",
+    "twitter_url": null,
+    "website_url": "http://www.torynthompson.com/",
+    "confidence": "medium"
+  },
+  {
+    "name": "Tyler Rubenstein",
+    "role": "organizer",
+    "title": null,
+    "organization": null,
+    "bio": null,
+    "photo_url": null,
+    "linkedin_url": "https://www.linkedin.com/in/tyler-rubenstein-a585452b3",
+    "twitter_url": null,
+    "website_url": null,
+    "confidence": "low"
+  }
+]
+```</result>
+<usage>total_tokens: 136345
+tool_uses: 22
+duration_ms: 51304</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a5f5500.output
+
+---
+
+<task-notification>
+<task-id>ac736b7</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Oliver Sin bio" completed</summary>
+<result>Based on my extensive search efforts, I was unable to find any information about a person named "Oliver Sin" who is listed as an organizer for TreeHacks 2025 at Stanford. My searches included:
+
+1. Direct searches for "Oliver Sin TreeHacks"
+2. Searches on LinkedIn for Oliver Sin with Stanford connections
+3. Review of TreeHacks' official website, social media accounts, and LinkedIn company page
+4. Searches for TreeHacks 2025 organizer lists and committee members
+
+The only "Oliver Sin" results I found were for artists and illustrators based in the UK and USA, with no connection to Stanford or TreeHacks.
+
+Here is the JSON response:
+
+```json
+{"name": "Oliver Sin", "role": "organizer", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```
+
+The confidence is set to "low" because despite comprehensive searching, I could not find any publicly available information confirming that Oliver Sin is a TreeHacks 2025 organizer at Stanford. The person may exist in this role but may not have a strong public online presence, or the name/role combination may be incorrect.</result>
+<usage>total_tokens: 128623
+tool_uses: 16
+duration_ms: 59744</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ac736b7.output
+
+---
+
+<task-notification>
+<task-id>af888bd</task-id>
+<status>completed</status>
+<summary>Agent "Scrape Dj Isaac bio" completed</summary>
+<result>Based on my extensive search, I was unable to find a specific person named "Dj Isaac" who is documented as a judge at TreeHacks 2025. The search results did not return any credible match for this person in that specific role. The only potentially relevant person I found was Isaac Madan, who is a Stanford alumnus and has served as a judge at TreeHacks previously, but his name is not "Dj Isaac."
+
+Here is the JSON response with low confidence:
+
+```json
+{"name": "Dj Isaac", "role": "judge", "title": null, "organization": null, "bio": null, "photo_url": null, "linkedin_url": null, "twitter_url": null, "website_url": null, "confidence": "low"}
+```</result>
+<usage>total_tokens: 127243
+tool_uses: 13
+duration_ms: 84510</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af888bd.output
+
+---
+
+sooo we ran out of context on half of them, is there still a way to grab their data and put it in?
+
+---
+
+<local-command-stderr>Error: Error during compaction: Error: Conversation too long. Press esc twice to go up a few messages and try again.</local-command-stderr>
+
+---
+
+You Just Implemented the following plan:
+
+# Plan: Judge Database & Web Scraper
+
+## Context
+
+We're building a judge/organizer directory for the Mirrorless hackathon project (TreeHacks). The goal is to scrape biographical data and a photo for ~50 judges and organizers from the web, store it in Neon Postgres, and expose it via REST endpoints. This data can be used on the mirror display or phone UI to show who's judging.
+
+## New Files to Create
+
+| File | Purpose |
+|------|---------|
+| `backend/migrations/004_create_judges.sql` | Database migration |
+| `backend/judges/__init__.py` | Module init |
+| `backend/judges/db.py` | Database CRUD operations |
+| `backend/judges/scraper.py` | Serper search + Claude extraction |
+| `backend/judges/routes.py` | FastAPI endpoints + Pydantic models |
+
+## Existing Files to Modify
+
+| File | Change |
+|------|--------|
+| `backend/main.py` | Add `from judges.routes import router as judges_router` and `app.include_router(judges_router)` |
+
+## Step 1: Database Migration (`004_create_judges.sql`)
+
+```sql
+CREATE TABLE judges (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name          text NOT NULL,
+  role          text NOT NULL DEFAULT 'judge'
+                  CHECK (role IN ('judge', 'organizer')),
+  title         text,              -- "CEO", "Software Engineer", etc.
+  organization  text,              -- "Google", "Stanford", etc.
+  bio           text,              -- 2-3 sentence bio
+  photo_url     text,              -- URL to best headshot found
+  linkedin_url  text,
+  twitter_url   text,
+  website_url   text,
+  source_urls   jsonb DEFAULT '[]',  -- URLs where data was found
+  scrape_status text NOT NULL DEFAULT 'pending'
+                  CHECK (scrape_status IN ('pending', 'scraped', 'failed', 'manual')),
+  scrape_error  text,
+  scraped_at    timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_judges_name_role ON judges(lower(name), role);
+CREATE INDEX idx_judges_role ON judges(role);
+CREATE INDEX idx_judges_scrape_status ON judges(scrape_status);
+```
+
+## Step 2: Database Operations (`judges/db.py`)
+
+Follow the pattern from `backend/scraper/db.py` — each function takes a `db` (NeonHTTPClient) parameter with `$1, $2` parameterized queries.
+
+Functions:
+- **`seed_judges(db, judges_list)`** — Bulk insert names with `ON CONFLICT DO NOTHING` (idempotent)
+- **`get_pending_judges(db)`** — Fetch judges with `scrape_status = 'pending'`
+- **`update_judge_data(db, judge_id, data)`** — Update with scraped data, set status to `'scraped'`
+- **`mark_judge_failed(db, judge_id, error)`** — Set status to `'failed'` with error message
+- **`get_all_judges(db, role=None)`** — List all, optionally filtered by role
+- **`get_judge_by_id(db, judge_id)`** — Single lookup by UUID
+- **`manual_update_judge(db, judge_id, updates)`** — For PUT endpoint, sets status to `'manual'`
+
+## Step 3: Web Scraper (`judges/scraper.py`)
+
+### Hardcoded Judge List
+The full list of 50+ names with their roles embedded as a constant `JUDGES_LIST`.
+
+### Scraping Pipeline (per judge)
+
+1. **Serper Web Search** → `POST https://google.serper.dev/search`
+   - Query: `"{name}" TreeHacks Stanford 2025 judge` (or `organizer`)
+   - For ambiguous names ("Ben", "Brandon"): `"{name}" TreeHacks 2025`
+   - Returns top 5 organic results (title, snippet, link)
+
+2. **Serper Image Search** → `POST https://google.serper.dev/images`
+   - Query: `"{name}" TreeHacks headshot`
+   - Returns top 5 image results (imageUrl, title)
+
+3. **Claude Haiku Extraction** — same pattern as `purchase_parser.py:_extract_with_llm`
+   - Feed web + image results into a prompt
+   - Ask for JSON: `{title, organization, bio, best_photo_url, linkedin_url, twitter_url, website_url, confidence, source_urls}`
+   - `max_tokens=512`, model `claude-haiku-4-5-20251001`
+
+### Rate Limiting
+- `asyncio.Semaphore(2)` for concurrent Serper calls
+- 1-second sleep between batches of 3 judges
+- ~100 Serper calls total (well within 2,500/month free tier)
+- ~$0.02 total Claude API cost
+
+### Ambiguous Name Handling
+Names with no last name ("Ben", "Brandon", "Dj Isaac") get:
+- "TreeHacks" appended to the name as context (e.g., `"Ben TreeHacks"`)
+- Same search pipeline as other judges, just with this extra qualifier
+- Claude returns `confidence: "low"` if results are still unclear
+- Low-confidence entries stored with note in `scrape_error` for manual review
+
+## Step 4: API Routes (`judges/routes.py`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/judges/scrape` | Trigger scraping (background task via `asyncio.create_task`) |
+| GET | `/judges/status` | Scrape progress: `{total, pending, scraped, failed}` |
+| GET | `/judges` | List all judges (optional `?role=judge\|organizer` filter) |
+| GET | `/judges/{judge_id}` | Single judge by UUID |
+| PUT | `/judges/{judge_id}` | Manual update/correction |
+
+**Note:** `/judges/status` must be defined before `/judges/{judge_id}` in the router to avoid FastAPI treating "status" as a UUID.
+
+### Pydantic Models (inline in routes.py, same pattern as `scraper/routes.py`)
+- `ScrapeJudgesRequest` — optional `names: list[str]`, `retry_failed: bool`
+- `JudgeUpdateRequest` — all optional fields for manual edits
+- `JudgeResponse` — full judge record
+
+## Step 5: Register Router in `main.py`
+
+Add two lines to `backend/main.py`:
+```python
+from judges.routes import router as judges_router
+app.include_router(judges_router)
+```
+
+## Step 6: Run Migration
+
+Execute `004_create_judges.sql` against Neon via the Neon MCP `run_sql` tool.
+
+## Implementation Order
+
+1. Migration file → run it
+2. `judges/__init__.py`
+3. `judges/db.py`
+4. `judges/scraper.py` (largest file, ~200 lines)
+5. `judges/routes.py`
+6. `main.py` router registration
+7. Test: `POST /judges/scrape` → poll `GET /judges/status` → `GET /judges`
+
+## Verification
+
+1. Run the migration against Neon
+2. Start the backend: `uvicorn main:app --reload`
+3. `POST /judges/scrape` — triggers background scraping
+4. `GET /judges/status` — monitor progress
+5. `GET /judges` — verify scraped data and photos
+6. `GET /judges?role=organizer` — verify role filtering
+7. `PUT /judges/{id}` — test manual correction for low-confidence entries
+
+
+You scraped all the judges but ran out of context to reap ur subagents. Can you see if you can still get them?
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+wait we wanted YOU (claude code) to scrape. But you were spawning subagents and running out of context. You are a better scraper and u save me api costs
+
+---
+
+keep trying on the ones that aren't filled that are possible to scrape ... using claude code (YOU) not anything we've written
+
+---
+
+can you search up some of the images yourself
+
+---
+
+yes
+
+---
+
+maybe use claude in chrome to screenshot even /chrome

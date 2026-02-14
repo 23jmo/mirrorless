@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "b034eba8b6c5",
+  "session_id": "c32d2a8d-f9be-4d43-916d-993f343efd80",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T12:12:37.994298Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/judges/__init__.py",
+    "backend/judges/db.py",
+    "backend/judges/routes.py",
+    "backend/judges/scraper.py",
+    "backend/main.py",
+    "backend/migrations/005_create_judges.sql",
+    "backend/migrations/006_create_demo_user.sql"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "5c5f725c-e980-4220-891b-00661fae821c",
+  "token_usage": {
+    "input_tokens": 7511,
+    "cache_creation_tokens": 663663,
+    "cache_read_tokens": 8911940,
+    "output_tokens": 27305,
+    "api_call_count": 166
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T12:12:37.729387Z",
+    "agent_lines": 0,
+    "human_added": 517,
+    "human_modified": 611,
+    "human_removed": 0,
+    "total_committed": 663,
+    "agent_percentage": 0
+  }
+}
