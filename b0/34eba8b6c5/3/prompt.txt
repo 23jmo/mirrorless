@@ -1,0 +1,253 @@
+Implement the following plan:
+
+# Plan: Fix All Audit Issues — Orchestrator Hardening + Scraper Fix
+
+## Context
+
+A comprehensive audit of the Mira AI agent revealed 14 issues across the orchestrator, prompt engineering, data pipeline, and Socket.io layer. This plan addresses all of them. The scraper fix will be delegated to a separate parallel agent since it touches a different part of the codebase.
+
+---
+
+## Part A: Orchestrator Fixes (main agent)
+
+### A1. Enforce API call limit — `backend/agent/orchestrator.py`
+
+**Problem:** `SOFT_API_LIMIT = 20` (line 34) is defined but never checked. `_call_claude` ↔ `_handle_tool_calls` can recurse infinitely.
+
+**Fix:** Add a guard at the top of `_call_claude()` (line 184):
+```python
+if session.api_calls >= SOFT_API_LIMIT:
+    print(f"[mira] API limit reached for {session.user_id}")
+    return
+```
+
+### A2. Concurrency guard — `backend/agent/orchestrator.py`
+
+**Problem:** Silence timer fires during active Claude calls, causing parallel mutations to `conversation_history`.
+
+**Fix:**
+- Add `is_processing: bool = False` field to `SessionState` (line 51 area)
+- Set `is_processing = True` at top of `handle_event()` (line 137), reset to `False` at end
+- In `_silence_callback()` (line 403), check `session.is_processing` before calling `handle_event()`
+- Wrap `handle_event` body in try/finally to always reset the flag
+
+### A3. Error handling in `_call_claude` — `backend/agent/orchestrator.py`
+
+**Problem:** No try/except around Claude API call (line 192). Failures leave conversation history in invalid state.
+
+**Fix:** Wrap the streaming block in try/except. On failure, pop the last user message from history to keep it consistent, log the error.
+
+### A4. Error handling in `_handle_tool_calls` — `backend/agent/orchestrator.py`
+
+**Problem:** `execute_tool()` can raise (Serper `raise_for_status` at `tools.py:112`). Inconsistent with `search_gmail` which catches internally.
+
+**Fix:** Wrap `execute_tool()` call in try/except inside `_handle_tool_calls()`. On failure, return an error dict as the tool result so Claude can handle it gracefully.
+
+### A5. Wrap `_generate_summary` in try/except — `backend/agent/orchestrator.py`
+
+**Problem:** `_generate_summary()` at line 281 is outside the try/except. Claude API failure prevents session cleanup.
+
+**Fix:** Wrap in try/except, fall back to a generic summary string like `"Session ended before summary could be generated."`.
+
+### A6. Disconnect cleanup + sid-to-user mapping — `backend/main.py`
+
+**Problem:** Disconnect handler (line 51) does nothing. Orphaned sessions accumulate.
+
+**Fix:**
+- Add `_sid_to_user: dict[str, str] = {}` at module level
+- In `join_room`, store the mapping: `_sid_to_user[sid] = user_id`
+- In `disconnect`, look up `user_id = _sid_to_user.pop(sid, None)`, then call `mira.end_session(user_id)` if there's an active session
+- Also add try/except around `mirror_event` handler (line 84-90)
+
+### A7. Fix CORS mismatch — `backend/main.py`
+
+**Problem:** `cors_allowed_origins=[]` on Socket.io server (line 12) rejects WebSocket upgrades in production.
+
+**Fix:** Change to `cors_allowed_origins="*"` (or pass the frontend URL from env).
+
+### A8. Session deduplication — `backend/agent/orchestrator.py`
+
+**Problem:** Double `start_session` call orphans the first session's timers.
+
+**Fix:** At top of `start_session()`, check if `user_id` already has an active session. If so, end it first:
+```python
+if user_id in self.sessions:
+    await self.end_session(user_id)
+```
+
+---
+
+## Part B: Prompt & Memory Fixes (main agent)
+
+### B1. Empty purchase history fallback — `backend/agent/prompts.py`
+
+**Problem:** If `_filter_fashion_purchases()` returns empty, Mira's opening (roast a specific purchase) has no data.
+
+**Fix:** After the `## Recent Purchases` section in `build_system_prompt`, if `filtered_purchases` is empty, add:
+```
+## Recent Purchases
+No purchase history available. Skip the purchase roast — instead, open by commenting on what you can see (their outfit, their vibe) and ask about their style preferences directly.
+```
+
+### B2. Include liked items from past sessions — `backend/agent/prompts.py` + `memory.py`
+
+**Problem:** `load_past_sessions` returns full `outfit_data` dicts (which include `liked_items`), but `build_system_prompt` only uses `summary`.
+
+**Fix:** In `build_system_prompt`, also extract `liked_items` from each past session dict:
+```python
+for session in session_history[-3:]:
+    parts.append(f"- {session.get('summary', 'No summary')}")
+    liked = session.get("liked_items", [])
+    if liked:
+        names = [item.get("title", "?") for item in liked[:3]]
+        parts.append(f"  Liked: {', '.join(names)}")
+```
+
+### B3. Remove silence double-prompting — `backend/agent/prompts.py`
+
+**Problem:** Personality says "be proactive if silent" AND the silence event sends an explicit command.
+
+**Fix:** Remove the proactive silence instruction from `MIRA_PERSONALITY` line 14 (the silence timer event in `_event_to_message` already handles this at line 381-383).
+
+### B4. Increase purchase fetch limit — `backend/agent/memory.py`
+
+**Problem:** DB fetches 30 purchases, prompt filter discards many, leaving fewer than 20 fashion items.
+
+**Fix:** Change `LIMIT 30` to `LIMIT 50` in `load_user_purchases` (line 102) to provide more buffer for the filter.
+
+---
+
+## Part C: DB Query Optimization (main agent)
+
+### C1. Parallelize session-start DB calls — `backend/agent/orchestrator.py`
+
+**Problem:** 5 sequential HTTP round trips to Neon at session start.
+
+**Fix:** Use `asyncio.gather()`:
+```python
+profile, purchases, past_sessions, oauth_token = await asyncio.gather(
+    load_user_profile(db, user_id),
+    load_user_purchases(db, user_id),
+    load_past_sessions(db, user_id),
+    get_user_oauth_token(db, user_id),
+)
+```
+
+### C2. Merge profile queries into JOIN — `backend/agent/memory.py`
+
+**Problem:** `load_user_profile` makes 2 sequential HTTP calls (users + style_profiles).
+
+**Fix:** Merge into one query:
+```sql
+SELECT u.id, u.name, u.email,
+       sp.brands, sp.price_range, sp.style_tags, sp.size_info, sp.narrative_summary
+FROM users u
+LEFT JOIN style_profiles sp ON sp.user_id = u.id
+WHERE u.id = $1
+```
+
+---
+
+## Part D: Tool Hardening (main agent)
+
+### D1. Add try/except to `_search_clothing` — `backend/agent/tools.py`
+
+**Problem:** `response.raise_for_status()` at line 112 crashes the tool loop.
+
+**Fix:** Wrap in try/except like `_search_gmail` already does:
+```python
+try:
+    async with httpx.AsyncClient() as client:
+        ...
+except Exception as e:
+    return {"error": f"Shopping search failed: {str(e)}", "results": []}
+```
+
+---
+
+## Part E: Scraper Fix (separate parallel agent)
+
+The scraper agent will fix the root causes of noisy purchase data in `backend/scraper/purchase_parser.py`:
+
+1. **Tighten `_is_receipt()`**: Change from OR to AND logic — require BOTH sender match AND subject keyword match. Remove `"noreply@"` from `RECEIPT_SENDERS`.
+2. **Fix subject-line fallback**: Require a price to be present before storing a subject as an item. Reject items where `item_name` has no fashion-related keywords.
+3. **Fix `_categorize_item()`**: Add exclusion keywords so "short selling" doesn't become "bottoms" and "top picks" doesn't become "tops".
+4. **Rebuild style profiles**: After fixing the parser, apply `_filter_fashion_purchases` logic at the `profile_builder.py` level too, so `build_style_profile()` only considers fashion items for brands/price_range.
+
+---
+
+## Files Summary
+
+| File | Changes |
+|------|---------|
+| `backend/agent/orchestrator.py` | A1 (API limit), A2 (concurrency guard), A3 (Claude error handling), A4 (tool error handling), A5 (summary error handling), A8 (dedup), C1 (parallel DB) |
+| `backend/main.py` | A6 (disconnect cleanup + sid mapping), A7 (CORS fix), add try/except to mirror_event |
+| `backend/agent/prompts.py` | B1 (empty purchase fallback), B2 (liked items from past sessions), B3 (remove silence double-prompt) |
+| `backend/agent/memory.py` | B4 (increase LIMIT to 50), C2 (merge profile into JOIN query) |
+| `backend/agent/tools.py` | D1 (try/except on search_clothing) |
+| `backend/scraper/purchase_parser.py` | E1-E3 (separate agent: receipt gate, subject fallback, categorizer) |
+| `backend/scraper/profile_builder.py` | E4 (separate agent: filter before profile build) |
+
+## Verification
+
+1. Start backend + frontend, open `/chat`
+2. Start session — verify no crashes, Mira responds
+3. Send multiple messages rapidly — verify silence timer doesn't cause duplicate responses
+4. Check debug system prompt — verify empty purchase fallback text appears for users without fashion purchases
+5. Disconnect client mid-session — verify session is cleaned up (check server logs)
+6. Test with demo user (no purchases) — verify Mira gracefully handles missing data
+7. After scraper fix: re-scrape a user, verify `purchases` table has cleaner data
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+<task-notification>
+<task-id>ab734ea</task-id>
+<status>completed</status>
+<summary>Agent "Fix scraper purchase_parser + profile_builder" completed</summary>
+<result>All four edits are complete and verified. Here is a summary of what was changed:
+
+---
+
+## File 1: `/Users/johnathanmo/mirrorless/backend/scraper/purchase_parser.py`
+
+**E1 -- Tightened `_is_receipt()` (lines 85-92):**
+- Changed the return logic from `sender_match or subject_match` to `sender_match and subject_match`, requiring BOTH a known receipt sender AND a receipt keyword in the subject line.
+- Updated the docstring to reflect the AND logic.
+- Removed `"noreply@"` from the `RECEIPT_SENDERS` list (was line 48), since it is too generic and would match any noreply sender.
+
+**E2 -- Fixed subject-line fallback (lines 281-312):**
+- The `else` branch in `extract_purchases` now requires both a price (`price is not None`) and a fashion keyword signal before storing a subject-line-derived purchase.
+- Added a `_fashion_signals` tuple containing 30 fashion-related terms (shirt, tee, shoe, sneaker, jean, etc.).
+- Changed the guard from `if item_name:` to `if item_name and price is not None and has_fashion_signal:`.
+
+**E3 -- Fixed `_categorize_item()` (lines 173-198):**
+- Added an `exclusions` list of false-positive phrases (e.g., "short selling", "top picks", "boot camp", "dust jacket") that should not be categorized as fashion items.
+- If any exclusion phrase is found in the item name, the function returns `None` early before checking fashion categories.
+
+## File 2: `/Users/johnathanmo/mirrorless/backend/scraper/profile_builder.py`
+
+**E4 -- Filter fashion purchases before profile build (lines 5, 35-36):**
+- Added `from agent.prompts import _filter_fashion_purchases` import at the top.
+- Added `purchases = _filter_fashion_purchases(purchases)` as the first operation inside `build_style_profile()`, before the empty-check guard, so non-fashion items are stripped before any profile aggregation happens.</result>
+<usage>total_tokens: 30633
+tool_uses: 11
+duration_ms: 65834</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ab734ea.output
+
+---
+
+my frontend is saying "disconnected" even tho im running the backend. I'm getting this;  127.0.0.1:51360 - "GET /socket.io/?EIO=4&transport=polling&t=9bgxu3kp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51360 - "GET /socket.io/?EIO=4&transport=polling&t=9bhya7ml HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51360 - "GET /socket.io/?EIO=4&transport=polling&t=9biefu1q HTTP/1.1" 200 OK
+
+---
+
+i don't think we feed mira enough recent purchases - how does poke do it to let their agent see and reference across a ton of stuff?
+
+---
+
+[Request interrupted by user for tool use]
