@@ -71,6 +71,14 @@ def _extract_body(payload: dict) -> str:
     """
     plain = _find_mime_part(payload, "text/plain")
     if plain:
+        stripped = plain.lstrip()
+        if stripped.startswith(("<!doctype", "<html", "<HTML")):
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(plain, "html.parser")
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+            return soup.get_text(separator="\n", strip=True)
         return plain
 
     html = _find_mime_part(payload, "text/html")

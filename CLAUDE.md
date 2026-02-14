@@ -9,6 +9,7 @@ Mirrorless is an AI-powered smart mirror (hackathon project). Users onboard via 
 ## Build & Run Commands
 
 ### Frontend (Next.js 15 + React 19 + TypeScript)
+
 ```bash
 cd frontend
 npm install
@@ -20,6 +21,7 @@ npm run test:watch   # Vitest (watch mode)
 ```
 
 ### Backend (Python 3.11+ / FastAPI)
+
 ```bash
 cd backend
 pip install -r requirements.txt
@@ -30,6 +32,7 @@ pytest tests/test_auth.py::test_upsert_creates_new_user  # Single test
 ```
 
 ### Deploy
+
 ```bash
 vercel --prod          # Frontend to Vercel
 # Backend deploys via Render dashboard
@@ -43,6 +46,7 @@ vercel --prod          # Frontend to Vercel
 - **Real-time**: Socket.io connecting mirror display, phone, and backend
 
 ### Data flow
+
 ```
 Phone → POST /auth/google → Backend exchanges code with Google → upserts user in Neon
 Phone → POST /queue/join → Backend assigns position → Phone polls GET /queue/status every 5s
@@ -50,11 +54,12 @@ Mirror → MediaPipe (pose+gestures) → Socket.io → Backend → Claude API �
 ```
 
 ### Database access pattern
+
 Backend uses `NeonHTTPClient` (in `models/database.py`) — a thin wrapper around Neon's serverless HTTP API on port 443. Each endpoint creates a client, uses it, closes it. Production alternative: asyncpg pool (port 5432 + SSL). All queries use `$1, $2` parameterized placeholders.
 
 ## Key Technical Decisions
 
-- **AI Agent**: Custom event-driven orchestrator in `backend/agent/orchestrator.py` calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude Haiku 4.5.
+- **AI Agent**: Custom event-driven orchestrator in `backend/agent/orchestrator.py` calling Claude API directly (NOT Claude Agents SDK). Split-model routing: Sonnet 4.5 (400 max_tokens) for conversational turns, Haiku 4.5 (1024 max_tokens) for tool-result processing. All calls use OAuth token auth (`ANTHROPIC_AUTH_TOKEN` + `anthropic-beta: oauth-2025-04-20` header). Three-layer loop protection: tool-depth circuit breaker (max 3 rounds), `is_error` on failed tool results, global API call limit (20/session).
 - **Google OAuth**: Authorization code flow via `google.accounts.oauth2.initCodeClient` with `"postmessage"` redirect URI. Scopes include `gmail.readonly` and `calendar.readonly` for scraping.
 - **No JWT/sessions**: `user_id` (UUID) is the session identifier, stored in React state.
 - **Gesture detection**: MediaPipe Hands in browser → `gesture-classifier.ts` (swipe detection via 5-point wrist tracking window, 800ms cooldown, 0.6 confidence threshold)
@@ -64,23 +69,25 @@ Backend uses `NeonHTTPClient` (in `models/database.py`) — a thin wrapper aroun
 
 ## API Endpoints (Backend)
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/auth/google` | Exchange Google OAuth code → upsert user |
-| POST | `/auth/profile` | Update user name + phone |
-| POST | `/queue/join` | Idempotent queue join, returns position |
-| GET | `/queue/status/{user_id}` | Poll queue position + total_ahead |
-| GET | `/users/{user_id}` | Fetch user profile |
-| GET | `/health` | Health check |
+| Method | Path                      | Purpose                                  |
+| ------ | ------------------------- | ---------------------------------------- |
+| POST   | `/auth/google`            | Exchange Google OAuth code → upsert user |
+| POST   | `/auth/profile`           | Update user name + phone                 |
+| POST   | `/queue/join`             | Idempotent queue join, returns position  |
+| GET    | `/queue/status/{user_id}` | Poll queue position + total_ahead        |
+| GET    | `/users/{user_id}`        | Fetch user profile                       |
+| GET    | `/health`                 | Health check                             |
 
 ## Environment Variables
 
 ### Frontend `.env.local`
+
 - `NEXT_PUBLIC_API_URL` — Backend REST URL (e.g. `http://localhost:8000`)
 - `NEXT_PUBLIC_SOCKET_URL` — Backend WebSocket URL
 - `NEXT_PUBLIC_GOOGLE_CLIENT_ID` — Google OAuth client ID
 
 ### Backend `.env`
+
 - `DATABASE_URL` — Neon Postgres connection string
 - `ANTHROPIC_API_KEY` — Claude API key (for future non-Haiku models)
 - `ANTHROPIC_AUTH_TOKEN` — OAuth token for Haiku calls (via `claude setup-token`)
@@ -88,6 +95,19 @@ Backend uses `NeonHTTPClient` (in `models/database.py`) — a thin wrapper aroun
 - `SERPER_API_KEY` — Serper.dev shopping API key
 - `DEEPGRAM_API_KEY` — Deepgram STT key
 - `HEYGEN_API_KEY` — HeyGen avatar API key
+
+### Agent Architecture (Mira)
+
+The Mira agent lives in `backend/agent/` with four key files:
+
+- **`orchestrator.py`** — Event-driven loop: receives events → builds messages → calls Claude → streams speech → handles tools. Split-model routing: Sonnet 4.5 for speech (quality), Haiku 4.5 for tool processing (speed, 1024 max_tokens). Auto-snapshot emitted at session start. Loop protection: tool-call depth limit of 3 rounds, `is_error` flag on failed tool results, and `SOFT_API_LIMIT` of 20 calls per session.
+- **`prompts.py`** — Personality, scripted opener (Turn 1: purchase roast, Turn 2: outfit check, Turn 3+: freeform), and tool usage docs. `build_system_prompt()` injects user data.
+- **`tools.py`** — Four tools: `search_clothing` (Serper API, results go to Claude ONLY), `present_items` (curated picks → frontend via Socket.io), `search_purchases` (DB query), `search_gmail` (Gmail API).
+- **`memory.py`** — Load/save user profiles, purchases, session summaries from Neon.
+
+**Two-step recommendation flow**: `search_clothing` (12 results → Claude only) → Claude picks best 1-5 → `present_items` (curated picks → mirror display). This prevents search flooding.
+
+**CLI test harness**: `cd backend && python -m agent.test_harness --mock` for fast iteration without frontend. Supports gesture shortcuts (`/like`, `/dislike`, `/left`, `/right`) and scripted sessions (`--script FILE`).
 
 ## Conventions
 

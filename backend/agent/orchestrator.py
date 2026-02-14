@@ -29,7 +29,8 @@ from models.database import NeonHTTPClient
 
 load_dotenv()
 
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+SONNET_MODEL = "claude-sonnet-4-5-20250929"
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SILENCE_TIMEOUT_SECONDS = 5
 EVENT_BATCH_WINDOW_MS = 200
 SOFT_API_LIMIT = 20
@@ -152,6 +153,10 @@ class MiraOrchestrator:
             "message": "A new user just stepped up to the mirror. Introduce yourself and start the session.",
         })
 
+        # Request a snapshot from the mirror so Mira can see the user
+        if self.sio:
+            await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+
         return session
 
     async def handle_event(self, user_id: str, event: dict) -> None:
@@ -166,8 +171,12 @@ class MiraOrchestrator:
 
         session.is_processing = True
         try:
-            session.last_input_time = time.time()
-            self._start_silence_timer(user_id)
+            # Only restart the silence timer on real user input — not on
+            # silence events themselves, which would create a feedback loop
+            # (silence → Mira speaks → new timer → silence → repeat).
+            if event.get("type") != "silence":
+                session.last_input_time = time.time()
+                self._start_silence_timer(user_id)
 
             # Track gesture outcomes
             gesture = event.get("gesture")
@@ -209,13 +218,37 @@ class MiraOrchestrator:
         finally:
             session.is_processing = False
 
-    async def _call_claude(self, session: SessionState) -> None:
+    def _select_model(self, session: SessionState) -> tuple[str, int]:
+        """Select the right model and max_tokens for this turn.
+
+        Returns (model_id, max_tokens).
+        - Sonnet for conversational turns (speech quality matters)
+        - Haiku for tool-result processing (speed matters)
+        """
+        if session.conversation_history:
+            last_msg = session.conversation_history[-1]
+            # tool_result messages have list content with type: "tool_result" dicts
+            if last_msg.get("role") == "user" and isinstance(last_msg.get("content"), list):
+                if any(
+                    isinstance(block, dict) and block.get("type") == "tool_result"
+                    for block in last_msg["content"]
+                ):
+                    return HAIKU_MODEL, 1024
+        return SONNET_MODEL, 400
+
+    async def _call_claude(self, session: SessionState, tool_depth: int = 0) -> None:
         """Make a streaming Claude API call with tool use."""
+        if tool_depth >= 3:
+            print(f"[mira] Tool depth limit reached ({tool_depth}) for {session.user_id}, stopping")
+            return
+
         if session.api_calls >= SOFT_API_LIMIT:
             print(f"[mira] API limit reached for {session.user_id}")
             return
 
         session.api_calls += 1
+        model, max_tokens = self._select_model(session)
+        print(f"[mira] Using {model} (max_tokens={max_tokens}) for {session.user_id}")
 
         # Collect full response (streaming to HeyGen happens via callback)
         collected_text = ""
@@ -223,8 +256,8 @@ class MiraOrchestrator:
 
         try:
             async with self.client.messages.stream(
-                model=CLAUDE_MODEL,
-                max_tokens=300,
+                model=model,
+                max_tokens=max_tokens,
                 system=session.system_prompt,
                 messages=session.conversation_history,
                 tools=TOOL_DEFINITIONS,
@@ -261,13 +294,19 @@ class MiraOrchestrator:
 
         # Handle tool calls
         if tool_uses:
-            await self._handle_tool_calls(session, tool_uses)
+            await self._handle_tool_calls(session, tool_uses, tool_depth)
 
-    async def _handle_tool_calls(self, session: SessionState, tool_uses: list) -> None:
+    async def _handle_tool_calls(self, session: SessionState, tool_uses: list, tool_depth: int = 0) -> None:
         """Execute tool calls and continue the conversation."""
         tool_results = []
 
         for tool_use in tool_uses:
+            # Log tool call with truncated input for terminal visibility
+            input_str = json.dumps(tool_use.input)
+            if len(input_str) > 200:
+                input_str = input_str[:200] + "..."
+            print(f"[mira] Tool call: {tool_use.name}({input_str})")
+
             try:
                 result = await execute_tool(
                     tool_name=tool_use.name,
@@ -290,17 +329,20 @@ class MiraOrchestrator:
                     room=session.user_id,
                 )
 
-            # Track items shown
-            if tool_use.name == "search_clothing" and result.get("results"):
-                session.items_shown += len(result["results"])
-                if result["results"]:
-                    session._last_shown_item = result["results"][0]
+            # Track items shown (only present_items counts — search_clothing is invisible)
+            if tool_use.name == "present_items" and result.get("items"):
+                session.items_shown += len(result["items"])
+                if result["items"]:
+                    session._last_shown_item = result["items"][0]
 
-            tool_results.append({
+            tool_result_block = {
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
                 "content": json.dumps(result),
-            })
+            }
+            if "error" in result:
+                tool_result_block["is_error"] = True
+            tool_results.append(tool_result_block)
 
         # Add tool results to conversation and continue
         session.conversation_history.append({
@@ -309,7 +351,7 @@ class MiraOrchestrator:
         })
 
         # Call Claude again to process tool results
-        await self._call_claude(session)
+        await self._call_claude(session, tool_depth=tool_depth + 1)
 
     async def end_session(self, user_id: str) -> dict | None:
         """End a session and save summary."""
@@ -370,7 +412,7 @@ class MiraOrchestrator:
     async def _generate_summary(self, session: SessionState) -> str:
         """Ask Claude to generate a short session summary for memory."""
         response = await self.client.messages.create(
-            model=CLAUDE_MODEL,
+            model=HAIKU_MODEL,
             max_tokens=200,
             system="Summarize this styling session in 2-3 sentences for future reference. Include key style preferences discovered, items liked, and overall vibe.",
             messages=[

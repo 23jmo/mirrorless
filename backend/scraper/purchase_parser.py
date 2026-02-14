@@ -1,12 +1,13 @@
-"""Extract purchase data from receipt emails using pattern matching + LLM fallback."""
+"""Extract purchase data from receipt emails using LLM extraction."""
 
 import json
 import logging
 import os
 import re
-from datetime import date
 
 import anthropic
+
+from agent.prompts import _NON_FASHION_BRANDS
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +73,6 @@ KNOWN_BRANDS = [
     "Cos", "Anthropologie", "Free People", "Urban Outfitters",
 ]
 
-# Multi-currency price pattern: $, €, £, CA$
-PRICE_PATTERN = re.compile(r"(?:[$€£]|CA\$)\s?([\d,]+\.?\d{0,2})")
-
-# Item-price line pattern: "item name - $XX.XX" or "item name $XX.XX" or "item name Price: $XX.XX"
-ITEM_PRICE_PATTERN = re.compile(
-    r"(?:(?:\d+x?\s+)?(.+?))\s*[-–—]?\s*(?:Price:\s*)?(?:[$€£]|CA\$)\s?([\d,]+\.?\d{0,2})"
-)
-
 # Order status detection
 STATUS_PATTERN = re.compile(
     r"(order confirmed|shipped|delivered|out for delivery|in transit)", re.I
@@ -114,8 +107,10 @@ def _detect_brand(text: str, sender: str) -> str:
             return brand
     match = re.search(r"@([\w.-]+)", sender)
     if match:
-        domain = match.group(1).split(".")[0].capitalize()
-        return domain
+        parts = match.group(1).split(".")
+        # Use primary domain name, not subdomain (e.g. "nike" from "mail.nike.com")
+        domain_name = parts[-2] if len(parts) >= 3 else parts[0]
+        return domain_name.capitalize()
     return "Unknown"
 
 
@@ -151,8 +146,10 @@ def _detect_merchant(sender: str) -> str | None:
         for pattern, name in merchant_map.items():
             if pattern in domain:
                 return name
-        # Fallback: capitalize the first part of the domain
-        return domain.split(".")[0].capitalize()
+        # Fallback: capitalize the primary domain name (not subdomain)
+        parts = domain.split(".")
+        domain_name = parts[-2] if len(parts) >= 3 else parts[0]
+        return domain_name.capitalize()
     return None
 
 
@@ -175,14 +172,6 @@ def _extract_tracking(text: str) -> str | None:
     """Extract tracking number from email text."""
     match = TRACKING_PATTERN.search(text)
     return match.group(1) if match else None
-
-
-def _parse_price(price_str: str) -> float | None:
-    """Parse a price string like '129.99' or '1,299.99' to float."""
-    try:
-        return float(price_str.replace(",", ""))
-    except (ValueError, TypeError):
-        return None
 
 
 def _categorize_item(item_name: str) -> str | None:
@@ -214,25 +203,29 @@ def _categorize_item(item_name: str) -> str | None:
 
 
 def _extract_with_llm(email: dict) -> list[dict]:
-    """Use Claude Haiku to extract purchases from hard-to-parse emails.
+    """Use Claude Haiku to extract fashion purchases from receipt emails.
 
-    Only called when regex extraction returns 0 items. Uses Haiku for
-    fast/cheap extraction (~$0.03 per full scrape session).
+    Primary extraction method for all receipt emails that pass the brand filter.
     """
     auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
     if not auth_token:
+        logger.warning("ANTHROPIC_AUTH_TOKEN not set — skipping LLM extraction")
         return []
 
     subject = email.get("subject", "")
     body = email.get("body", "")[:2000]
 
     prompt = (
-        "Extract purchase items from this receipt email. "
+        "Extract clothing, shoes, and fashion accessory purchases from this receipt email. "
+        "ONLY include fashion-related items (clothing, shoes, bags, jewelry, accessories). "
+        "IGNORE non-fashion items like food, drinks, flowers, electronics, software, "
+        "financial transactions, subscriptions.\n\n"
         "Return a JSON object with a single key \"items\" containing an array. "
         "Each item should have: brand (string), merchant (string or null), "
         "item_name (string), price (number or null), currency (string, default \"USD\"), "
         "order_status (string or null: confirmed/shipped/delivered).\n\n"
-        "If this is not a receipt or no items can be extracted, return {\"items\": []}.\n\n"
+        "If this is not a fashion receipt or no fashion items can be extracted, "
+        "return {\"items\": []}.\n\n"
         f"Subject: {subject}\n\nBody:\n{body}"
     )
 
@@ -248,7 +241,15 @@ def _extract_with_llm(email: dict) -> list[dict]:
             messages=[{"role": "user", "content": prompt}],
         )
         content = message.content[0].text
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start != -1 and end > start:
+                data = json.loads(content[start:end])
+            else:
+                return []
         return data.get("items", [])
     except Exception as e:
         logger.warning("LLM extraction failed: %s", e)
@@ -256,7 +257,7 @@ def _extract_with_llm(email: dict) -> list[dict]:
 
 
 def extract_purchases(email: dict) -> list[dict]:
-    """Extract purchase items from a receipt email.
+    """Extract fashion purchase items from a receipt email via LLM.
 
     Returns list of dicts with: brand, merchant, item_name, category, price, date,
     order_status, tracking_number, receipt_text, source_email_id
@@ -271,83 +272,33 @@ def extract_purchases(email: dict) -> list[dict]:
 
     brand = _detect_brand(full_text, sender)
     merchant = _detect_merchant(sender)
+
+    # Skip non-fashion sources before spending any LLM tokens
+    if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
+        return []
+
     order_status = _extract_order_status(full_text)
     tracking_number = _extract_tracking(full_text)
     receipt_text = full_text[:500] if full_text else None
 
-    # Try to extract item-price pairs from body
-    matches = ITEM_PRICE_PATTERN.findall(body)
+    # LLM extraction for all emails
+    llm_items = _extract_with_llm(email)
 
     purchases = []
-    if matches:
-        for item_name, price_str in matches:
-            item_name = re.sub(r"^\d+x?\s+", "", item_name.strip()).strip()
-            if len(item_name) < 3 or item_name.lower() in ("subtotal", "total", "tax", "shipping"):
-                continue
-            price = _parse_price(price_str)
-            purchases.append({
-                "brand": brand,
-                "merchant": merchant,
-                "item_name": item_name,
-                "category": _categorize_item(item_name),
-                "price": price,
-                "date": email.get("date"),
-                "order_status": order_status,
-                "tracking_number": tracking_number,
-                "receipt_text": receipt_text,
-                "source_email_id": email.get("message_id"),
-            })
-    else:
-        # Fallback: extract from subject line — require price + fashion signal
-        prices = PRICE_PATTERN.findall(full_text)
-        price = _parse_price(prices[0]) if prices else None
-        item_name = re.sub(
-            r"^(your |order |re: |fwd: |amazon\.com order of )",
-            "",
-            subject,
-            flags=re.IGNORECASE,
-        ).strip().rstrip(".")
-        # Only store subject-line items that have a price and look like fashion
-        _fashion_signals = (
-            "shirt", "tee", "top", "blouse", "sweater", "hoodie", "jacket",
-            "blazer", "coat", "pant", "jean", "short", "skirt", "trouser",
-            "dress", "shoe", "sneaker", "boot", "sandal", "hat", "cap",
-            "belt", "bag", "scarf", "watch", "sunglasses", "legging",
-            "romper", "jumpsuit", "vest", "parka", "jordan", "air max",
-        )
-        has_fashion_signal = any(sig in item_name.lower() for sig in _fashion_signals)
-        if item_name and price is not None and has_fashion_signal:
-            purchases.append({
-                "brand": brand,
-                "merchant": merchant,
-                "item_name": item_name,
-                "category": _categorize_item(item_name),
-                "price": price,
-                "date": email.get("date"),
-                "order_status": order_status,
-                "tracking_number": tracking_number,
-                "receipt_text": receipt_text,
-                "source_email_id": email.get("message_id"),
-            })
-
-    # LLM fallback: if regex found nothing, try cheap LLM extraction
-    if not purchases:
-        llm_items = _extract_with_llm(email)
-        for item in llm_items:
-            item_name = item.get("item_name", "")
-            if not item_name or len(item_name) < 3:
-                continue
-            purchases.append({
-                "brand": item.get("brand") or brand,
-                "merchant": item.get("merchant") or merchant,
-                "item_name": item_name,
-                "category": _categorize_item(item_name),
-                "price": item.get("price"),
-                "date": email.get("date"),
-                "order_status": item.get("order_status") or order_status,
-                "tracking_number": tracking_number,
-                "receipt_text": receipt_text,
-                "source_email_id": email.get("message_id"),
-            })
-
+    for item in llm_items:
+        item_name = item.get("item_name", "")
+        if not item_name or len(item_name) < 3:
+            continue
+        purchases.append({
+            "brand": item.get("brand") or brand,
+            "merchant": item.get("merchant") or merchant,
+            "item_name": item_name,
+            "category": _categorize_item(item_name),
+            "price": item.get("price"),
+            "date": email.get("date"),
+            "order_status": item.get("order_status") or order_status,
+            "tracking_number": tracking_number,
+            "receipt_text": receipt_text,
+            "source_email_id": email.get("message_id"),
+        })
     return purchases
