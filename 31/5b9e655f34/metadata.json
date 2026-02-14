@@ -3,13 +3,14 @@
   "checkpoint_id": "315b9e655f34",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 3,
   "files_touched": [
     "CLAUDE.md",
     "backend/.env",
     "backend/.env.example",
     "backend/agent/orchestrator.py",
     "backend/judges/scraper.py",
+    "backend/requirements.txt",
     "backend/scrape_debug.py",
     "backend/scraper/profile_builder.py",
     "backend/scraper/purchase_parser.py",
@@ -29,13 +30,20 @@
       "context": "/31/5b9e655f34/1/context.md",
       "content_hash": "/31/5b9e655f34/1/content_hash.txt",
       "prompt": "/31/5b9e655f34/1/prompt.txt"
+    },
+    {
+      "metadata": "/31/5b9e655f34/2/metadata.json",
+      "transcript": "/31/5b9e655f34/2/full.jsonl",
+      "context": "/31/5b9e655f34/2/context.md",
+      "content_hash": "/31/5b9e655f34/2/content_hash.txt",
+      "prompt": "/31/5b9e655f34/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 56,
-    "cache_creation_tokens": 155715,
-    "cache_read_tokens": 2077009,
-    "output_tokens": 5759,
-    "api_call_count": 39
+    "input_tokens": 102,
+    "cache_creation_tokens": 234051,
+    "cache_read_tokens": 4201284,
+    "output_tokens": 11015,
+    "api_call_count": 71
   }
 }

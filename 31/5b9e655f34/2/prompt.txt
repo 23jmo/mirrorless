@@ -1,0 +1,221 @@
+Implement the following plan:
+
+# Live Scraper Debug Tool
+
+## What this does
+
+Creates a CLI script that **actually re-scrapes your Gmail inbox live** and prints everything it finds in real-time to the terminal. This is NOT reading from the database — it makes real Gmail API calls, fetches real emails, and runs them through the full extraction pipeline while showing you every step.
+
+## How to run
+
+```bash
+cd backend && pip install tabulate && python scrape_debug.py <user_id>
+```
+
+Optional flags:
+- `--no-llm` — skip Claude API calls (faster, free)
+- `--max-per-query 50` — fetch more emails per query (default 20)
+
+## What it prints (streamed as it runs)
+
+### Step 1: Gmail Search (live API calls)
+Runs each of the 7 receipt search queries against your actual Gmail inbox and prints results as they come back:
+
+```
+Searching Gmail...
+  "subject:(order confirmation)"     → 12 emails found
+  "subject:(order shipped)"          → 8 emails found (5 new)
+  "subject:(your order)"             → 15 emails found (9 new)
+  ...
+Total: 35 unique emails. Fetching content...
+```
+
+### Step 2: Receipt Filter Results
+For each email, shows if it passed the receipt filter and WHY:
+
+```
+| #  | Subject                        | Sender                  | Receipt? | Why                          |
+|----|--------------------------------|-------------------------|----------|------------------------------|
+|  1 | Your Amazon.com order of Ni... | auto-confirm@amazon.com | YES      | sender=amazon.com kw=order   |
+|  2 | Thanks for your order!         | hello@smallshop.com     | NO       | sender=NONE kw=order         |
+|  3 | Account security alert         | noreply@google.com      | NO       | sender=NONE kw=NONE          |
+
+Passed: 22 / Rejected: 13 (8 no sender match, 2 no subject kw, 3 neither)
+```
+
+### Step 3: Extraction (per email, streamed)
+Prints the LLM prompt template ONCE, then for each receipt email shows:
+- The raw email input (subject + sender + body preview)
+- Which extraction method was used (regex / subject-fallback / LLM)
+- The raw regex matches or LLM response
+- The final extracted purchase items
+
+```
+LLM PROMPT TEMPLATE (printed once):
+  "Extract purchase items from this receipt email..."
+  [full prompt shown with {subject} and {body} placeholders]
+
+--- Email 1/22 ---
+  Subject: Your Amazon.com order of Nike Air Max 90
+  Sender:  auto-confirm@amazon.com
+  Body:    "Hello, Thank you for your order. Nike Air Max 90 Price: $129.99..."
+
+  Method: REGEX
+  Raw regex matches: [('Nike Air Max 90', '129.99')]
+
+  Extracted:
+  | # | item_name       | brand | merchant | category | price   |
+  |---|-----------------|-------|----------|----------|---------|
+  | 1 | Nike Air Max 90 | Nike  | Amazon   | shoes    | $129.99 |
+
+--- Email 5/22 ---
+  Subject: Your order confirmation #12345
+  Sender:  orders@boutique.com
+  Body:    "Thank you for shopping! Hand-knit wool cardigan..."
+
+  Method: LLM (regex found nothing, subject had no fashion signal)
+  LLM input (sent to Claude Haiku):
+    Subject: Your order confirmation #12345
+    Body: Thank you for shopping with us! Hand-knit wool cardigan...
+
+  LLM response (full JSON):
+    {
+      "items": [
+        {
+          "brand": "Unknown",
+          "merchant": "Boutique",
+          "item_name": "Hand-knit wool cardigan",
+          "price": 185.00,
+          "currency": "USD",
+          "order_status": "confirmed"
+        }
+      ]
+    }
+
+  Extracted:
+  | # | item_name                 | brand   | merchant | category | price   |
+  |---|---------------------------|---------|----------|----------|---------|
+  | 1 | Hand-knit wool cardigan   | Unknown | Boutique | tops     | $185.00 |
+```
+
+### Step 4: Summary
+Final table of all extracted items + style profile:
+
+```
+| # | Item Name              | Brand | Merchant | Category  | Price   | Method          |
+|---|------------------------|-------|----------|-----------|---------|-----------------|
+| 1 | Nike Air Max 90        | Nike  | Amazon   | shoes     | $129.99 | regex           |
+| 2 | Hand-knit wool cardi.. | Unknown| Boutique| tops      | $185.00 | llm             |
+
+Methods: 18 regex, 2 subject-fallback, 2 llm
+```
+
+## Implementation
+
+**New file:** `backend/scrape_debug.py` (~300 lines)
+**Modified:** `backend/requirements.txt` (add `tabulate`)
+
+The script:
+1. Fetches your stored OAuth token from Neon DB (async, same as production)
+2. Builds a Gmail API service (same `build_gmail_service()` from `scraper/gmail_auth.py`)
+3. Calls `search_emails()` and `get_message_content()` live against Gmail
+4. Runs the receipt filter + extraction logic with debug prints at each step
+5. Prints summary table and style profile
+6. Does **NOT** write anything to the database — purely read + display
+
+Imports directly from existing scraper modules — no logic duplication except for the `_fashion_signals` tuple (which is inline in `extract_purchases()` and can't be imported).
+
+## Verification
+
+```bash
+cd backend
+pip install tabulate
+python scrape_debug.py <your_user_id>        # full run with LLM
+python scrape_debug.py <your_user_id> --no-llm  # skip LLM calls
+```
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+# | Subject                                       | Sender                            | Receipt?   | Why                                 |
+|----:|:----------------------------------------------|:----------------------------------|:-----------|:------------------------------------|
+|   1 | Your CVS Order Confirmation                   | CVS Pharmacy <CVSPharmacy@aler... | NO         | sender=NONE kw=order,confirmation   |
+|   2 | Your Order Confirmation - Details Inside      | "1-800-FLOWERS.COM" <1800FLOWE... | NO         | sender=NONE kw=order,confirmation   |
+|   3 | Confirmation of Starbucks Order 71081896      | Starbucks Coffee Company <orde... | NO         | sender=NONE kw=order,confirmation   |
+|   4 | Your Order Confirmation - Details Inside      | "1-800-FLOWERS.COM" <1800FLOWE... | NO         | sender=NONE kw=order,confirmation   |
+|   5 | djcarloatendido order confirmation            | djcarloatendido <store+djcarlo... | NO         | sender=NONE kw=order,confirmation   |
+|   6 | Name.com - Order Confirmation - 25143009      | "Name.com Support" <noreply@na... | NO         | sender=NONE kw=order,confirmation   |
+|   7 | Name.com - Order Confirmation - 25094582      | "Name.com Support" <noreply@na... | NO         | sender=NONE kw=order,confirmation   |
+|   8 | Name.com - Order Confirmation - 25017050      | "Name.com Support" <noreply@na... | NO         | sender=NONE kw=order,confirmation   |
+
+Can you explain what the receipt filtering is? Why does it filter out everything
+
+---
+
+why does it have to satisfy an AND - what if we just use an OR (and then also do the filter expansion like you said). Also do you see any easy way (no llm) to reliably distinguish between emails like: |  80 | Build your subscription financial stack ...   | Stripe <updates@e.stripe.com>     | NO         | sender=NONE kw=NONE                 |
+|  81 | 💰Economy Special TODAY Only for Californ...  | California GrantWatch <Teddy@g... | NO         | sender=NONE kw=NONE                 |
+|  82 | 🤖 CYBER MONDAY for California Nonprofits...  | California GrantWatch <Teddy@g... | NO         | sender=NONE kw=NONE                 | 
+
+(bad)
+
+and good real emails like 
+
+ 9 | Your CVS Order Confirmation                   | CVS Pharmacy <CVSPharmacy@aler... | NO         | sender=NONE kw=order,confirmation   |
+|  10 | Order Confirmation V1KZW187SB34NBW4WZA5U...   |                                   | NO         | sender=NONE kw=order,confirmation   |
+|  11 | Your CVS.com Order Confirmation               | "CVS.com" <CVS.com@cvshealth.c... | NO         | sender=NONE kw=order,confirmation   |
+|  12 | Your CVS Order Confirmation                   | CVS Pharmacy <CVSPharmacy@aler... | NO         | sender=NONE kw=order,confirmation   |
+|  13 | Your CVS Order Confirmation                   | CVS Pharmacy <CVSPharmacy@aler... | NO         | sender=NONE kw=order,confirmation   |
+
+My hypotheiss is the keywords. Seems like kw=NONE should be filtered out. but we should not have the email HAVE to come from some certain email pattern AND satisfy the kw AND ... But smartly have some combinations that pass - basically lax a bit
+
+---
+
+is there a limit on how far back we look in this script
+
+---
+
+A few bad cases:
+
+1. LLM extraction failed: Expecting value: line 1 column 1 (char 0)
+  LLM response: no items extracted
+
+  Extracted: (nothing)
+
+2. --- Email 2/79 ---
+
+  Subject: Your Order Confirmation - Details Inside
+  Sender:  "1-800-FLOWERS.COM" <1800FLOWERS@em.1800flowers.com>
+  Body:    "Check out your order details below View as webpage Birthday Same-Day Sympathy Best Sellers Order #: W01005958860896 Orde..."
+
+  Method: REGEX
+  Raw regex matches: [('140953SCHV1', '79.99'), ('Price:', '5.99'), ('Subtotal:', '85.98'), ('Discount:', '17.20'), ('Shipping Charge:', '17.99'), ('Tax:', '7.48'), ('Order total:', '94.25')]
+
+  Extracted:
+  |   # | item_name        | brand   | merchant   | category   | price   |
+  |----:|:-----------------|:--------|:-----------|:-----------|:--------|
+  |   1 | 140953SCHV1      | Em      | Em         | —          | $79.99  |
+  |   2 | Price:           | Em      | Em         | —          | $5.99   |
+  |   3 | Subtotal:        | Em      | Em         | —          | $85.98  |
+  |   4 | Discount:        | Em      | Em         | —          | $17.20  |
+  |   5 | Shipping Charge: | Em      | Em         | —          | $17.99  |
+  |   6 | Tax:             | Em      | Em         | —          | $7.48   |
+  |   7 | Order total:     | Em      | Em         | —          | $94.25  | - there is only one purchase here but we mistankenly identify like 10 and theyre all wrong name / nonsensical name 
+
+3. --- Email 3/79 ---
+
+  Subject: Confirmation of Starbucks Order 71081896
+  Sender:  Starbucks Coffee Company <orders@starbucks.com>
+  Body:    "Starbucks Starbucks Receipt ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌  ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌  ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌  ‌ ‌ ‌ ‌ ‌ ‌..."
+
+  Method: REGEX
+  Raw regex matches: [('Total:', '7.46'), ('Short Pumpkin Spice Latte', '6.85'), ('Subtotal', '6.85'), ('Tax', '0.61'), ('Total', '7.46')]
+
+  Extracted:
+  |   # | item_name                 | brand     | merchant   | category   | price   |
+  |----:|:--------------------------|:----------|:-----------|:-----------|:--------|
+  |   1 | Total:                    | Starbucks | Starbucks  | —          | $7.46   |
+  |   2 | Short Pumpkin Spice Latte | Starbucks | Starbucks  | bottoms    | $6.85   | - In this one, we parse the total and the actual item, and we add it as two different things when there's only one purchase 
+
+Also we should be filtering out non-clothing related items probably... is there like a cheaper model we can use not haiku for some of these categorization tasks?
