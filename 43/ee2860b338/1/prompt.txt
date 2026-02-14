@@ -1,0 +1,59 @@
+Is it at all possible to switch from using Haiku through the API key to using Haiku through an OAuth token, with beta headers I can provide through Claude setup token? I can show you working code that does that.
+
+It's in JMO hub and then the JMO CLI directory; you should look into how we're doing it there and make a plan exactly, like a very succinct plan on how to do it
+
+---
+
+ERROR: file or directory not found: backend/tests/test_mira.py
+
+---
+
+all passed - commit and push
+
+---
+
+Could it be better to use some cheap model like bert or minilm or smtg and do simple categorization? what do u think. i just don't know if brand keyword matching ia good idea
+
+---
+
+how can i test that my oauth token thru haiku is working - can you make the test file actually print results
+
+---
+
+update claude.md
+
+---
+
+yeah
+
+---
+
+what changes on main have changed on main?
+
+---
+
+any uncomitted changes? on our branch rn
+
+---
+
+wait can we merge our commits to main (not our uncommitted changes yet)
+
+---
+
+can't we just push our commits and PR to main??
+
+---
+
+okay lets merge it
+
+---
+
+what are the current uncommitted changes i our branch?
+
+---
+
+what are these changes? we should prob commit these (not the calendar fetch tho)
+
+---
+
+yes

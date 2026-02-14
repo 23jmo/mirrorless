@@ -3,7 +3,7 @@
   "checkpoint_id": "43ee2860b338",
   "strategy": "manual-commit",
   "branch": "AGENT",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "backend/tests/test_calendar_fetch.py"
   ],
@@ -14,13 +14,20 @@
       "context": "/43/ee2860b338/0/context.md",
       "content_hash": "/43/ee2860b338/0/content_hash.txt",
       "prompt": "/43/ee2860b338/0/prompt.txt"
+    },
+    {
+      "metadata": "/43/ee2860b338/1/metadata.json",
+      "transcript": "/43/ee2860b338/1/full.jsonl",
+      "context": "/43/ee2860b338/1/context.md",
+      "content_hash": "/43/ee2860b338/1/content_hash.txt",
+      "prompt": "/43/ee2860b338/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 8,
-    "cache_creation_tokens": 44736,
-    "cache_read_tokens": 272549,
-    "output_tokens": 431,
-    "api_call_count": 6
+    "input_tokens": 101,
+    "cache_creation_tokens": 148109,
+    "cache_read_tokens": 3791252,
+    "output_tokens": 4957,
+    "api_call_count": 63
   }
 }
