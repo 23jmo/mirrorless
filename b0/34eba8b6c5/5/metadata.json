@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "b034eba8b6c5",
+  "session_id": "d4fd94eb-d587-4996-9ee1-5a839385a720",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T12:12:38.147907Z",
+  "branch": "main",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "backend/agent/memory.py",
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/agent/tools.py",
+    "backend/main.py",
+    "backend/tests/mira_cli.py",
+    "backend/tests/test_mira.py",
+    "backend/tests/test_mira_live.py",
+    "docs/plans/2025-02-14-mira-agent-spec.md"
+  ],
+  "agent": "Claude Code",
+  "checkpoint_transcript_start": 345,
+  "transcript_lines_at_start": 345,
+  "token_usage": {
+    "input_tokens": 2605,
+    "cache_creation_tokens": 58257,
+    "cache_read_tokens": 7073992,
+    "output_tokens": 11268,
+    "api_call_count": 55
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T12:12:38.052589Z",
+    "agent_lines": 1142,
+    "human_added": 505,
+    "human_modified": 423,
+    "human_removed": 0,
+    "total_committed": 2070,
+    "agent_percentage": 55.169082125603865
+  }
+}
