@@ -1,0 +1,94 @@
+Implement the following plan:
+
+# Plan: Frontend Chat Demo for Mira
+
+## Context
+
+We need a quick frontend page to test Mira interactively via the browser. The backend Socket.io events are wired up and working (verified via CLI tests). This page replaces voice input with a text chat box for now (Deepgram STT comes later). We'll work in the main worktree, not the agent-work worktree.
+
+## Approach
+
+Add a single new page at `/chat` with a chat interface that connects to the backend via the existing Socket.io client.
+
+### New file: `frontend/src/app/chat/page.tsx`
+
+A single-page chat UI with:
+
+**Layout (top to bottom):**
+1. **Header** — "Chat with Mira" + session controls (Start / End)
+2. **Chat messages** — scrolling message area showing:
+   - Mira's streamed speech (assembled from `mira_speech` chunks into complete messages)
+   - User's sent messages
+   - Product cards when `tool_result` arrives (title, price, source, image, rating)
+   - Session events (started, ended, recap)
+3. **Gesture buttons** — row of buttons: 👍 👎 ⬅️ ➡️ (thumbs up/down, swipe left/right)
+4. **Text input** — input field + send button (sends as `voice` transcript via `mirror_event`)
+
+**Socket.io flow:**
+- On mount: `socket.connect()`, emit `join_room` with user ID
+- Start button: emit `start_session`
+- Send message: emit `mirror_event` with `{type: "voice", transcript: "..."}`
+- Gesture buttons: emit `mirror_event` with `{type: "gesture", gesture: "thumbs_up"}` etc.
+- End button: emit `end_session`
+- Listen: `mira_speech` (stream chunks into current message), `tool_result` (render product cards), `session_ended` / `session_recap`
+
+**Reuses existing:**
+- `@/lib/socket` — Socket.io client (`frontend/src/lib/socket.ts`)
+- Inline styles matching existing project convention (dark theme, purple accents)
+
+**User ID:** Text input at top to paste a real UUID from DB, or defaults to `"chat-demo-user"` for testing without DB.
+
+### Files to modify
+
+| File | Action |
+|------|--------|
+| `frontend/src/app/chat/page.tsx` | **Create** — full chat page |
+
+That's it. One file. No other changes needed.
+
+## Verification
+
+1. Start backend: `cd backend && uvicorn main:socket_app --reload --port 8000`
+2. Start frontend: `cd frontend && npm run dev`
+3. Open `http://localhost:3000/chat`
+4. Click "Start Session" → Mira should introduce herself (text streams in)
+5. Type a message → Mira responds
+6. Click gesture buttons → Mira reacts
+7. Click "End Session" → recap appears
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+mira] Starting session for user a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[socket] Uev6XKRT5yGX3ZLRAAAC joined room a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Ending session for user a3e88c32-c832-4a44-99b8-0e3b278b6acf
+Task exception was never retrieved
+future: <Task finished name='Task-61' coro=<AsyncServer._handle_event_internal() done, defined at /Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/socketio/async_server.py:608> exception=HTTPStatusError("Client error '400 Bad Request' for url 'https://ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/sql'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400")>
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/socketio/async_server.py", line 610, in _handle_event_internal
+    r = await server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/socketio/async_server.py", line 637, in _trigger_event
+    ret = await handler(*args)
+          ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/main.py", line 78, in end_session
+    result = await mira.end_session(user_id)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/agent/orchestrator.py", line 270, in end_session
+    await save_session_summary(
+  File "/Users/johnathanmo/mirrorless/backend/agent/memory.py", line 21, in save_session_summary
+    await db.execute(
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 45, in execute
+    resp.raise_for_status()
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '400 Bad Request' for url 'https://ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/sql'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+[socket] Uev6XKRT5yGX3ZLRAAAC joined room a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[socket] Uev6XKRT5yGX3ZLRAAAC joined room a3e88c32-c832-4a44-99b8-0e3b278b6acf
+
+---
+
+[Request interrupted by user for tool use]
