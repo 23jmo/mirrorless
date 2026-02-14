@@ -71,7 +71,7 @@ def _fetch_subjects_sync(service, query: str, max_results: int = 100) -> list[st
 async def fast_scrape(token_data: dict) -> ScrapeResult:
     """Fast parallel scrape (~15s): receipts + brand frequency scan."""
     service = build_gmail_service(token_data)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Run receipt fetch and brand scan in parallel using thread pool
     receipt_task = loop.run_in_executor(
@@ -106,7 +106,7 @@ async def fast_scrape(token_data: dict) -> ScrapeResult:
 async def deep_scrape(token_data: dict, on_update=None) -> ScrapeResult:
     """Background deep scrape: full inbox scan, streams results."""
     service = build_gmail_service(token_data)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     all_purchases = []
     all_subjects = []
@@ -116,14 +116,15 @@ async def deep_scrape(token_data: dict, on_update=None) -> ScrapeResult:
             _executor,
             partial(_fetch_receipts_sync, service, [query], 50),
         )
-        new_purchases = []
+        batch_purchases = []
         for email in emails:
             new_purchases = extract_purchases(email)
+            batch_purchases.extend(new_purchases)
             all_purchases.extend(new_purchases)
             all_subjects.append(email["subject"])
 
         # Stream partial results
-        if on_update and new_purchases:
+        if on_update and batch_purchases:
             brand_freq = scan_brand_frequency(all_subjects)
             profile = build_style_profile(all_purchases, brand_freq)
             partial_result = ScrapeResult(
