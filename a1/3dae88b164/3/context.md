@@ -25,3 +25,7 @@ After adding tool logging, the backend terminal reveals an infinite loop calling
 
 okay commit and push - this is good
 
+### Prompt 3
+
+update claude.md as well and commit and push
+

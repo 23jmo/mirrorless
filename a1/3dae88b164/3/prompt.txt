@@ -86,3 +86,7 @@ If you need specific details from before exiting plan mode (like exact code snip
 ---
 
 okay commit and push - this is good
+
+---
+
+update claude.md as well and commit and push
