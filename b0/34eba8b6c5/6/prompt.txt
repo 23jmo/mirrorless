@@ -1,0 +1,80 @@
+Implement the following plan:
+
+# Plan: Fix `end_session` CHECK constraint violation
+
+## Context
+
+When clicking "End Session" in the chat demo, the backend crashes with a `400 Bad Request` from Neon's SQL endpoint. The root cause: `save_session_summary` in `backend/agent/memory.py:21` inserts `reaction = 'summary'` into `session_outfits`, but the CHECK constraint on that column only allows `('liked', 'disliked', 'skipped')`.
+
+## Fix
+
+Add `'summary'` to the CHECK constraint via a new migration, then run it against Neon.
+
+### File: `backend/migrations/004_add_summary_reaction.sql` (create)
+
+```sql
+ALTER TABLE session_outfits DROP CONSTRAINT session_outfits_reaction_check;
+ALTER TABLE session_outfits ADD CONSTRAINT session_outfits_reaction_check
+  CHECK (reaction IN ('liked', 'disliked', 'skipped', 'summary'));
+```
+
+### File: `backend/agent/orchestrator.py` (modify line ~270)
+
+Wrap `save_session_summary` in a try/except so a DB failure doesn't prevent the `session_ended` event from reaching the frontend. The session recap should still be emitted even if persisting to DB fails.
+
+```python
+try:
+    await save_session_summary(...)
+except Exception as e:
+    print(f"[mira] Failed to save session summary: {e}")
+finally:
+    await db.close()
+```
+
+## Files to modify
+
+| File | Action |
+|------|--------|
+| `backend/migrations/004_add_summary_reaction.sql` | **Create** — ALTER CHECK constraint |
+| `backend/agent/orchestrator.py` | **Modify** — add error handling around save_session_summary |
+
+## Verification
+
+1. Run migration: connect to Neon and execute `004_add_summary_reaction.sql`
+2. Start backend, start frontend, open `/chat`
+3. Start session → chat → End session
+4. Confirm no 400 error, `session_ended` event arrives on frontend, recap displays
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+This happens when i hit start session: mira] Starting session for user chat-demo-user
+Task exception was never retrieved
+future: <Task finished name='Task-35' coro=<AsyncServer._handle_event_internal() done, defined at /Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/socketio/async_server.py:608> exception=HTTPStatusError("Client error '400 Bad Request' for url 'https://ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/sql'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400")>
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/socketio/async_server.py", line 610, in _handle_event_internal
+    r = await server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/socketio/async_server.py", line 637, in _trigger_event
+    ret = await handler(*args)
+          ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/main.py", line 58, in start_session
+    await mira.start_session(user_id)
+  File "/Users/johnathanmo/mirrorless/backend/agent/orchestrator.py", line 71, in start_session
+    profile = await load_user_profile(db, user_id)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/agent/memory.py", line 56, in load_user_profile
+    user_rows = await db.execute(
+                ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 45, in execute
+    resp.raise_for_status()
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '400 Bad Request' for url 'https://ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/sql'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+
+---
+
+[Request interrupted by user for tool use]

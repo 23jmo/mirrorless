@@ -3,7 +3,7 @@
   "checkpoint_id": "b034eba8b6c5",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 15,
+  "checkpoints_count": 16,
   "files_touched": [
     "backend/agent/memory.py",
     "backend/agent/orchestrator.py",
@@ -15,6 +15,7 @@
     "backend/judges/scraper.py",
     "backend/main.py",
     "backend/migrations/003_add_last_scraped_at.sql",
+    "backend/migrations/004_add_summary_reaction.sql",
     "backend/migrations/005_create_judges.sql",
     "backend/migrations/006_create_demo_user.sql",
     "backend/scraper/__init__.py",
@@ -74,13 +75,20 @@
       "context": "/b0/34eba8b6c5/5/context.md",
       "content_hash": "/b0/34eba8b6c5/5/content_hash.txt",
       "prompt": "/b0/34eba8b6c5/5/prompt.txt"
+    },
+    {
+      "metadata": "/b0/34eba8b6c5/6/metadata.json",
+      "transcript": "/b0/34eba8b6c5/6/full.jsonl",
+      "context": "/b0/34eba8b6c5/6/context.md",
+      "content_hash": "/b0/34eba8b6c5/6/content_hash.txt",
+      "prompt": "/b0/34eba8b6c5/6/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 10352,
-    "cache_creation_tokens": 1343265,
-    "cache_read_tokens": 27963110,
-    "output_tokens": 54774,
-    "api_call_count": 395
+    "input_tokens": 10385,
+    "cache_creation_tokens": 1388615,
+    "cache_read_tokens": 28596881,
+    "output_tokens": 54875,
+    "api_call_count": 410
   }
 }
