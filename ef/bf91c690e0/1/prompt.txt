@@ -1,0 +1,215 @@
+Implement the following plan:
+
+# Simplify Extraction to LLM-Only + Fix HTML Bodies
+
+## Context
+
+The regex extraction pipeline has compounding edge cases: summary lines captured as items ("Subtotal:", "Tax:"), SKUs as item names ("140953SCHV1"), raw HTML bodies fed to regex producing garbage, and non-fashion emails (Robinhood, Starbucks) slipping through. Haiku is essentially free via the OAuth token method, so we optimize purely for accuracy: replace the regex+subject-fallback+LLM-fallback chain with a single LLM call per email.
+
+## Files to Modify
+
+| File | What changes |
+|------|-------------|
+| `backend/scraper/purchase_parser.py` | Replace regex/fallback chain with LLM-only; add brand filter; improve JSON parsing |
+| `backend/scraper/gmail_fetch.py` | Detect HTML mislabeled as text/plain |
+| `backend/scrape_debug.py` | Simplify step 3 to match new LLM-only flow |
+
+## Fixes
+
+### Fix 1: Fashion brand filter at extraction time (`purchase_parser.py`)
+
+Import `_NON_FASHION_BRANDS` from `agent/prompts.py`. Early return in `extract_purchases()` right after brand/merchant detection — before any LLM call:
+
+```python
+from agent.prompts import _NON_FASHION_BRANDS
+
+# Inside extract_purchases(), after brand = _detect_brand(...), merchant = _detect_merchant(...)
+if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
+    return []
+```
+
+Zero-cost set lookup. Skips Robinhood, Starbucks, Uber, Stripe, etc. before spending any Haiku tokens.
+
+### Fix 2: Detect HTML in "plain text" bodies (`gmail_fetch.py`)
+
+In `_extract_body()`, after getting `text/plain`, check if it's actually HTML:
+
+```python
+plain = _find_mime_part(payload, "text/plain")
+if plain:
+    stripped = plain.lstrip()
+    if stripped.startswith(("<!doctype", "<html", "<HTML")):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(plain, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        return soup.get_text(separator="\n", strip=True)
+    return plain
+```
+
+Fixes the Robinhood-style raw HTML body problem for all senders.
+
+### Fix 3: Replace regex chain with LLM-only (`purchase_parser.py`)
+
+**Remove** from `extract_purchases()`:
+- `ITEM_PRICE_PATTERN.findall(body)` regex extraction block (~lines 260-280)
+- Subject-line fallback block (~lines 282-312)
+- The conditional `if not purchases:` LLM fallback (~lines 314-332)
+
+**Replace with** a single LLM call for every email that passes `_is_receipt()` + brand filter:
+
+```python
+def extract_purchases(email: dict) -> list[dict]:
+    if not _is_receipt(email):
+        return []
+
+    body = email.get("body", "")
+    subject = email.get("subject", "")
+    sender = email.get("sender", "")
+    full_text = f"{subject}\n{body}"
+
+    brand = _detect_brand(full_text, sender)
+    merchant = _detect_merchant(sender)
+
+    # Skip non-fashion sources
+    if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
+        return []
+
+    order_status = _extract_order_status(full_text)
+    tracking_number = _extract_tracking(full_text)
+    receipt_text = full_text[:500] if full_text else None
+
+    # LLM extraction for all emails
+    llm_items = _extract_with_llm(email)
+
+    purchases = []
+    for item in llm_items:
+        item_name = item.get("item_name", "")
+        if not item_name or len(item_name) < 3:
+            continue
+        purchases.append({
+            "brand": item.get("brand") or brand,
+            "merchant": item.get("merchant") or merchant,
+            "item_name": item_name,
+            "category": _categorize_item(item_name),
+            "price": item.get("price"),
+            "date": email.get("date"),
+            "order_status": item.get("order_status") or order_status,
+            "tracking_number": tracking_number,
+            "receipt_text": receipt_text,
+            "source_email_id": email.get("message_id"),
+        })
+    return purchases
+```
+
+**Keep** these existing functions (still used):
+- `_is_receipt()` — pre-filter (OR logic)
+- `_detect_brand()`, `_detect_merchant()` — fallback values when LLM doesn't provide them
+- `_extract_order_status()`, `_extract_tracking()` — regex-based, these work well for structured fields
+- `_categorize_item()` — post-LLM category assignment
+- `_extract_with_llm()` — now the primary extraction method
+
+**Can remove** (no longer called):
+- The `ITEM_PRICE_PATTERN` regex constant
+- The `PRICE_PATTERN` regex constant
+- The `_parse_price()` helper
+- The inline `_fashion_signals` tuple
+
+### Fix 4: Improve LLM prompt + robust JSON parsing (`purchase_parser.py`)
+
+**Upgrade the prompt** in `_extract_with_llm()` to be fashion-aware:
+
+```python
+prompt = (
+    "Extract clothing, shoes, and fashion accessory purchases from this receipt email. "
+    "ONLY include fashion-related items (clothing, shoes, bags, jewelry, accessories). "
+    "IGNORE non-fashion items like food, drinks, flowers, electronics, software, financial transactions, subscriptions.\n\n"
+    "Return a JSON object with a single key \"items\" containing an array. "
+    "Each item should have: brand (string), merchant (string or null), "
+    "item_name (string), price (number or null), currency (string, default \"USD\"), "
+    "order_status (string or null: confirmed/shipped/delivered).\n\n"
+    "If this is not a fashion receipt or no fashion items can be extracted, return {\"items\": []}.\n\n"
+    f"Subject: {subject}\n\nBody:\n{body}"
+)
+```
+
+**Also add robust JSON parsing:**
+
+```python
+content = message.content[0].text
+try:
+    data = json.loads(content)
+except json.JSONDecodeError:
+    start = content.find("{")
+    end = content.rfind("}") + 1
+    if start != -1 and end > start:
+        data = json.loads(content[start:end])
+    else:
+        return []
+```
+
+### Fix 5: Update debug tool (`scrape_debug.py`)
+
+Simplify `step3_extract()` to match new flow:
+- Remove regex matching display
+- Remove subject-fallback display
+- For each receipt email: show brand filter check, then LLM input/output
+- `--no-llm` flag: shows what *would* be sent to Haiku but skips the call (useful for testing the filter pipeline without spending tokens)
+- Remove `FASHION_SIGNALS` constant (no longer needed)
+- Remove `PRICE_PATTERN` / `ITEM_PRICE_PATTERN` imports (no longer needed)
+
+## What stays the same
+
+- `_is_receipt()` OR logic (already changed)
+- `RECEIPT_SENDERS` expanded list (already changed)
+- Gmail search queries in `pipeline.py`
+- `_filter_fashion_purchases()` in `agent/prompts.py` (second safety net at profile-build time)
+- `pipeline.py` `fast_scrape()` — calls `extract_purchases()` same as before
+- Database operations unchanged
+
+## Verification
+
+```bash
+cd backend
+python scrape_debug.py <user_id> --no-llm    # verify brand filter works, see what would go to LLM
+python scrape_debug.py <user_id>              # full run, verify clean extraction
+```
+
+Expected:
+- Robinhood/Starbucks/Stripe emails: skipped by brand filter (no LLM call)
+- 1-800-FLOWERS: LLM correctly extracts item name (not "140953SCHV1" or "Subtotal:")
+- HTML body emails: clean text fed to LLM
+- Total cost shown at end of run
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+always exracting nothing: --- Email 78/79 ---
+
+  Subject: Your subscription confirmation
+  Sender:  Epidemic Sound <noreply@accounts.epidemicsound.com>
+ Subscription: Perso..."cription:firmation
+
+  Brand: Accounts  |  Merchant: Accounts
+  Method: LLM (sending to Claude Haiku)
+  LLM input:
+    Subject: Your subscription confirmation
+    Body: Your subscription confirmation
+
+Your free trial is now active
+ for the following subscription:
+
+Subscription: Personal
+Date of purchase: Feb 22, 2024
+Price: $17.99* per month
+Payment method: C...
+
+  LLM response: no items extracted
+
+  Extracted: (nothing). why? ultrathink
+
+---
+
+wait honestly the more purchase data the more potential context - let's scrape all purchase data but just make sure we categorize it in the purchases database so we can easily flag by fashion-related or not. Thoughts?

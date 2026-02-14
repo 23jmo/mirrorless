@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "efbf91c690e0",
+  "session_id": "e6b0368f-f198-4039-be80-42559dec50e1",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T22:12:32.89989Z",
+  "branch": "AGENT",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "backend/agent/memory.py",
+    "backend/agent/prompts.py",
+    "backend/agent/tools.py",
+    "backend/migrations/007_add_is_fashion.sql",
+    "backend/scrape_debug.py",
+    "backend/scraper/db.py",
+    "backend/scraper/gmail_fetch.py",
+    "backend/scraper/purchase_parser.py"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 93,
+    "cache_creation_tokens": 146619,
+    "cache_read_tokens": 8815099,
+    "output_tokens": 20492,
+    "api_call_count": 83
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T22:12:32.714718Z",
+    "agent_lines": 458,
+    "human_added": 0,
+    "human_modified": 146,
+    "human_removed": 95,
+    "total_committed": 604,
+    "agent_percentage": 75.82781456953643
+  }
+}
