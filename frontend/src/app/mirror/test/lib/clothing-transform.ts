@@ -1,9 +1,10 @@
 import type { PoseLandmark } from '@/types/pose';
 import { POSE_LANDMARKS } from '@/types/pose';
-import type { ClothingCategory, ClothingTransform } from '@/types/clothing';
+import type { ClothingCategory, ClothingTransform, ClothingQuad, ClothingAnchorPoints } from '@/types/clothing';
 
 const MIN_VISIBILITY = 0.5;
-const PADDING_FACTOR = 1.1; // 10% padding around clothing
+const PADDING_FACTOR = 1.5; // 50% padding around clothing for better coverage
+const SIZE_MULTIPLIER = 1.3; // Additional scale multiplier to compensate for square crops
 
 interface PixelCoord {
   x: number;
@@ -109,9 +110,16 @@ function calculateTopTransform(
   const height = ((leftHeight + rightHeight) / 2) * PADDING_FACTOR;
 
   // Calculate rotation from shoulder line
-  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x);
+  // Add PI to flip 180 degrees (clothing images are typically oriented top-down)
+  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x) + Math.PI;
 
-  return { centerX, centerY, width, height, rotation };
+  return {
+    centerX,
+    centerY,
+    width: width * SIZE_MULTIPLIER,
+    height: height * SIZE_MULTIPLIER,
+    rotation
+  };
 }
 
 /**
@@ -155,9 +163,16 @@ function calculateBottomTransform(
   const height = ((leftHeight + rightHeight) / 2) * PADDING_FACTOR;
 
   // Calculate rotation from hip line
-  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x);
+  // Add PI to flip 180 degrees (clothing images are typically oriented top-down)
+  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x) + Math.PI;
 
-  return { centerX, centerY, width, height, rotation };
+  return {
+    centerX,
+    centerY,
+    width: width * SIZE_MULTIPLIER,
+    height: height * SIZE_MULTIPLIER,
+    rotation
+  };
 }
 
 /**
@@ -200,6 +215,104 @@ export function scaleToFit(
     return {
       width: targetHeight * imageAspect,
       height: targetHeight,
+    };
+  }
+}
+
+/**
+ * Get the 4 corner points for clothing quad mapping
+ * This maps clothing image corners directly to body landmarks
+ * If anchor points are provided, uses them for precise mapping
+ */
+export function getClothingQuad(
+  landmarks: PoseLandmark[],
+  category: ClothingCategory,
+  canvasWidth: number,
+  canvasHeight: number,
+  anchorPoints?: ClothingAnchorPoints
+): ClothingQuad | null {
+  // Check visibility
+  if (!areLandmarksVisible(landmarks, category)) {
+    return null;
+  }
+
+  // If anchor points provided and valid, use them for direct mapping
+  if (anchorPoints && anchorPoints.leftShoulder && anchorPoints.rightShoulder) {
+    console.log('Using detected anchor points for precise alignment');
+    return mapAnchorsToBody(landmarks, category, anchorPoints, canvasWidth, canvasHeight);
+  }
+
+  // Fallback to landmark-based quad (original behavior)
+  if (category === 'tops') {
+    const lShoulder = landmarks[POSE_LANDMARKS.LEFT_SHOULDER];
+    const rShoulder = landmarks[POSE_LANDMARKS.RIGHT_SHOULDER];
+    const lHip = landmarks[POSE_LANDMARKS.LEFT_HIP];
+    const rHip = landmarks[POSE_LANDMARKS.RIGHT_HIP];
+
+    return {
+      topLeft: landmarkToPixel(lShoulder, canvasWidth, canvasHeight),
+      topRight: landmarkToPixel(rShoulder, canvasWidth, canvasHeight),
+      bottomLeft: landmarkToPixel(lHip, canvasWidth, canvasHeight),
+      bottomRight: landmarkToPixel(rHip, canvasWidth, canvasHeight),
+    };
+  } else {
+    // bottoms
+    const lHip = landmarks[POSE_LANDMARKS.LEFT_HIP];
+    const rHip = landmarks[POSE_LANDMARKS.RIGHT_HIP];
+    const lAnkle = landmarks[POSE_LANDMARKS.LEFT_ANKLE];
+    const rAnkle = landmarks[POSE_LANDMARKS.RIGHT_ANKLE];
+
+    return {
+      topLeft: landmarkToPixel(lHip, canvasWidth, canvasHeight),
+      topRight: landmarkToPixel(rHip, canvasWidth, canvasHeight),
+      bottomLeft: landmarkToPixel(lAnkle, canvasWidth, canvasHeight),
+      bottomRight: landmarkToPixel(rAnkle, canvasWidth, canvasHeight),
+    };
+  }
+}
+
+/**
+ * Map detected clothing anchor points to body landmarks
+ * Direct mapping: clothing shoulders → body shoulders exactly
+ */
+function mapAnchorsToBody(
+  landmarks: PoseLandmark[],
+  category: ClothingCategory,
+  anchors: ClothingAnchorPoints,
+  canvasWidth: number,
+  canvasHeight: number
+): ClothingQuad {
+  if (category === 'tops') {
+    // Direct mapping: clothing shoulders → body shoulders
+    const lShoulderLandmark = landmarks[POSE_LANDMARKS.LEFT_SHOULDER];
+    const rShoulderLandmark = landmarks[POSE_LANDMARKS.RIGHT_SHOULDER];
+    const lHipLandmark = landmarks[POSE_LANDMARKS.LEFT_HIP];
+    const rHipLandmark = landmarks[POSE_LANDMARKS.RIGHT_HIP];
+
+    // Convert body landmarks to pixels
+    const bodyTopLeft = landmarkToPixel(lShoulderLandmark, canvasWidth, canvasHeight);
+    const bodyTopRight = landmarkToPixel(rShoulderLandmark, canvasWidth, canvasHeight);
+    const bodyBottomLeft = landmarkToPixel(lHipLandmark, canvasWidth, canvasHeight);
+    const bodyBottomRight = landmarkToPixel(rHipLandmark, canvasWidth, canvasHeight);
+
+    return {
+      topLeft: bodyTopLeft,
+      topRight: bodyTopRight,
+      bottomLeft: bodyBottomLeft,
+      bottomRight: bodyBottomRight,
+    };
+  } else {
+    // Bottoms: waistband → hips, hem → ankles
+    const lHipLandmark = landmarks[POSE_LANDMARKS.LEFT_HIP];
+    const rHipLandmark = landmarks[POSE_LANDMARKS.RIGHT_HIP];
+    const lAnkleLandmark = landmarks[POSE_LANDMARKS.LEFT_ANKLE];
+    const rAnkleLandmark = landmarks[POSE_LANDMARKS.RIGHT_ANKLE];
+
+    return {
+      topLeft: landmarkToPixel(lHipLandmark, canvasWidth, canvasHeight),
+      topRight: landmarkToPixel(rHipLandmark, canvasWidth, canvasHeight),
+      bottomLeft: landmarkToPixel(lAnkleLandmark, canvasWidth, canvasHeight),
+      bottomRight: landmarkToPixel(rAnkleLandmark, canvasWidth, canvasHeight),
     };
   }
 }
