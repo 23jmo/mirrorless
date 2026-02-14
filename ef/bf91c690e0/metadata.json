@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "efbf91c690e0",
+  "strategy": "manual-commit",
+  "branch": "AGENT",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CLAUDE.md",
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/agent/test_harness.py",
+    "backend/agent/tools.py",
+    "backend/tests/test_mira.py",
+    "frontend/src/app/mirror/page.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ef/bf91c690e0/0/metadata.json",
+      "transcript": "/ef/bf91c690e0/0/full.jsonl",
+      "context": "/ef/bf91c690e0/0/context.md",
+      "content_hash": "/ef/bf91c690e0/0/content_hash.txt",
+      "prompt": "/ef/bf91c690e0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1824,
+    "cache_creation_tokens": 154644,
+    "cache_read_tokens": 3305355,
+    "output_tokens": 5832,
+    "api_call_count": 50
+  }
+}

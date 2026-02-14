@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "efbf91c690e0",
+  "session_id": "ece6ecba-9794-4079-a701-111dcb31ebdd",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T22:07:48.345508Z",
+  "branch": "AGENT",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CLAUDE.md",
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/agent/test_harness.py",
+    "backend/agent/tools.py",
+    "backend/tests/test_mira.py",
+    "frontend/src/app/mirror/page.tsx"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 1824,
+    "cache_creation_tokens": 154644,
+    "cache_read_tokens": 3305355,
+    "output_tokens": 5832,
+    "api_call_count": 50
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T22:07:48.249213Z",
+    "agent_lines": 0,
+    "human_added": 0,
+    "human_modified": 548,
+    "human_removed": 45,
+    "total_committed": 548,
+    "agent_percentage": 0
+  }
+}
