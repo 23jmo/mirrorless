@@ -1,0 +1,88 @@
+Implement the following plan:
+
+# Plan: Fix Haiku Infinite Tool-Call Loop
+
+## Context
+
+After adding tool logging, the backend terminal reveals an infinite loop calling `present_items({})` with empty input:
+
+```
+[mira] Tool call: present_items({})
+[mira-tools] present_items: no items provided
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=300)
+[mira] Tool call: present_items({})  ← repeats until api_calls hits 20
+```
+
+**Model routing recap**: Sonnet handles conversational turns (speech, initial tool calls like `search_clothing`). Haiku (300 max_tokens) handles tool_result processing — including the **curation step** after `search_clothing` returns results. This is where the bug lives.
+
+**Root cause**: After `search_clothing` returns 12 items, **Haiku at 300 max_tokens** must (a) select the best 1-5 items and (b) serialize them as a `present_items({"items": [...]})` call. This is too complex for Haiku at that token budget — it outputs a truncated/empty `present_items({})`. The error result loops back, Haiku retries, and the cycle repeats.
+
+**Why the loop doesn't stop**: `_handle_tool_calls()` unconditionally re-calls `_call_claude()` after every tool execution. The only brake is `api_calls >= 20`, which allows 20 failed iterations.
+
+---
+
+## Fix 1: Increase Haiku max_tokens (300 → 1024)
+
+**File**: `backend/agent/orchestrator.py` — `_select_model()` (line 232)
+
+Change `return HAIKU_MODEL, 300` → `return HAIKU_MODEL, 1024`.
+
+The curation + `present_items` serialization easily needs 400-600 tokens (items with URLs, titles, prices). 1024 gives Haiku enough room to both select items AND output the tool call. Still cheaper per-token than Sonnet.
+
+---
+
+## Fix 2: Add tool-call depth limit
+
+**File**: `backend/agent/orchestrator.py` — `_handle_tool_calls()` and `_call_claude()`
+
+Add a `tool_depth` parameter to track consecutive tool rounds within a single event. Cap at 3 rounds (search → present → follow-up is the expected max). When exceeded, log a warning and stop — don't call Claude again.
+
+Implementation:
+- `_call_claude(session, tool_depth=0)` — add parameter with default 0
+- At the top of `_call_claude`: if `tool_depth >= 3`, log `[mira] Tool depth limit reached` and return
+- `_handle_tool_calls(session, tool_uses, tool_depth)` — pass it through
+- Recursive call: `await self._call_claude(session, tool_depth=tool_depth + 1)`
+
+---
+
+## Fix 3: Mark failed tool results with `is_error`
+
+**File**: `backend/agent/orchestrator.py` — `_handle_tool_calls()` (around line 330)
+
+When a tool result contains an `"error"` key, set `is_error: True` on the `tool_result` block sent back to Claude. This is a Claude API feature that signals "this failed, generate text instead of retrying."
+
+```python
+tool_results.append({
+    "type": "tool_result",
+    "tool_use_id": tool_use.id,
+    "content": json.dumps(result),
+    "is_error": "error" in result,
+})
+```
+
+---
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `backend/agent/orchestrator.py` | (1) Haiku max_tokens 300→1024, (2) tool-call depth limit of 3, (3) `is_error` flag on failed tool results |
+
+---
+
+## Verification
+
+1. Start backend with `uvicorn main:app --reload`
+2. Start a chat session from `/chat`
+3. Trigger a recommendation flow — backend terminal should show:
+   - `search_clothing` returns results
+   - `present_items` called WITH items (not empty `{}`)
+   - No repeated `present_items({})` loop
+4. If a tool does fail, confirm the loop stops at 3 rounds max and Mira speaks a fallback line
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+okay commit and push - this is good
