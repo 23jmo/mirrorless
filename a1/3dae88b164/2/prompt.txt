@@ -1,0 +1,444 @@
+Implement the following plan:
+
+# Simplify Extraction to LLM-Only + Fix HTML Bodies
+
+## Context
+
+The regex extraction pipeline has compounding edge cases: summary lines captured as items ("Subtotal:", "Tax:"), SKUs as item names ("140953SCHV1"), raw HTML bodies fed to regex producing garbage, and non-fashion emails (Robinhood, Starbucks) slipping through. Haiku is essentially free via the OAuth token method, so we optimize purely for accuracy: replace the regex+subject-fallback+LLM-fallback chain with a single LLM call per email.
+
+## Files to Modify
+
+| File | What changes |
+|------|-------------|
+| `backend/scraper/purchase_parser.py` | Replace regex/fallback chain with LLM-only; add brand filter; improve JSON parsing |
+| `backend/scraper/gmail_fetch.py` | Detect HTML mislabeled as text/plain |
+| `backend/scrape_debug.py` | Simplify step 3 to match new LLM-only flow |
+
+## Fixes
+
+### Fix 1: Fashion brand filter at extraction time (`purchase_parser.py`)
+
+Import `_NON_FASHION_BRANDS` from `agent/prompts.py`. Early return in `extract_purchases()` right after brand/merchant detection — before any LLM call:
+
+```python
+from agent.prompts import _NON_FASHION_BRANDS
+
+# Inside extract_purchases(), after brand = _detect_brand(...), merchant = _detect_merchant(...)
+if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
+    return []
+```
+
+Zero-cost set lookup. Skips Robinhood, Starbucks, Uber, Stripe, etc. before spending any Haiku tokens.
+
+### Fix 2: Detect HTML in "plain text" bodies (`gmail_fetch.py`)
+
+In `_extract_body()`, after getting `text/plain`, check if it's actually HTML:
+
+```python
+plain = _find_mime_part(payload, "text/plain")
+if plain:
+    stripped = plain.lstrip()
+    if stripped.startswith(("<!doctype", "<html", "<HTML")):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(plain, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        return soup.get_text(separator="\n", strip=True)
+    return plain
+```
+
+Fixes the Robinhood-style raw HTML body problem for all senders.
+
+### Fix 3: Replace regex chain with LLM-only (`purchase_parser.py`)
+
+**Remove** from `extract_purchases()`:
+- `ITEM_PRICE_PATTERN.findall(body)` regex extraction block (~lines 260-280)
+- Subject-line fallback block (~lines 282-312)
+- The conditional `if not purchases:` LLM fallback (~lines 314-332)
+
+**Replace with** a single LLM call for every email that passes `_is_receipt()` + brand filter:
+
+```python
+def extract_purchases(email: dict) -> list[dict]:
+    if not _is_receipt(email):
+        return []
+
+    body = email.get("body", "")
+    subject = email.get("subject", "")
+    sender = email.get("sender", "")
+    full_text = f"{subject}\n{body}"
+
+    brand = _detect_brand(full_text, sender)
+    merchant = _detect_merchant(sender)
+
+    # Skip non-fashion sources
+    if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
+        return []
+
+    order_status = _extract_order_status(full_text)
+    tracking_number = _extract_tracking(full_text)
+    receipt_text = full_text[:500] if full_text else None
+
+    # LLM extraction for all emails
+    llm_items = _extract_with_llm(email)
+
+    purchases = []
+    for item in llm_items:
+        item_name = item.get("item_name", "")
+        if not item_name or len(item_name) < 3:
+            continue
+        purchases.append({
+            "brand": item.get("brand") or brand,
+            "merchant": item.get("merchant") or merchant,
+            "item_name": item_name,
+            "category": _categorize_item(item_name),
+            "price": item.get("price"),
+            "date": email.get("date"),
+            "order_status": item.get("order_status") or order_status,
+            "tracking_number": tracking_number,
+            "receipt_text": receipt_text,
+            "source_email_id": email.get("message_id"),
+        })
+    return purchases
+```
+
+**Keep** these existing functions (still used):
+- `_is_receipt()` — pre-filter (OR logic)
+- `_detect_brand()`, `_detect_merchant()` — fallback values when LLM doesn't provide them
+- `_extract_order_status()`, `_extract_tracking()` — regex-based, these work well for structured fields
+- `_categorize_item()` — post-LLM category assignment
+- `_extract_with_llm()` — now the primary extraction method
+
+**Can remove** (no longer called):
+- The `ITEM_PRICE_PATTERN` regex constant
+- The `PRICE_PATTERN` regex constant
+- The `_parse_price()` helper
+- The inline `_fashion_signals` tuple
+
+### Fix 4: Improve LLM prompt + robust JSON parsing (`purchase_parser.py`)
+
+**Upgrade the prompt** in `_extract_with_llm()` to be fashion-aware:
+
+```python
+prompt = (
+    "Extract clothing, shoes, and fashion accessory purchases from this receipt email. "
+    "ONLY include fashion-related items (clothing, shoes, bags, jewelry, accessories). "
+    "IGNORE non-fashion items like food, drinks, flowers, electronics, software, financial transactions, subscriptions.\n\n"
+    "Return a JSON object with a single key \"items\" containing an array. "
+    "Each item should have: brand (string), merchant (string or null), "
+    "item_name (string), price (number or null), currency (string, default \"USD\"), "
+    "order_status (string or null: confirmed/shipped/delivered).\n\n"
+    "If this is not a fashion receipt or no fashion items can be extracted, return {\"items\": []}.\n\n"
+    f"Subject: {subject}\n\nBody:\n{body}"
+)
+```
+
+**Also add robust JSON parsing:**
+
+```python
+content = message.content[0].text
+try:
+    data = json.loads(content)
+except json.JSONDecodeError:
+    start = content.find("{")
+    end = content.rfind("}") + 1
+    if start != -1 and end > start:
+        data = json.loads(content[start:end])
+    else:
+        return []
+```
+
+### Fix 5: Update debug tool (`scrape_debug.py`)
+
+Simplify `step3_extract()` to match new flow:
+- Remove regex matching display
+- Remove subject-fallback display
+- For each receipt email: show brand filter check, then LLM input/output
+- `--no-llm` flag: shows what *would* be sent to Haiku but skips the call (useful for testing the filter pipeline without spending tokens)
+- Remove `FASHION_SIGNALS` constant (no longer needed)
+- Remove `PRICE_PATTERN` / `ITEM_PRICE_PATTERN` imports (no longer needed)
+
+## What stays the same
+
+- `_is_receipt()` OR logic (already changed)
+- `RECEIPT_SENDERS` expanded list (already changed)
+- Gmail search queries in `pipeline.py`
+- `_filter_fashion_purchases()` in `agent/prompts.py` (second safety net at profile-build time)
+- `pipeline.py` `fast_scrape()` — calls `extract_purchases()` same as before
+- Database operations unchanged
+
+## Verification
+
+```bash
+cd backend
+python scrape_debug.py <user_id> --no-llm    # verify brand filter works, see what would go to LLM
+python scrape_debug.py <user_id>              # full run, verify clean extraction
+```
+
+Expected:
+- Robinhood/Starbucks/Stripe emails: skipped by brand filter (no LLM call)
+- 1-800-FLOWERS: LLM correctly extracts item name (not "140953SCHV1" or "Subtotal:")
+- HTML body emails: clean text fed to LLM
+- Total cost shown at end of run
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+always exracting nothing: --- Email 78/79 ---
+
+  Subject: Your subscription confirmation
+  Sender:  Epidemic Sound <noreply@accounts.epidemicsound.com>
+ Subscription: Perso..."cription:firmation
+
+  Brand: Accounts  |  Merchant: Accounts
+  Method: LLM (sending to Claude Haiku)
+  LLM input:
+    Subject: Your subscription confirmation
+    Body: Your subscription confirmation
+
+Your free trial is now active
+ for the following subscription:
+
+Subscription: Personal
+Date of purchase: Feb 22, 2024
+Price: $17.99* per month
+Payment method: C...
+
+  LLM response: no items extracted
+
+  Extracted: (nothing). why? ultrathink
+
+---
+
+wait honestly the more purchase data the more potential context - let's scrape all purchase data but just make sure we categorize it in the purchases database so we can easily flag by fashion-related or not. Thoughts?
+
+---
+
+run the migration for me
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the conversation:
+
+1. **Initial Plan Implementation** - User asked to implement a plan to simplify extraction to LLM-only + fix HTML bodies. The plan was in a file and involved 5 fixes across 3 files.
+
+2. **First Round of Changes** - I implemented:
+   - Fix 1: Fashion brand filter in purchase_parser.py (import _NON_FASHION_BRANDS, early return)
+   - Fix 2: HTML detection in gmail_fetch.py (detect HTML mislabeled as text/plain)
+   - Fix 3: Replace regex chain with LLM-only in purchase_parser.py
+   - Fix 4: Improve LLM prompt + robust JSON parsing in purchase_parser.py
+   - Fix 5: Update scrape_debug.py to match new flow
+
+3. **User reported "always extracting nothing"** - They showed debug output where emails were going to LLM but returning no items. I investigated and found TWO bugs:
+   - Bug 1: Subdomain collision - `_detect_brand` and `_detect_merchant` used `domain.split(".")[0]` which extracted subdomains like "Mail" from "mail.nike.com". Since "mail", "info", "news", "us" were in `_NON_FASHION_BRANDS`, legitimate fashion emails were being filtered.
+   - Bug 2: Silent LLM failures - no warning when ANTHROPIC_AUTH_TOKEN was missing.
+   - Fixed both bugs.
+
+4. **User pivoted strategy** - "let's scrape all purchase data but just make sure we categorize it in the purchases database so we can easily flag by fashion-related or not"
+
+5. **Planning Phase** - Explored codebase thoroughly with agents. Designed plan for `is_fashion` boolean column approach.
+
+6. **User said "commit old stuff, clear context, auto accept edits"** - I committed the first round of changes as commit `2772a9b`.
+
+7. **Implementation of is_fashion plan** - Created/modified 8 files:
+   - `migrations/007_add_is_fashion.sql` - NEW
+   - `scraper/purchase_parser.py` - removed brand gate, changed LLM prompt, added is_fashion
+   - `scraper/db.py` - added is_fashion to INSERT with DO UPDATE, added to SELECT
+   - `agent/memory.py` - deleted _fashion_filter_clause, simplified queries
+   - `agent/prompts.py` - simplified _filter_fashion_purchases
+   - `agent/tools.py` - added fashion_only param and is_fashion to results
+   - `scrape_debug.py` - updated display
+
+8. **User asked "run the migration for me"** and then "and then run the tests too"
+
+9. I was in the process of finding the Neon project ID to run the migration when the summary was requested.
+
+Let me trace through all the specific code changes and file states.
+
+Summary:
+1. Primary Request and Intent:
+   - **Original request**: Implement a plan to simplify the purchase extraction pipeline from regex+subject-fallback+LLM-fallback to LLM-only, fix HTML body detection, and fix subdomain detection bugs.
+   - **Pivoted request**: After seeing "always extracting nothing" output, the user changed strategy: "let's scrape all purchase data but just make sure we categorize it in the purchases database so we can easily flag by fashion-related or not."
+   - **Current request**: Run the migration `007_add_is_fashion.sql` against Neon, then run the tests.
+
+2. Key Technical Concepts:
+   - **LLM-only extraction**: Replace regex/subject-fallback/LLM-fallback chain with a single Claude Haiku call per receipt email
+   - **`is_fashion` boolean column**: Store ALL purchase data but flag fashion vs non-fashion for easy filtering
+   - **Subdomain collision bug**: `domain.split(".")[0]` extracts subdomain ("Mail") not primary domain ("Nike") from `mail.nike.com` — fixed with `parts[-2] if len(parts) >= 3 else parts[0]`
+   - **Partial index**: `CREATE INDEX WHERE is_fashion = true` for fast fashion-filtered queries
+   - **`DO UPDATE` on conflict**: Changed from `DO NOTHING` to `DO UPDATE SET is_fashion = EXCLUDED.is_fashion` so re-scrapes self-correct the flag
+   - **Neon Postgres**: Database via serverless HTTP API, parameterized queries with `$1, $2` placeholders
+   - **OAuth token auth for Haiku**: Uses `ANTHROPIC_AUTH_TOKEN` env var, essentially free
+   - **`_NON_FASHION_BRANDS` set**: Used as fallback heuristic only (no longer gates extraction)
+   - **Brand filter clause simplification**: Replaced 30+ parameterized SQL placeholders with simple `AND is_fashion = true`
+
+3. Files and Code Sections:
+
+   - **`backend/migrations/007_add_is_fashion.sql`** — NEW FILE
+     - Adds `is_fashion` boolean column, partial index, backfills known non-fashion brands
+     ```sql
+     ALTER TABLE purchases ADD COLUMN IF NOT EXISTS is_fashion boolean NOT NULL DEFAULT true;
+     CREATE INDEX IF NOT EXISTS idx_purchases_is_fashion ON purchases(user_id, is_fashion) WHERE is_fashion = true;
+     UPDATE purchases SET is_fashion = false WHERE LOWER(brand) IN ('github', 'google', 'robinhood', ...);
+     ```
+
+   - **`backend/scraper/purchase_parser.py`** — MAJOR REWRITE
+     - Removed `PRICE_PATTERN`, `ITEM_PRICE_PATTERN` regex constants, `_parse_price()` helper
+     - Removed brand filter early return (no longer gates extraction)
+     - Changed LLM prompt from fashion-only to extract-all with `is_fashion` flag
+     - Added `is_fashion` to output dicts with fallback heuristic
+     - Fixed `_detect_brand` and `_detect_merchant` subdomain collision
+     - Key new prompt:
+     ```python
+     prompt = (
+         "Extract ALL purchase items from this receipt email. Include every product "
+         "purchased: clothing, shoes, accessories, electronics, food, subscriptions, everything.\n\n"
+         "For each item, determine if it is a FASHION item (clothing, shoes, bags, jewelry, "
+         "accessories, beauty/grooming). Set is_fashion to true for fashion items, false otherwise.\n\n"
+         "Return a JSON object with a single key \"items\" containing an array. "
+         "Each item should have: brand (string), merchant (string or null), "
+         "item_name (string), price (number or null), currency (string, default \"USD\"), "
+         "order_status (string or null: confirmed/shipped/delivered), "
+         "is_fashion (boolean).\n\n"
+         "If no purchase items can be extracted, return {\"items\": []}.\n\n"
+         f"Subject: {subject}\n\nBody:\n{body}"
+     )
+     ```
+     - Key `is_fashion` fallback in `extract_purchases()`:
+     ```python
+     is_fashion = item.get("is_fashion")
+     if is_fashion is None:
+         item_brand = (item.get("brand") or brand).lower()
+         is_fashion = (
+             item_brand not in _NON_FASHION_BRANDS
+             and _categorize_item(item_name) is not None
+         )
+     ```
+     - Fixed subdomain detection in `_detect_brand`:
+     ```python
+     parts = match.group(1).split(".")
+     domain_name = parts[-2] if len(parts) >= 3 else parts[0]
+     return domain_name.capitalize()
+     ```
+     - Same fix applied to `_detect_merchant` fallback
+
+   - **`backend/scraper/gmail_fetch.py`** — HTML DETECTION FIX
+     - Added check for HTML mislabeled as text/plain in `_extract_body()`:
+     ```python
+     plain = _find_mime_part(payload, "text/plain")
+     if plain:
+         stripped = plain.lstrip()
+         if stripped.startswith(("<!doctype", "<html", "<HTML")):
+             from bs4 import BeautifulSoup
+             soup = BeautifulSoup(plain, "html.parser")
+             for tag in soup(["script", "style"]):
+                 tag.decompose()
+             return soup.get_text(separator="\n", strip=True)
+         return plain
+     ```
+
+   - **`backend/scraper/db.py`** — STORAGE LAYER
+     - Added `is_fashion` as 12th parameter in INSERT
+     - Changed `ON CONFLICT ... DO NOTHING` to `DO UPDATE SET is_fashion = EXCLUDED.is_fashion`
+     - Added `is_fashion` to `get_all_purchases()` SELECT
+     ```python
+     await db.execute(
+         "INSERT INTO purchases "
+         "(user_id, brand, item_name, category, price, date, source_email_id, "
+         "merchant, order_status, tracking_number, receipt_text, is_fashion) "
+         "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11, $12) "
+         "ON CONFLICT (user_id, COALESCE(source_email_id, ''), item_name) "
+         "DO UPDATE SET is_fashion = EXCLUDED.is_fashion",
+         [..., p.get("is_fashion", True)],
+     )
+     ```
+
+   - **`backend/agent/memory.py`** — MAJOR SIMPLIFICATION
+     - Deleted `_fashion_filter_clause()` function entirely (was generating 30+ SQL params)
+     - Removed `from agent.prompts import _NON_FASHION_BRANDS` import
+     - Added `is_fashion` to `load_user_purchases()` SELECT and output dicts
+     - Rewrote all 4 queries in `load_purchase_statistics()` from `AND {filter_clause}` (30+ params) to `AND is_fashion = true` (zero extra params)
+
+   - **`backend/agent/prompts.py`** — FILTER SIMPLIFICATION
+     - `_filter_fashion_purchases()`: Replaced `brand.lower() in _NON_FASHION_BRANDS` with `not p.get("is_fashion", True)`
+     - Added non-fashion count note in `build_system_prompt()`:
+     ```python
+     non_fashion_count = sum(1 for p in purchases if not p.get("is_fashion", True))
+     if non_fashion_count > 0:
+         parts.append(f"\nNote: {non_fashion_count} non-fashion purchases also in history (use search_purchases to explore).")
+     ```
+
+   - **`backend/agent/tools.py`** — SEARCH TOOL UPDATE
+     - Added `fashion_only` boolean parameter to `search_purchases` tool schema
+     - Added `if tool_input.get("fashion_only") is True: conditions.append("is_fashion = true")` to query builder
+     - Added `is_fashion` to SELECT and result dicts
+
+   - **`backend/scrape_debug.py`** — DEBUG DISPLAY UPDATE
+     - Updated LLM_PROMPT_TEMPLATE to match new extract-all prompt
+     - Replaced brand filter `continue` with informational note
+     - Added `is_fashion` determination with fallback (mirrors purchase_parser.py logic)
+     - Added "Fashion?" column to extraction and summary tables
+     - Added fashion/non-fashion count to summary
+     - Removed `brand-filtered` from method counts
+
+4. Errors and Fixes:
+   - **"Always extracting nothing" bug**: User reported all emails returning no items from LLM extraction.
+     - **Root cause 1**: Subdomain collision — `_detect_brand("noreply@mail.nike.com")` returned "Mail", and "mail" was in `_NON_FASHION_BRANDS`, silently filtering legitimate fashion emails.
+     - **Fix**: Changed `domain.split(".")[0]` to `parts[-2] if len(parts) >= 3 else parts[0]` in both `_detect_brand` and `_detect_merchant`.
+     - **Root cause 2**: Silent auth token failure — if `ANTHROPIC_AUTH_TOKEN` was missing, `_extract_with_llm()` returned `[]` with no indication.
+     - **Fix**: Added `logger.warning()` in `_extract_with_llm()` and `!! WARNING` check at start of `step3_extract()` in debug tool.
+   - **User feedback**: "always extracting nothing: ... why? ultrathink" — led to deep investigation and discovery of the subdomain collision bug.
+
+5. Problem Solving:
+   - Solved regex extraction unreliability by replacing with LLM-only extraction
+   - Solved HTML-in-plain-text body corruption by detecting HTML markers
+   - Solved subdomain collision bug in brand/merchant detection
+   - Solved silent LLM failure by adding token warnings
+   - Solved the "scrape everything vs filter" design tension with `is_fashion` boolean column approach
+   - Simplified `load_purchase_statistics()` from 30+ param brand blocklist SQL to simple boolean filter
+
+6. All User Messages:
+   - "Implement the following plan: [detailed plan for LLM-only extraction + HTML fix]"
+   - "always extracting nothing: [debug output showing Epidemic Sound email] why? ultrathink"
+   - "wait honestly the more purchase data the more potential context - let's scrape all purchase data but just make sure we categorize it in the purchases database so we can easily flag by fashion-related or not. Thoughts?"
+   - "commit old stuff, clear context, auto accept edits"
+   - "run the migration for me"
+   - "and then run the tests too"
+
+7. Pending Tasks:
+   - **Run migration `007_add_is_fashion.sql` against Neon** — was actively working on this, found the `mcp__Neon__run_sql_transaction` tool, called `mcp__Neon__list_projects` to find the project ID
+   - **Run the tests** — user explicitly requested: "and then run the tests too" — needs `pytest tests/test_purchase_parser.py tests/test_scraper_db.py tests/test_profile_builder.py -v`
+   - **Commit the is_fashion changes** — all changes are unstaged, not yet committed
+
+8. Current Work:
+   I was in the process of running the Neon migration. I had:
+   1. Loaded the `mcp__Neon__run_sql` and `mcp__Neon__run_sql_transaction` tools via ToolSearch
+   2. Called `mcp__Neon__list_projects` to find the project ID
+   3. Was waiting for the project list response when the summary was triggered
+
+   The migration SQL to run is in `/Users/johnathanmo/mirrorless/backend/migrations/007_add_is_fashion.sql`:
+   ```sql
+   ALTER TABLE purchases ADD COLUMN IF NOT EXISTS is_fashion boolean NOT NULL DEFAULT true;
+   CREATE INDEX IF NOT EXISTS idx_purchases_is_fashion ON purchases(user_id, is_fashion) WHERE is_fashion = true;
+   UPDATE purchases SET is_fashion = false WHERE LOWER(brand) IN ('github', 'google', 'robinhood', ...);
+   ```
+
+9. Optional Next Step:
+   Resume finding the Neon project ID and run the migration, then run the tests. User's exact messages: **"run the migration for me"** and **"and then run the tests too"**.
+   
+   Steps:
+   1. Get Neon project ID from `mcp__Neon__list_projects` response
+   2. Run the 3 SQL statements from `007_add_is_fashion.sql` via `mcp__Neon__run_sql_transaction`
+   3. Run `pytest tests/test_purchase_parser.py tests/test_scraper_db.py tests/test_profile_builder.py -v` in `backend/`
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+how do i run the test scraper again
