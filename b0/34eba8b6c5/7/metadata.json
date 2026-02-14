@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "b034eba8b6c5",
+  "session_id": "74854d3b-2255-4a63-bb0b-945ba5e799de",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T12:12:43.022215Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/agent/memory.py",
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/agent/tools.py",
+    "backend/scraper/profile_builder.py",
+    "backend/tests/test_mira.py"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 43,
+    "cache_creation_tokens": 82814,
+    "cache_read_tokens": 2599953,
+    "output_tokens": 10705,
+    "api_call_count": 40
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T12:12:42.971341Z",
+    "agent_lines": 651,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 651,
+    "agent_percentage": 100
+  }
+}

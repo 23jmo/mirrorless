@@ -3,7 +3,7 @@
   "checkpoint_id": "b034eba8b6c5",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 16,
+  "checkpoints_count": 17,
   "files_touched": [
     "backend/agent/memory.py",
     "backend/agent/orchestrator.py",
@@ -21,6 +21,7 @@
     "backend/scraper/__init__.py",
     "backend/scraper/db.py",
     "backend/scraper/pipeline.py",
+    "backend/scraper/profile_builder.py",
     "backend/scraper/routes.py",
     "backend/scraper/socket_events.py",
     "backend/tests/mira_cli.py",
@@ -82,13 +83,20 @@
       "context": "/b0/34eba8b6c5/6/context.md",
       "content_hash": "/b0/34eba8b6c5/6/content_hash.txt",
       "prompt": "/b0/34eba8b6c5/6/prompt.txt"
+    },
+    {
+      "metadata": "/b0/34eba8b6c5/7/metadata.json",
+      "transcript": "/b0/34eba8b6c5/7/full.jsonl",
+      "context": "/b0/34eba8b6c5/7/context.md",
+      "content_hash": "/b0/34eba8b6c5/7/content_hash.txt",
+      "prompt": "/b0/34eba8b6c5/7/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 10385,
-    "cache_creation_tokens": 1388615,
-    "cache_read_tokens": 28596881,
-    "output_tokens": 54875,
-    "api_call_count": 410
+    "input_tokens": 10428,
+    "cache_creation_tokens": 1471429,
+    "cache_read_tokens": 31196834,
+    "output_tokens": 65580,
+    "api_call_count": 450
   }
 }
