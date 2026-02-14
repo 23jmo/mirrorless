@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "d826ea141f62",
+  "session_id": "e6b0368f-f198-4039-be80-42559dec50e1",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T22:53:35.179688Z",
+  "branch": "AGENT",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/migrations/008_create_calendar_events.sql",
+    "backend/scraper/calendar_fetch.py",
+    "backend/tests/test_calendar_fetch.py",
+    "docs/plans/2026-02-14-sonar-enrichment.md"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "c38ae79d-c017-42e3-af02-cf3f9f700a88",
+  "checkpoint_transcript_start": 572,
+  "transcript_lines_at_start": 572,
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 10113,
+    "cache_read_tokens": 688931,
+    "output_tokens": 2837,
+    "api_call_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T22:53:34.961921Z",
+    "agent_lines": 0,
+    "human_added": 0,
+    "human_modified": 35,
+    "human_removed": 874,
+    "total_committed": 35,
+    "agent_percentage": 0
+  }
+}
