@@ -1,0 +1,206 @@
+# Plan: Mira Agent System Overhaul
+
+## Context
+
+Mira is the AI personal stylist agent powering the Mirrorless smart mirror. The current agent system (`backend/agent/`) works end-to-end but has several issues that hurt demo quality:
+
+1. **Search flooding**: `search_clothing` returns up to 40 items and broadcasts ALL of them to the frontend, but Mira only talks about 1-2, creating confusion
+2. **Generic personality**: Haiku 4.5 produces adequate but not stellar roasts/curation
+3. **Passive flow**: Mira sometimes asks open-ended questions instead of driving the conversation assertively
+4. **No outfit analysis**: Camera snapshot isn't captured at session start, so Mira can't comment on what the user is wearing
+5. **No fast iteration path**: Testing requires the full frontend; no CLI harness exists
+
+The goal is to make Mira the **best possible agent** for a hackathon demo — assertive, proactive, personality-forward, with clean curated recommendations.
+
+---
+
+## Pre-Implementation: Git Worktree
+
+```bash
+git worktree add ../mirrorless-AGENT AGENT || git worktree add --detach ../mirrorless-AGENT && cd ../mirrorless-AGENT && git checkout -b AGENT
+```
+
+All changes happen on the `AGENT` branch in the worktree.
+
+---
+
+## Design Decisions (from Interview)
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Curation strategy | Hybrid: Serper 10-15, Sonnet picks 3-5 | Quality filtering without over-fetching |
+| Item presentation | Mira decides per turn (1-5 items) | Dynamic, demo-flexible |
+| Pacing | Always proactive, conversational bridge | Mira comments on reactions then acts |
+| Architecture | Keep custom orchestrator (no Agent SDK) | Proven, debuggable, fits real-time streaming |
+| Agent SDK | Optional enhancement only, if time permits | Risk mitigation for hackathon |
+| Model split | Sonnet 4.5 for speech, Haiku 4.5 for tool processing | Quality where it matters, speed where it doesn't |
+| Conversational flow | Scripted opener (2-3 turns), then freeform | Guaranteed strong start, natural middle |
+| Opener style | Immediate deep cut (name + brand + price + date) | Maximum wow factor |
+| Tool chain | Two-step: search_clothing → present_items | Clean separation of search vs curation |
+| search_clothing broadcast | Results go to Claude ONLY (no frontend) | Frontend only sees curated picks |
+| present_items output | Voice only, no pitch captions on cards | Cards show image + price + brand; Mira's voice is the narration |
+| Camera | Auto-snapshot at session start | Mira sees the user immediately |
+| Session end | API limit (20) + manual override | Belt and suspenders |
+| Query quality | Prompt Mira to write detailed queries | No backend auto-enhancement |
+| Data fallback | Roast outfit if no purchases | Works for any user |
+| Webhooks | Not needed for now | Focus on voice + gestures + silence |
+| Testing | CLI harness + existing /chat page | Fast backend iteration + E2E verification |
+
+---
+
+## Implementation Plan
+
+### Step 1: Modify `search_clothing` — Remove Frontend Broadcast
+
+**File**: `backend/agent/tools.py`
+
+- Remove `frontend_payload` from `_search_clothing()` return dict (lines 184-192)
+- Change default `num_results` from 10 to 12 in tool definition (line 36) and implementation (line 153)
+- Update tool description to clarify results go to Claude only, not the user
+- Add query crafting guidance: "Write detailed queries including gender, price ceiling, style keywords"
+
+### Step 2: Add `present_items` Tool
+
+**File**: `backend/agent/tools.py`
+
+Add new tool to `TOOL_DEFINITIONS`:
+- **name**: `present_items`
+- **description**: Present curated picks to the mirror display. Call AFTER search_clothing.
+- **input_schema**: `{ items: [{ product_id, title, price, image_url, link, source }] }` (1-5 items)
+- **behavior**: Returns `frontend_payload` for Socket.io broadcast (this is the ONLY path to the frontend now)
+
+Add `_present_items()` async function and update `execute_tool()` dispatch.
+
+**File**: `backend/agent/orchestrator.py`
+
+- Update `_handle_tool_calls` (line 290): Track `items_shown` on `present_items` instead of `search_clothing`
+- Update `_last_shown_item` tracking to use `present_items` results
+
+### Step 3: Split-Model Routing
+
+**File**: `backend/agent/orchestrator.py`
+
+- Add constants: `SONNET_MODEL = "claude-sonnet-4-5-20250929"` and `HAIKU_MODEL = "claude-haiku-4-5-20251001"`
+- Add `_select_model(session)` method:
+  - If last message is `tool_result` → Haiku (processing tool output)
+  - Otherwise → Sonnet (conversational turn)
+- Modify `_call_claude`: use `self._select_model(session)` instead of hardcoded model
+- Increase `max_tokens` to 400 for Sonnet turns (personality needs room), keep 300 for Haiku
+- Keep `_generate_summary` on Haiku
+
+### Step 4: Prompt Rewrite — Assertive Scripted Opener
+
+**File**: `backend/agent/prompts.py`
+
+Replace `## Session Flow` section with scripted opener instructions:
+- **Turn 1 (MANDATORY)**: First sentence MUST name a specific purchase with brand + price + date
+- **Turn 2 (OUTFIT CHECK)**: React to auto-snapshot, compare to purchase history, transition assertively ("I'm pulling up something for you")
+- **Turn 3+ (RECOMMENDATIONS)**: Drive the conversation, use search_clothing with detailed queries, curate via present_items
+
+Update `## Tool Usage` section:
+- Clarify search_clothing returns to Claude only
+- Explain present_items is the only way to show items to the user
+- Add query crafting examples
+
+Update no-data fallback:
+- Roast current outfit from camera instead of purchases
+- Ask about style then start recommending proactively
+
+### Step 5: Auto-Snapshot at Session Start
+
+**File**: `backend/agent/orchestrator.py`
+
+In `start_session()`, AFTER the opener `handle_event`, emit `request_snapshot`:
+```python
+if self.sio:
+    await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+```
+
+The snapshot arrives as a separate `mirror_event` with `type: "snapshot"`. Mira's second turn naturally reacts to seeing the user. This is conversationally smooth — "Hey, I'm Mira..." → [snapshot arrives] → "Oh okay, I see what we're working with..."
+
+**File**: `frontend/src/app/mirror/page.tsx`
+
+Add Socket.io listener for `request_snapshot`:
+- Capture frame from video element via canvas
+- Convert to base64 JPEG
+- Emit as `mirror_event` with `type: "snapshot"`
+- Note: Mirror page needs user_id context (via URL query param or room state)
+
+### Step 6: CLI Test Harness
+
+**New file**: `backend/agent/test_harness.py`
+
+Features:
+- `--mock` mode with hardcoded rich user data (no DB needed)
+- `--user-id UUID` for real DB users
+- Interactive mode: type messages, see Mira's streamed responses
+- Gesture shortcuts: `/like`, `/dislike`, `/left`, `/right`
+- `/status` for session counters, `/end` for session close
+- `--script FILE` for automated regression testing
+- Mock Socket.io that prints events to terminal
+
+### Step 7: Update CLAUDE.md
+
+**File**: `CLAUDE.md`
+
+Add `### Agent Architecture (Mira)` section covering:
+- Split model strategy
+- Two-step recommendation flow
+- Auto-snapshot pattern
+- Available tools and their roles
+- CLI test harness usage
+
+---
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `backend/agent/tools.py` | Remove search_clothing broadcast, add present_items tool |
+| `backend/agent/orchestrator.py` | Split-model routing, auto-snapshot emit, present_items tracking |
+| `backend/agent/prompts.py` | Assertive scripted opener, tool usage docs, no-data fallback |
+| `frontend/src/app/mirror/page.tsx` | Auto-snapshot listener (request_snapshot → canvas capture) |
+| `backend/agent/test_harness.py` | **NEW** — CLI test harness |
+| `CLAUDE.md` | Agent architecture documentation |
+
+Existing utilities to reuse:
+- `build_system_prompt()` in `prompts.py` — extend, don't replace
+- `execute_tool()` dispatch in `tools.py` — add branch, don't restructure
+- `SessionState` dataclass — no changes needed
+- `_filter_fashion_purchases()` and `_build_tiered_purchases()` — keep as-is
+- `CLISocketMock` pattern from test_harness can reference existing test mocks
+
+---
+
+## Implementation Order (Safe Incremental Progress)
+
+| Order | Step | Risk | Verify |
+|-------|------|------|--------|
+| 1 | Steps 1+2 together (search_clothing + present_items) | Medium | /chat page: cards only appear after curation |
+| 2 | Step 3 (split-model routing) | Low | Print model name in _call_claude, observe routing |
+| 3 | Step 4 (prompt rewrite) | Low | Run session, check opener names specific purchase |
+| 4 | Step 5 (auto-snapshot) | Low | Backend logs show request_snapshot emitted |
+| 5 | Step 6 (CLI harness) | None | `python -m agent.test_harness --mock` works |
+| 6 | Step 7 (CLAUDE.md) | None | Read and verify |
+
+---
+
+## Verification Plan
+
+1. **Unit**: Update `backend/tests/test_mira.py` — remove `frontend_payload` assertion from search_clothing, add present_items test
+2. **CLI**: `cd backend && python -m agent.test_harness --mock` — run full conversation, verify:
+   - Opener names specific purchase with brand + price + date
+   - search_clothing doesn't show cards
+   - present_items shows curated cards (1-5 items)
+   - Model routing prints show Sonnet for speech, Haiku for tool processing
+3. **E2E**: Use `/chat` page with a real user — verify full flow works
+4. **Mirror**: Open `/mirror?user_id=XXX`, start session, verify snapshot is captured and Mira comments on outfit
+
+---
+
+## Potential Risks
+
+1. **Sonnet model ID**: Using `claude-sonnet-4-5-20250929`. Verify with a test API call.
+2. **Two-step latency**: search → present adds ~1-2s. Mira says filler ("Let me pull something up...") — this is actually good theater.
+3. **Mirror page user_id**: Currently has no user_id concept. Needs URL query param (`/mirror?user_id=xxx`) or room-based routing.
+4. **Haiku curation quality**: After search results, Haiku processes them. If curation is poor, consider always using Sonnet for the first tool result turn.

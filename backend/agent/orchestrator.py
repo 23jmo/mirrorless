@@ -24,6 +24,7 @@ from agent.memory import (
     load_purchase_statistics,
     save_session_summary,
     get_user_oauth_token,
+    refresh_calendar_events,
 )
 from models.database import NeonHTTPClient
 
@@ -99,6 +100,18 @@ class MiraOrchestrator:
         finally:
             await db.close()
 
+        # Phase 2: Refresh calendar events from Google API (needs oauth_token from phase 1)
+        calendar_events = []
+        if oauth_token:
+            db = NeonHTTPClient()
+            try:
+                calendar_events = await refresh_calendar_events(db, user_id, oauth_token)
+                print(f"[mira] Loaded {len(calendar_events)} calendar events for {user_id}")
+            except Exception as e:
+                print(f"[mira] Calendar refresh failed for {user_id}, continuing without: {e}")
+            finally:
+                await db.close()
+
         # Store on session for tool access
         session.user_context = {
             "profile": profile,
@@ -106,6 +119,7 @@ class MiraOrchestrator:
             "past_sessions": past_sessions,
             "oauth_token": oauth_token,
             "purchase_stats": purchase_stats,
+            "calendar_events": calendar_events,
         }
 
         # Build system prompt with all user data
@@ -113,6 +127,7 @@ class MiraOrchestrator:
             user_profile=profile,
             purchases=purchases,
             purchase_stats=purchase_stats,
+            calendar_events=calendar_events,
             session_history=past_sessions,
             session_state={
                 "items_shown": 0,
@@ -200,6 +215,7 @@ class MiraOrchestrator:
                 user_profile=session.user_context.get("profile", {}),
                 purchases=session.user_context.get("purchases", []),
                 purchase_stats=session.user_context.get("purchase_stats"),
+                calendar_events=session.user_context.get("calendar_events"),
                 session_history=session.user_context.get("past_sessions", []),
                 session_state={
                     "items_shown": session.items_shown,

@@ -70,11 +70,13 @@ async def test_store_purchases_includes_new_columns():
     assert "tracking_number" in sql
     assert "receipt_text" in sql
     assert "ON CONFLICT" in sql
-    assert "DO NOTHING" in sql
+    assert "DO UPDATE SET is_fashion" in sql
+    assert "is_fashion" in sql
     assert params[7] == "Amazon"       # merchant
     assert params[8] == "delivered"    # order_status
     assert params[9] == "1Z999AA10123456784"  # tracking_number
     assert params[10] == "Your order of Nike Air Max 90 has been delivered."  # receipt_text
+    assert params[11] is True         # is_fashion (default)
 
 
 @pytest.mark.asyncio

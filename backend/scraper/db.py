@@ -1,7 +1,7 @@
 """Database operations for the scraping pipeline."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 async def store_purchases(db, user_id: str, purchases: list[dict]) -> None:
@@ -16,9 +16,10 @@ async def store_purchases(db, user_id: str, purchases: list[dict]) -> None:
         await db.execute(
             "INSERT INTO purchases "
             "(user_id, brand, item_name, category, price, date, source_email_id, "
-            "merchant, order_status, tracking_number, receipt_text) "
-            "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11) "
-            "ON CONFLICT (user_id, COALESCE(source_email_id, ''), item_name) DO NOTHING",
+            "merchant, order_status, tracking_number, receipt_text, is_fashion) "
+            "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11, $12) "
+            "ON CONFLICT (user_id, COALESCE(source_email_id, ''), item_name) "
+            "DO UPDATE SET is_fashion = EXCLUDED.is_fashion",
             [
                 user_id,
                 p["brand"],
@@ -31,6 +32,7 @@ async def store_purchases(db, user_id: str, purchases: list[dict]) -> None:
                 p.get("order_status"),
                 p.get("tracking_number"),
                 receipt_text,
+                p.get("is_fashion", True),
             ],
         )
 
@@ -100,8 +102,71 @@ async def set_last_scraped_at(db, user_id: str) -> None:
 async def get_all_purchases(db, user_id: str) -> list[dict]:
     """Fetch all purchases for a user (for profile rebuilding after incremental scrape)."""
     rows = await db.execute(
-        "SELECT brand, item_name, category, price, date, merchant, order_status "
+        "SELECT brand, item_name, category, price, date, merchant, order_status, is_fashion "
         "FROM purchases WHERE user_id = $1",
         [user_id],
+    )
+    return rows or []
+
+
+async def store_calendar_events(db, user_id: str, events: list[dict]) -> None:
+    """Upsert calendar events into the calendar_events table.
+
+    Uses ON CONFLICT DO UPDATE because calendar events are mutable —
+    titles, times, locations, and attendees can change after creation.
+    """
+    for e in events:
+        description = e.get("description")
+        if description and len(description) > 500:
+            description = description[:500]
+        await db.execute(
+            "INSERT INTO calendar_events "
+            "(user_id, google_event_id, title, start_time, end_time, location, "
+            "description, attendee_count, is_all_day, status, scraped_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()) "
+            "ON CONFLICT (user_id, google_event_id) DO UPDATE SET "
+            "title = EXCLUDED.title, "
+            "start_time = EXCLUDED.start_time, "
+            "end_time = EXCLUDED.end_time, "
+            "location = EXCLUDED.location, "
+            "description = EXCLUDED.description, "
+            "attendee_count = EXCLUDED.attendee_count, "
+            "is_all_day = EXCLUDED.is_all_day, "
+            "status = EXCLUDED.status, "
+            "scraped_at = now()",
+            [
+                user_id,
+                e["google_event_id"],
+                e["title"],
+                e["start_time"].isoformat() if isinstance(e["start_time"], datetime) else e["start_time"],
+                e["end_time"].isoformat() if isinstance(e.get("end_time"), datetime) else e.get("end_time"),
+                e.get("location"),
+                description,
+                e.get("attendee_count", 0),
+                e.get("is_all_day", False),
+                e.get("status"),
+            ],
+        )
+
+
+async def get_calendar_events(
+    db, user_id: str, days_back: int = 7, days_forward: int = 14
+) -> list[dict]:
+    """Fetch calendar events within a time window, excluding cancelled.
+
+    Returns events ordered by start_time ascending.
+    """
+    now = datetime.now(timezone.utc)
+    time_min = (now - timedelta(days=days_back)).isoformat()
+    time_max = (now + timedelta(days=days_forward)).isoformat()
+
+    rows = await db.execute(
+        "SELECT google_event_id, title, start_time, end_time, location, "
+        "description, attendee_count, is_all_day, status "
+        "FROM calendar_events "
+        "WHERE user_id = $1 AND start_time >= $2 AND start_time <= $3 "
+        "AND (status IS NULL OR status != 'cancelled') "
+        "ORDER BY start_time ASC",
+        [user_id, time_min, time_max],
     )
     return rows or []

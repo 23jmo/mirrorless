@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
@@ -8,18 +9,55 @@ import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 
 export default function MirrorPage() {
+  const searchParams = useSearchParams();
+  const userId = searchParams.get("user_id");
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
   const gestureKeyRef = useRef(0);
   const [gestureKey, setGestureKey] = useState(0);
 
-  // Connect socket on mount
+  // Connect socket and join user room
   useEffect(() => {
     socket.connect();
+
+    if (userId) {
+      socket.emit("join_room", { user_id: userId });
+    }
+
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [userId]);
+
+  // Listen for snapshot requests from the backend
+  useEffect(() => {
+    const handleSnapshotRequest = () => {
+      const video = videoRef.current;
+      if (!video || video.readyState < video.HAVE_CURRENT_DATA) return;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      // Strip the data URL prefix to get raw base64
+      const base64 = dataUrl.split(",")[1];
+
+      socket.emit("mirror_event", {
+        type: "snapshot",
+        image_base64: base64,
+        user_id: userId,
+      });
+    };
+
+    socket.on("request_snapshot", handleSnapshotRequest);
+    return () => {
+      socket.off("request_snapshot", handleSnapshotRequest);
+    };
+  }, [videoRef, userId]);
 
   const handleGesture = useCallback((gesture: DetectedGesture) => {
     console.log("[Mirror] Gesture detected:", gesture.type, gesture.confidence);

@@ -1,4 +1,7 @@
-"""Extract purchase data from receipt emails using LLM extraction."""
+"""Extract purchase data from receipt emails using LLM extraction.
+
+Extracts ALL purchase items (fashion and non-fashion) and flags each with is_fashion.
+"""
 
 import json
 import logging
@@ -203,9 +206,10 @@ def _categorize_item(item_name: str) -> str | None:
 
 
 def _extract_with_llm(email: dict) -> list[dict]:
-    """Use Claude Haiku to extract fashion purchases from receipt emails.
+    """Use Claude Haiku to extract ALL purchase items from receipt emails.
 
-    Primary extraction method for all receipt emails that pass the brand filter.
+    Primary extraction method for all receipt emails. Returns items with
+    an is_fashion flag for downstream filtering.
     """
     auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
     if not auth_token:
@@ -216,16 +220,16 @@ def _extract_with_llm(email: dict) -> list[dict]:
     body = email.get("body", "")[:2000]
 
     prompt = (
-        "Extract clothing, shoes, and fashion accessory purchases from this receipt email. "
-        "ONLY include fashion-related items (clothing, shoes, bags, jewelry, accessories). "
-        "IGNORE non-fashion items like food, drinks, flowers, electronics, software, "
-        "financial transactions, subscriptions.\n\n"
+        "Extract ALL purchase items from this receipt email. Include every product "
+        "purchased: clothing, shoes, accessories, electronics, food, subscriptions, everything.\n\n"
+        "For each item, determine if it is a FASHION item (clothing, shoes, bags, jewelry, "
+        "accessories, beauty/grooming). Set is_fashion to true for fashion items, false otherwise.\n\n"
         "Return a JSON object with a single key \"items\" containing an array. "
         "Each item should have: brand (string), merchant (string or null), "
         "item_name (string), price (number or null), currency (string, default \"USD\"), "
-        "order_status (string or null: confirmed/shipped/delivered).\n\n"
-        "If this is not a fashion receipt or no fashion items can be extracted, "
-        "return {\"items\": []}.\n\n"
+        "order_status (string or null: confirmed/shipped/delivered), "
+        "is_fashion (boolean).\n\n"
+        "If no purchase items can be extracted, return {\"items\": []}.\n\n"
         f"Subject: {subject}\n\nBody:\n{body}"
     )
 
@@ -257,10 +261,11 @@ def _extract_with_llm(email: dict) -> list[dict]:
 
 
 def extract_purchases(email: dict) -> list[dict]:
-    """Extract fashion purchase items from a receipt email via LLM.
+    """Extract ALL purchase items from a receipt email via LLM.
 
+    Each item includes an is_fashion flag for downstream filtering.
     Returns list of dicts with: brand, merchant, item_name, category, price, date,
-    order_status, tracking_number, receipt_text, source_email_id
+    order_status, tracking_number, receipt_text, source_email_id, is_fashion
     """
     if not _is_receipt(email):
         return []
@@ -272,11 +277,6 @@ def extract_purchases(email: dict) -> list[dict]:
 
     brand = _detect_brand(full_text, sender)
     merchant = _detect_merchant(sender)
-
-    # Skip non-fashion sources before spending any LLM tokens
-    if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
-        return []
-
     order_status = _extract_order_status(full_text)
     tracking_number = _extract_tracking(full_text)
     receipt_text = full_text[:500] if full_text else None
@@ -289,6 +289,16 @@ def extract_purchases(email: dict) -> list[dict]:
         item_name = item.get("item_name", "")
         if not item_name or len(item_name) < 3:
             continue
+
+        # LLM provides is_fashion; fallback to heuristic if missing
+        is_fashion = item.get("is_fashion")
+        if is_fashion is None:
+            item_brand = (item.get("brand") or brand).lower()
+            is_fashion = (
+                item_brand not in _NON_FASHION_BRANDS
+                and _categorize_item(item_name) is not None
+            )
+
         purchases.append({
             "brand": item.get("brand") or brand,
             "merchant": item.get("merchant") or merchant,
@@ -300,5 +310,6 @@ def extract_purchases(email: dict) -> list[dict]:
             "tracking_number": tracking_number,
             "receipt_text": receipt_text,
             "source_email_id": email.get("message_id"),
+            "is_fashion": bool(is_fashion),
         })
     return purchases

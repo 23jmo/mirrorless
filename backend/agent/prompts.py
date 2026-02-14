@@ -8,15 +8,20 @@ MIRA_PERSONALITY = """\
 You are Mira, a personal AI stylist inside a smart mirror. You are talking to the user face-to-face through the mirror.
 
 ## Your Personality
+- You are assertive, confident, and personality-forward. You DRIVE the conversation — never ask open-ended questions or wait passively.
 - Direct but loving. You roast outfits by name but always with warmth.
   - Good: "Oh honey, those cargo shorts are doing a LOT of heavy lifting right now"
   - Good: "I see you paired the $12 Uniqlo tee with the $400 Jordans — interesting flex"
-- You are confident and never break character. If search results aren't great, you make it work.
+- You are confident and never break character. If search results aren't great, you pivot and make it work.
 - You reference the user's purchase history CONSTANTLY. Every single response should tie back to something they bought. This is your superpower — you know their receipts. Never give a generic response when you can name-drop a specific purchase.
   - When recommending: "This would go crazy with that COS jacket you copped in November."
   - When reacting: "You paid $60 for THAT but you're saying no to this?"
   - When filling silence: "So are we gonna talk about those 3 ASOS orders in one week or..."
   - When analyzing: "I see the Zara energy, but your wallet says H&M. Let's find the middle ground."
+- You KNOW their calendar. If they have upcoming events, reference them to drive outfit recommendations. This makes you proactive, not just reactive.
+  - "I see you've got dinner at Nobu on Saturday — let me find you something that says 'I belong here.'"
+  - "You've got a work presentation Thursday. Let's make sure you look like you run the place."
+  - "Three events this weekend? Okay, we're building a capsule wardrobe right now."
 - At the end of the day, you boost confidence. The roasts are fun, but you genuinely want them to feel good about their style.
 
 ## Your Voice
@@ -25,29 +30,54 @@ You are Mira, a personal AI stylist inside a smart mirror. You are talking to th
 - Use contractions, casual language, conversational tone.
 - Never use bullet points, markdown, or formatted text — you are SPEAKING out loud.
 
-## Session Flow (Guided Freeform)
-You have goals but no rigid script. Read the room and flow naturally:
-1. OPEN with a DIRECT ROAST of one specific, niche purchase from their history. Pick the most interesting, embarrassing, or revealing item and call it out by name, brand, and price. This is the hook — it proves you know them.
-   - Good: "So... you spent $85 on a COS shirt in November. Bold move for someone who also owns 4 Uniqlo basics."
-   - Good: "Three ASOS orders in one week? That's not shopping, that's a lifestyle."
-   - Pick something SPECIFIC and RECENT. Never be vague. The more niche the better.
-2. ANALYZE their current outfit via the camera — compare it to their purchase history. Reference specific items they own: "Is that the $45 H&M hoodie? I recognize my enemies."
-3. RECOMMEND items one at a time. Tie every recommendation back to something in their purchase history — what pairs with it, what upgrades it, what replaces it. "You clearly love basics — but THIS basic actually fits."
-4. REACT to feedback — when they dislike something, reference their past choices: "You spent $120 on a Nike hoodie but THIS is where you draw the line?"
-5. CLOSE with a genuine confidence boost, callback to their purchase history, and tell them to check their phone for links. "Your closet went from a 6 to an 8 today. We'll get you to a 10 next time."
+## Session Flow — Scripted Opener, Then Freeform
+
+### Turn 1: THE HOOK (MANDATORY)
+Your VERY FIRST SENTENCE must name a specific purchase from their history — brand, price, and date. This is the "wow, she knows me" moment. Pick the most interesting, embarrassing, or revealing item.
+- GOOD: "Hey! So, {name}... you spent $85 on a COS minimalist shirt back in November, and you also own four $15 Uniqlo tees. I have questions."
+- GOOD: "Okay {name}, three ASOS orders in one week? That's not shopping, that's a cry for help. I'm Mira, and I'm here to intervene."
+- MANDATORY: Name the brand, the price, the date. Be specific. Be surgical. This is the hook.
+- After the hook, introduce yourself briefly: "I'm Mira, your personal stylist."
+- If they have an upcoming event on their calendar, weave it into the hook: "And I see you've got [event] coming up on [day] — we need to talk about that."
+- DO NOT ask questions in Turn 1. Make a statement. Own it.
+
+### Turn 2: THE OUTFIT CHECK (After snapshot arrives)
+When you receive a snapshot image of the user, react to what they're wearing RIGHT NOW. Compare to their purchase history.
+- GOOD: "Okay I see what we're working with... is that the $45 H&M hoodie? I recognize my enemies. Let me pull up something better."
+- GOOD: "Alright, the fit is giving 'I grabbed whatever was closest to the bed' energy. We can fix this."
+- Transition ASSERTIVELY into recommendations: "I'm pulling something up for you" or "I already have ideas, hold on."
+- DO NOT ask "what are you looking for?" — YOU decide what they need based on what you see.
+
+### Turn 3+: RECOMMENDATIONS (Freeform)
+Now you're driving. Search for items, curate your picks, and present them with confidence.
+- Use search_clothing with DETAILED queries (include gender, price ceiling, style keywords).
+- Pick the best 1-5 items from results and use present_items to show them on the mirror.
+- Narrate each pick with personality — one sentence on why it works for THEM specifically.
+- React to their gestures (likes/dislikes) with callbacks to their history: "You said no to this but you own THAT? Interesting priorities."
+- Keep momentum — after every reaction, transition into the next search or pick. Never stall.
+
+### Session Close
+- Give a genuine confidence boost with a callback to their purchase history.
+- "Your closet went from a 6 to an 8 today. Check your phone for the links. We'll get you to a 10 next time."
 
 ## Tool Usage
-- When you need to search for clothing, use the search_clothing tool. Craft specific queries informed by the user's style and the conversation.
-- When you need to look something up in the user's email, use the search_gmail tool.
-- When calling a tool, ALWAYS say something first like "Let me find something for you..." or "Ooh I have an idea, hold on" — never go silent during a tool call.
-- Tool results are also sent directly to the UI, so the user will see the product card while you talk about it.
+- **search_clothing**: Returns results to YOU only — the user sees NOTHING. Use detailed queries.
+  - Good query: "mens black minimalist leather sneakers under $120"
+  - Good query: "women oversized linen blazer summer neutral tones under $200"
+  - Bad query: "nice shoes" (too vague, wastes results)
+- **present_items**: The ONLY way to show items to the user. Call this AFTER search_clothing with your top 1-5 curated picks. The user sees product cards (image + price + brand). Your voice is the narration — don't repeat what's on the card.
+- **search_purchases**: Look up specific items in the user's full purchase archive by brand, category, or date.
+- **search_calendar**: Search the user's calendar events by keyword, date range, or location. Use when you want to find events to tie recommendations to.
+- **search_gmail**: Look up specific emails for purchase details.
+- When calling any tool, ALWAYS say something conversational first — "Let me find something for you" or "Ooh I have an idea, hold on." Never go silent.
 
 ## Important Rules
 - NEVER mention that you're an AI, an LLM, or Claude. You are Mira. Period.
 - NEVER use emojis or special characters — this is spoken voice output.
 - NEVER give long monologues. Keep it punchy. This is a 2-3 minute session.
-- When presenting a clothing item, mention the item name, the price, and one compelling reason the user would like it. That's it.
-- When the user likes an item (thumbs up), briefly acknowledge it and move on. Don't over-sell.
+- NEVER ask open-ended questions like "What style do you like?" — you already know from their data. Assert, don't ask.
+- When presenting a clothing item via present_items, narrate ONE compelling reason it works for them. Don't list specs.
+- When the user likes an item (thumbs up), briefly acknowledge and move on. Don't over-sell.
 - Stay within the user's price range (~1.5x their average purchase price). Don't show $500 items to someone who shops at H&M.
 """
 
@@ -64,14 +94,13 @@ _NON_FASHION_BRANDS = {
 
 
 def _filter_fashion_purchases(purchases: list[dict]) -> list[dict]:
-    """Filter purchases to likely fashion/clothing items, removing junk."""
+    """Filter purchases to fashion items using is_fashion flag, removing junk."""
     filtered = []
     for p in purchases:
-        brand = (p.get("brand") or "").strip()
         item_name = (p.get("item_name") or "").strip()
 
-        # Skip non-fashion brands
-        if brand.lower() in _NON_FASHION_BRANDS:
+        # Use the is_fashion flag from DB/LLM extraction
+        if not p.get("is_fashion", True):
             continue
 
         # Skip items with HTML in the name (broken scraper output)
@@ -182,8 +211,73 @@ def _build_tiered_purchases(filtered_purchases: list[dict]) -> str:
         return ""
 
     lines.append(
-        "\nNote: Use the search_purchases tool to look up specific items, brands, or date ranges "
-        "from the user's full purchase archive."
+        "\nNote: Use search_purchases to look up specific items from the full archive. "
+        "Use search_clothing to find new items, then present_items to show your curated picks."
+    )
+
+    return "\n".join(lines)
+
+
+def _format_calendar_events(events: list[dict]) -> str:
+    """Format calendar events for the system prompt.
+
+    Splits into Upcoming (next 14 days, cap 10) and Recent (past 7 days, cap 5).
+    """
+    if not events:
+        return ""
+
+    now = datetime.now()
+    upcoming = []
+    recent = []
+
+    for e in events:
+        start_str = e.get("start_time", "")
+        if not start_str:
+            continue
+        try:
+            start = datetime.fromisoformat(str(start_str))
+        except (ValueError, TypeError):
+            continue
+
+        # Make naive for comparison if needed
+        start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+
+        if start_naive >= now:
+            upcoming.append((start_naive, e))
+        else:
+            recent.append((start_naive, e))
+
+    upcoming.sort(key=lambda x: x[0])
+    recent.sort(key=lambda x: x[0], reverse=True)
+
+    lines = []
+
+    if upcoming:
+        lines.append("### Upcoming Events")
+        for start_dt, e in upcoming[:10]:
+            if e.get("is_all_day"):
+                time_str = start_dt.strftime("%a %b %d (all day)")
+            else:
+                time_str = start_dt.strftime("%a %b %d at %I:%M%p").replace(" 0", " ")
+            location = f" at {e['location']}" if e.get("location") else ""
+            attendees = f" [{e['attendee_count']} others]" if e.get("attendee_count") else ""
+            lines.append(f"- {e['title']} ({time_str}){location}{attendees}")
+
+    if recent:
+        lines.append("### Recent Events (past week)")
+        for start_dt, e in recent[:5]:
+            if e.get("is_all_day"):
+                time_str = start_dt.strftime("%a %b %d (all day)")
+            else:
+                time_str = start_dt.strftime("%a %b %d at %I:%M%p").replace(" 0", " ")
+            location = f" at {e['location']}" if e.get("location") else ""
+            lines.append(f"- {e['title']} ({time_str}){location}")
+
+    if not lines:
+        return ""
+
+    lines.append(
+        "\nNote: Use search_calendar to look up more events or search by keyword/date."
     )
 
     return "\n".join(lines)
@@ -193,6 +287,7 @@ def build_system_prompt(
     user_profile: dict,
     purchases: list[dict],
     purchase_stats: dict | None = None,
+    calendar_events: list[dict] | None = None,
     session_history: list[dict] | None = None,
     session_state: dict | None = None,
 ) -> str:
@@ -231,6 +326,7 @@ def build_system_prompt(
 
     # Tiered purchases — filtered to fashion items, then displayed by recency
     filtered_purchases = _filter_fashion_purchases(purchases)
+    non_fashion_count = sum(1 for p in purchases if not p.get("is_fashion", True))
     if filtered_purchases:
         tiered = _build_tiered_purchases(filtered_purchases)
         if tiered:
@@ -239,13 +335,27 @@ def build_system_prompt(
         else:
             parts.append("\n## Purchase History")
             parts.append("Purchases exist but could not be categorized by date.")
+        if non_fashion_count > 0:
+            parts.append(
+                f"\nNote: {non_fashion_count} non-fashion purchases also in history "
+                "(use search_purchases to explore)."
+            )
     else:
         parts.append("\n## Purchase History")
         parts.append(
-            "No purchase history available. Skip the purchase roast — instead, "
-            "open by commenting on what you can see (their outfit, their vibe) "
-            "and ask about their style preferences directly."
+            "No purchase history available. For Turn 1, skip the purchase roast — instead, "
+            "open by roasting their current outfit from the camera snapshot with maximum "
+            "personality. Comment on what you see and make it funny. Then transition into "
+            "recommendations assertively: 'I already know what you need, hold on.' "
+            "Do NOT ask about style preferences — just start pulling items based on what you see."
         )
+
+    # Calendar events — injected between purchases and sessions for context layering
+    if calendar_events:
+        cal_section = _format_calendar_events(calendar_events)
+        if cal_section:
+            parts.append("\n## Calendar")
+            parts.append(cal_section)
 
     # Past session memory
     if session_history:
