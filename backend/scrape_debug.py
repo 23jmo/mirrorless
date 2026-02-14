@@ -51,16 +51,16 @@ RECEIPT_KEYWORDS = ["order", "receipt", "confirmation", "shipped", "purchase"]
 
 # LLM prompt template (matches purchase_parser._extract_with_llm exactly)
 LLM_PROMPT_TEMPLATE = (
-    'Extract clothing, shoes, and fashion accessory purchases from this receipt email. '
-    'ONLY include fashion-related items (clothing, shoes, bags, jewelry, accessories). '
-    'IGNORE non-fashion items like food, drinks, flowers, electronics, software, '
-    'financial transactions, subscriptions.\n\n'
+    'Extract ALL purchase items from this receipt email. Include every product '
+    'purchased: clothing, shoes, accessories, electronics, food, subscriptions, everything.\n\n'
+    'For each item, determine if it is a FASHION item (clothing, shoes, bags, jewelry, '
+    'accessories, beauty/grooming). Set is_fashion to true for fashion items, false otherwise.\n\n'
     'Return a JSON object with a single key "items" containing an array. '
     'Each item should have: brand (string), merchant (string or null), '
     'item_name (string), price (number or null), currency (string, default "USD"), '
-    'order_status (string or null: confirmed/shipped/delivered).\n\n'
-    'If this is not a fashion receipt or no fashion items can be extracted, '
-    'return {"items": []}.\n\n'
+    'order_status (string or null: confirmed/shipped/delivered), '
+    'is_fashion (boolean).\n\n'
+    'If no purchase items can be extracted, return {"items": []}.\n\n'
     'Subject: {subject}\n\nBody:\n{body}'
 )
 
@@ -206,7 +206,7 @@ def step3_extract(receipt_emails: list[dict], no_llm: bool) -> list[dict]:
     print()
 
     all_items = []
-    method_counts = {"llm": 0, "brand-filtered": 0, "skipped": 0, "none": 0}
+    method_counts = {"llm": 0, "skipped": 0, "none": 0}
 
     for i, email in enumerate(receipt_emails, 1):
         subheader(f"Email {i}/{len(receipt_emails)}")
@@ -227,13 +227,10 @@ def step3_extract(receipt_emails: list[dict], no_llm: bool) -> list[dict]:
 
         print(f"  Brand: {brand}  |  Merchant: {merchant or '(none)'}")
 
-        # Brand filter check
+        # Note known non-fashion brands (no longer skipping — we extract everything)
         if brand.lower() in _NON_FASHION_BRANDS or (merchant or "").lower() in _NON_FASHION_BRANDS:
             filtered_by = brand if brand.lower() in _NON_FASHION_BRANDS else merchant
-            print(f"  >> SKIPPED by brand filter: \"{filtered_by}\" is non-fashion")
-            print()
-            method_counts["brand-filtered"] += 1
-            continue
+            print(f"  >> NOTE: \"{filtered_by}\" is a known non-fashion brand (items will be flagged is_fashion=false)")
 
         order_status = _extract_order_status(full_text)
         tracking_number = _extract_tracking(full_text)
@@ -269,6 +266,16 @@ def step3_extract(receipt_emails: list[dict], no_llm: bool) -> list[dict]:
                 item_name = item.get("item_name", "")
                 if not item_name or len(item_name) < 3:
                     continue
+
+                # Determine is_fashion with fallback
+                is_fashion = item.get("is_fashion")
+                if is_fashion is None:
+                    item_brand = (item.get("brand") or brand).lower()
+                    is_fashion = (
+                        item_brand not in _NON_FASHION_BRANDS
+                        and _categorize_item(item_name) is not None
+                    )
+
                 purchases.append({
                     "brand": item.get("brand") or brand,
                     "merchant": item.get("merchant") or merchant,
@@ -280,6 +287,7 @@ def step3_extract(receipt_emails: list[dict], no_llm: bool) -> list[dict]:
                     "tracking_number": tracking_number,
                     "receipt_text": receipt_text,
                     "source_email_id": email.get("message_id"),
+                    "is_fashion": bool(is_fashion),
                     "method": "llm",
                 })
 
@@ -296,11 +304,12 @@ def step3_extract(receipt_emails: list[dict], no_llm: bool) -> list[dict]:
                     _truncate(p.get("merchant", "") or "", 15),
                     p.get("category") or "—",
                     price_str,
+                    "Y" if p.get("is_fashion") else "N",
                 ])
             print("  Extracted:")
             print(textwrap.indent(tabulate(
                 item_rows,
-                headers=["#", "item_name", "brand", "merchant", "category", "price"],
+                headers=["#", "item_name", "brand", "merchant", "category", "price", "fashion?"],
                 tablefmt="pipe",
             ), "  "))
             print()
@@ -310,7 +319,6 @@ def step3_extract(receipt_emails: list[dict], no_llm: bool) -> list[dict]:
             print("  Extracted: (nothing)\n")
 
     print(f"\nMethods: {method_counts.get('llm', 0)} llm, "
-          f"{method_counts.get('brand-filtered', 0)} brand-filtered, "
           f"{method_counts.get('skipped', 0)} skipped (--no-llm), "
           f"{method_counts.get('none', 0)} no items")
 
@@ -337,14 +345,19 @@ def step4_summary(all_items: list[dict]) -> None:
             _truncate(item.get("merchant", "") or "", 12),
             item.get("category") or "—",
             price_str,
+            "Y" if item.get("is_fashion") else "N",
             item.get("method", "?"),
         ])
 
     print(tabulate(
         summary_rows,
-        headers=["#", "Item Name", "Brand", "Merchant", "Category", "Price", "Method"],
+        headers=["#", "Item Name", "Brand", "Merchant", "Category", "Price", "Fashion?", "Method"],
         tablefmt="pipe",
     ))
+
+    fashion_count = sum(1 for i in all_items if i.get("is_fashion"))
+    non_fashion_count = len(all_items) - fashion_count
+    print(f"\nFashion: {fashion_count} | Non-fashion: {non_fashion_count}")
 
     # Build style profile
     print()

@@ -81,7 +81,7 @@ async def test_search_clothing_tool():
 
     assert "results" in result, f"Expected 'results' key, got: {result.keys()}"
     assert len(result["results"]) > 0, "Should return at least 1 result"
-    assert "frontend_payload" in result, "Should include frontend_payload for broadcast"
+    assert "frontend_payload" not in result, "search_clothing should NOT include frontend_payload (curation goes through present_items)"
 
     print(f"Got {len(result['results'])} results:")
     for item in result["results"][:3]:
@@ -93,8 +93,21 @@ async def test_search_clothing_tool():
     for field in required_fields:
         assert field in first, f"Missing field: {field}"
 
-    print(f"\nFrontend payload type: {result['frontend_payload']['type']}")
-    print("PASSED - Tool returns structured data with frontend broadcast payload")
+    print("PASSED - search_clothing returns results to Claude only (no frontend_payload)")
+
+    # Test present_items tool
+    print("\n--- present_items Tool ---")
+    curated = result["results"][:2]  # Pick top 2
+    present_result = await execute_tool(
+        tool_name="present_items",
+        tool_input={"items": curated},
+        user_context={},
+    )
+    assert "frontend_payload" in present_result, "present_items SHOULD include frontend_payload"
+    assert present_result["frontend_payload"]["type"] == "clothing_results"
+    assert present_result["presented"] == 2
+    print(f"Presented {present_result['presented']} items via present_items")
+    print("PASSED - present_items creates frontend_payload for Socket.io broadcast")
 
 
 async def test_claude_with_mira():

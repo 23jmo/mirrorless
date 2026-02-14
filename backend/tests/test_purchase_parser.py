@@ -1,5 +1,7 @@
 """Tests for purchase extraction from email content."""
 
+from unittest.mock import patch
+
 from scraper.purchase_parser import extract_purchases, RECEIPT_SENDERS
 
 
@@ -10,7 +12,7 @@ def test_receipt_senders_is_nonempty():
 
 
 def test_extract_purchases_from_amazon_receipt():
-    """Extracts brand, item, price from a typical Amazon receipt email."""
+    """Extracts brand, item, price from a typical Amazon receipt email (LLM-mocked)."""
     email = {
         "message_id": "msg1",
         "subject": "Your Amazon.com order of Nike Air Max 90...",
@@ -24,13 +26,18 @@ def test_extract_purchases_from_amazon_receipt():
             "Shipping to: 123 Main St"
         ),
     }
-    purchases = extract_purchases(email)
+    llm_response = [
+        {"brand": "Nike", "item_name": "Air Max 90", "price": 129.99, "is_fashion": True},
+    ]
+    with patch("scraper.purchase_parser._extract_with_llm", return_value=llm_response):
+        purchases = extract_purchases(email)
     assert len(purchases) >= 1
     p = purchases[0]
     assert p["brand"] == "Nike"
     assert "Air Max" in p["item_name"]
     assert p["price"] == 129.99
     assert p["source_email_id"] == "msg1"
+    assert p["is_fashion"] is True
 
 
 def test_extract_purchases_non_receipt_returns_empty():
@@ -47,7 +54,7 @@ def test_extract_purchases_non_receipt_returns_empty():
 
 
 def test_extract_purchases_handles_multiple_items():
-    """Can extract multiple items from a single receipt."""
+    """Can extract multiple items from a single receipt (LLM-mocked)."""
     email = {
         "message_id": "msg3",
         "subject": "Your Zara order confirmation",
@@ -60,5 +67,12 @@ def test_extract_purchases_handles_multiple_items():
             "Subtotal: $139.80"
         ),
     }
-    purchases = extract_purchases(email)
+    llm_response = [
+        {"brand": "Zara", "item_name": "Oversized Blazer", "price": 89.90, "is_fashion": True},
+        {"brand": "Zara", "item_name": "Slim Fit Jeans", "price": 49.90, "is_fashion": True},
+    ]
+    with patch("scraper.purchase_parser._extract_with_llm", return_value=llm_response):
+        purchases = extract_purchases(email)
     assert len(purchases) >= 2
+    assert purchases[0]["is_fashion"] is True
+    assert purchases[1]["is_fashion"] is True

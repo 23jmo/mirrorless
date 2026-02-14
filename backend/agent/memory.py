@@ -1,21 +1,11 @@
 """Session memory for Mira — persistent across sessions."""
 
+import asyncio
 import json
 
-from agent.prompts import _NON_FASHION_BRANDS
 from models.database import NeonHTTPClient
-
-
-def _fashion_filter_clause(param_offset: int = 1) -> tuple[str, list[str]]:
-    """Generate a SQL WHERE clause to exclude non-fashion brands.
-
-    Returns (clause_str, params_list) where clause_str uses $N placeholders
-    starting from param_offset.
-    """
-    brands = sorted(_NON_FASHION_BRANDS)
-    placeholders = ", ".join(f"${i}" for i in range(param_offset, param_offset + len(brands)))
-    clause = f"LOWER(brand) NOT IN ({placeholders})"
-    return clause, brands
+from scraper.calendar_fetch import build_calendar_service, fetch_events
+from scraper.db import store_calendar_events, get_calendar_events
 
 
 async def save_session_summary(
@@ -104,9 +94,9 @@ async def load_user_profile(db: NeonHTTPClient, user_id: str) -> dict:
 
 
 async def load_user_purchases(db: NeonHTTPClient, user_id: str) -> list[dict]:
-    """Load user's purchase history."""
+    """Load user's purchase history (all items, with is_fashion flag)."""
     rows = await db.execute(
-        "SELECT brand, item_name, category, price, date "
+        "SELECT brand, item_name, category, price, date, is_fashion "
         "FROM purchases WHERE user_id = $1 "
         "ORDER BY date DESC LIMIT 200",
         [user_id],
@@ -118,6 +108,7 @@ async def load_user_purchases(db: NeonHTTPClient, user_id: str) -> list[dict]:
             "category": r.get("category"),
             "price": float(r["price"]) if r.get("price") else None,
             "date": str(r["date"]) if r.get("date") else None,
+            "is_fashion": r.get("is_fashion", True),
         }
         for r in rows
     ]
@@ -136,50 +127,48 @@ async def get_user_oauth_token(db: NeonHTTPClient, user_id: str) -> dict | None:
 
 
 async def load_purchase_statistics(db: NeonHTTPClient, user_id: str) -> dict:
-    """Compute aggregate statistics over the full purchase history.
+    """Compute aggregate statistics over fashion purchases.
 
+    Uses the is_fashion column for filtering instead of a brand blocklist.
     Returns a dict with: total_count, total_spend, avg_price, min_price, max_price,
     top_brands (list of {brand, count, spend}), categories (list of {category, count, spend}),
     monthly_trend (list of {month, count, spend} for last 6 months).
     """
-    filter_clause, filter_params = _fashion_filter_clause(param_offset=2)
+    base_params = [user_id]
 
-    # All three queries share user_id as $1 and filter_params as $2...$N
-    base_params = [user_id] + filter_params
-
-    # 1) Overall aggregates
+    # 1) Overall aggregates (fashion only)
     agg_rows = await db.execute(
         "SELECT COUNT(*) as total_count, "
         "COALESCE(SUM(price), 0) as total_spend, "
         "COALESCE(AVG(price), 0) as avg_price, "
         "COALESCE(MIN(price), 0) as min_price, "
         "COALESCE(MAX(price), 0) as max_price "
-        f"FROM purchases WHERE user_id = $1 AND {filter_clause} AND price IS NOT NULL",
+        "FROM purchases WHERE user_id = $1 AND is_fashion = true AND price IS NOT NULL",
         base_params,
     )
     agg = agg_rows[0] if agg_rows else {}
 
-    # 2) Top 10 brands by frequency
+    # 2) Top 10 brands by frequency (fashion only)
     brand_rows = await db.execute(
         "SELECT brand, COUNT(*) as count, COALESCE(SUM(price), 0) as spend "
-        f"FROM purchases WHERE user_id = $1 AND {filter_clause} "
+        "FROM purchases WHERE user_id = $1 AND is_fashion = true "
         "GROUP BY brand ORDER BY count DESC LIMIT 10",
         base_params,
     )
 
-    # 3) Category breakdown
+    # 3) Category breakdown (fashion only)
     cat_rows = await db.execute(
         "SELECT category, COUNT(*) as count, COALESCE(SUM(price), 0) as spend "
-        f"FROM purchases WHERE user_id = $1 AND {filter_clause} AND category IS NOT NULL "
+        "FROM purchases WHERE user_id = $1 AND is_fashion = true AND category IS NOT NULL "
         "GROUP BY category ORDER BY count DESC",
         base_params,
     )
 
-    # 4) Monthly spending trend (last 6 months)
+    # 4) Monthly spending trend (fashion only, last 6 months)
     trend_rows = await db.execute(
         "SELECT TO_CHAR(date, 'YYYY-MM') as month, COUNT(*) as count, "
         "COALESCE(SUM(price), 0) as spend "
-        f"FROM purchases WHERE user_id = $1 AND {filter_clause} "
+        "FROM purchases WHERE user_id = $1 AND is_fashion = true "
         "AND date >= CURRENT_DATE - INTERVAL '6 months' "
         "GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month DESC",
         base_params,
@@ -204,3 +193,47 @@ async def load_purchase_statistics(db: NeonHTTPClient, user_id: str) -> dict:
             for r in trend_rows
         ],
     }
+
+
+async def load_calendar_events(db: NeonHTTPClient, user_id: str) -> list[dict]:
+    """Load cached calendar events from DB (past 7 days through next 14 days).
+
+    Same pattern as load_user_purchases() — reads from DB, no Google API call.
+    """
+    rows = await get_calendar_events(db, user_id, days_back=7, days_forward=14)
+    return [
+        {
+            "google_event_id": r.get("google_event_id", ""),
+            "title": r.get("title", ""),
+            "start_time": str(r["start_time"]) if r.get("start_time") else None,
+            "end_time": str(r["end_time"]) if r.get("end_time") else None,
+            "location": r.get("location"),
+            "description": r.get("description"),
+            "attendee_count": int(r.get("attendee_count", 0)),
+            "is_all_day": r.get("is_all_day", False),
+            "status": r.get("status"),
+        }
+        for r in rows
+    ]
+
+
+async def refresh_calendar_events(
+    db: NeonHTTPClient, user_id: str, token_data: dict
+) -> list[dict]:
+    """Live-fetch calendar events from Google Calendar API, store in DB, return them.
+
+    Uses run_in_executor because googleapiclient is synchronous (httplib2).
+    Called at session start for freshness.
+    """
+    loop = asyncio.get_event_loop()
+
+    # Build service and fetch events in a thread (blocking I/O)
+    service = await loop.run_in_executor(None, build_calendar_service, token_data)
+    events = await loop.run_in_executor(None, fetch_events, service)
+
+    # Store in DB (async)
+    if events:
+        await store_calendar_events(db, user_id, events)
+
+    # Return from DB to get consistent formatting
+    return await load_calendar_events(db, user_id)
