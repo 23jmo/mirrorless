@@ -1,0 +1,120 @@
+Implement the following plan:
+
+# Plan: Fix `start_session` 400 crash — invalid UUID for demo user
+
+## Context
+
+When clicking "Start Session" on the `/chat` page, the backend crashes with `400 Bad Request` from Neon. The frontend sends `user_id = "chat-demo-user"` (hardcoded at `chat/page.tsx:31`), but `users.id` is type `uuid` — Neon rejects the non-UUID string at query time. Even with a valid UUID, the session `INSERT` would fail if no matching user exists (FK constraint on `sessions.user_id`).
+
+## Root Causes
+
+1. `"chat-demo-user"` is not a valid UUID → Neon 400 on `SELECT ... FROM users WHERE id = $1`
+2. No demo user record exists in `users` table → FK violation on `INSERT INTO sessions`
+3. No error handling in socket handler (`main.py:54-60`) or orchestrator (`orchestrator.py:63-119`)
+
+## Changes
+
+### 1. `backend/migrations/006_create_demo_user.sql` — **Create**
+
+Seed a demo user with a well-known UUID so the chat demo works out of the box.
+
+```sql
+INSERT INTO users (id, name, email)
+VALUES ('00000000-0000-4000-a000-000000000001', 'Demo User', 'demo@mirrorless.local')
+ON CONFLICT (id) DO NOTHING;
+```
+
+Then run this migration against Neon (project `lingering-fire-16819645`).
+
+### 2. `frontend/src/app/chat/page.tsx` — **Modify**
+
+**Line 31**: Change default userId from `"chat-demo-user"` to the demo UUID:
+```typescript
+const DEMO_USER_ID = "00000000-0000-4000-a000-000000000001";
+const [userId, setUserId] = useState(DEMO_USER_ID);
+```
+
+**Lines 96-106 area**: Add `session_error` socket listener so backend errors display in chat:
+```typescript
+socket.on("session_error", (data: { error: string }) => {
+  setSessionActive(false);
+  setMessages((prev) => [...prev, {
+    id: `err-${Date.now()}`, role: "system", text: `Error: ${data.error}`,
+  }]);
+});
+```
+
+Also add `socket.off("session_error")` in the cleanup return block.
+
+### 3. `backend/main.py` — **Modify**
+
+Add UUID validation + try/except in the `start_session` handler (lines 53-60):
+
+```python
+from uuid import UUID
+
+def _is_valid_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+        return True
+    except (ValueError, AttributeError):
+        return False
+```
+
+Update `start_session` to validate UUID and catch errors, emitting `session_error` to the client via `to=sid` (not `room=user_id`, since the user may not have joined a room yet).
+
+### 4. `backend/agent/orchestrator.py` — **Modify**
+
+Wrap both DB blocks in `start_session` (lines 69-108) with try/except:
+- **User data loading** (lines 69-76): catch exception → use empty defaults (`profile={}`, `purchases=[]`, etc.)
+- **Session INSERT** (lines 100-108): catch exception → log and continue without DB persistence
+
+This ensures the session still works (Claude conversation, Socket.io events) even if the user doesn't exist in DB.
+
+## Files Summary
+
+| File | Action | Key Change |
+|------|--------|------------|
+| `backend/migrations/006_create_demo_user.sql` | **Create** | Seed demo user with known UUID |
+| `frontend/src/app/chat/page.tsx` | **Modify** | Default to demo UUID, add `session_error` listener |
+| `backend/main.py` | **Modify** | UUID validation + try/except + emit `session_error` |
+| `backend/agent/orchestrator.py` | **Modify** | try/except around both DB blocks in `start_session` |
+
+## Verification
+
+1. Run migration 006 against Neon
+2. Verify demo user exists: `SELECT id, name, email FROM users WHERE id = '00000000-0000-4000-a000-000000000001'`
+3. Start backend, start frontend, open `/chat`
+4. Click "Start Session" with default user → no crash, Mira responds
+5. Type an invalid userId (e.g. `"hello"`) → see error message in chat, no server crash
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+show me exactly what the systme prompt is to mira - what context is she given, what tools can she call?
+
+---
+
+can we lowk show the entire system prompt in the chat i want to see for debugging purposes
+
+---
+
+Make sure mira always starts with a direct roast on some niche shopping / purchase history of the user. By the way, I'm noticing that some of the purchases we include are pretty not clothing related. Does mira have tool to search for stuff? What framework are we using to build Mira? Are we using claude agents sdk?
+
+---
+
+Make her also constantly reference previous purchases
+
+---
+
+can you research whether or not we are implementing this optimally? spin up a few agents to research this.
+
+---
+
+Yeah can you fix all the issues you mentioned, spin up a separate agent for the scraper fix tho
+
+---
+
+[Request interrupted by user for tool use]

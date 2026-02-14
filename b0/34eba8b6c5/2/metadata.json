@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "b034eba8b6c5",
+  "session_id": "442d04c1-da56-49fc-8d3e-e6ddbdb8b7af",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-14T12:12:37.469692Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/main.py",
+    "backend/migrations/006_create_demo_user.sql",
+    "frontend/src/app/chat/page.tsx"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 79,
+    "cache_creation_tokens": 119715,
+    "cache_read_tokens": 3603680,
+    "output_tokens": 3960,
+    "api_call_count": 51
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-14T12:12:37.363499Z",
+    "agent_lines": 298,
+    "human_added": 0,
+    "human_modified": 363,
+    "human_removed": 184,
+    "total_committed": 661,
+    "agent_percentage": 45.08320726172466
+  }
+}
