@@ -19,14 +19,19 @@ import type { OutfitRecommendation } from "@/types/outfit";
 
 const SCREEN_WIDTH = 1920;
 const SCREEN_HEIGHT = 1080;
-const PHONE_URL =
-  process.env.NEXT_PUBLIC_PHONE_URL ||
-  (typeof window !== "undefined"
-    ? `${window.location.origin}/phone`
-    : "http://localhost:3000/phone");
+const DEFAULT_PHONE_PATH = "/phone";
 
 export default function MirrorPage() {
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
+
+  // Phone URL — resolve on client to avoid hydration mismatch
+  const [phoneUrl, setPhoneUrl] = useState("");
+  useEffect(() => {
+    setPhoneUrl(
+      process.env.NEXT_PUBLIC_PHONE_URL ||
+        `${window.location.origin}${DEFAULT_PHONE_PATH}`
+    );
+  }, []);
 
   // Gesture state
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
@@ -170,7 +175,7 @@ export default function MirrorPage() {
   if (!sessionActive) {
     return (
       <main style={{ width: "100vw", height: "100vh", background: "#000" }}>
-        <IdleScreen qrUrl={PHONE_URL} />
+        {phoneUrl && <IdleScreen qrUrl={phoneUrl} />}
       </main>
     );
   }
