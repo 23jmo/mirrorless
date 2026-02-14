@@ -74,7 +74,7 @@ def _build_enhanced_narrative(
                         parts.append(f"Selective shopper (~{items_per_month:.1f} items/month).")
 
     # Splurge vs basics pattern
-    prices = [p["price"] for p in purchases if p.get("price") is not None]
+    prices = [float(p["price"]) for p in purchases if p.get("price") is not None]
     if prices and price_range.get("avg", 0) > 0:
         avg = price_range["avg"]
         splurge_count = sum(1 for p in prices if p > avg * 2)
@@ -125,7 +125,7 @@ def build_style_profile(
     brands = [b for b, _ in brand_counts.most_common()]
 
     # Price range
-    prices = [p["price"] for p in purchases if p.get("price") is not None]
+    prices = [float(p["price"]) for p in purchases if p.get("price") is not None]
     price_range = {
         "min": min(prices) if prices else 0,
         "max": max(prices) if prices else 0,
