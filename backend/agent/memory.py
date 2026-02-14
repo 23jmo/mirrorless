@@ -2,7 +2,20 @@
 
 import json
 
+from agent.prompts import _NON_FASHION_BRANDS
 from models.database import NeonHTTPClient
+
+
+def _fashion_filter_clause(param_offset: int = 1) -> tuple[str, list[str]]:
+    """Generate a SQL WHERE clause to exclude non-fashion brands.
+
+    Returns (clause_str, params_list) where clause_str uses $N placeholders
+    starting from param_offset.
+    """
+    brands = sorted(_NON_FASHION_BRANDS)
+    placeholders = ", ".join(f"${i}" for i in range(param_offset, param_offset + len(brands)))
+    clause = f"LOWER(brand) NOT IN ({placeholders})"
+    return clause, brands
 
 
 async def save_session_summary(
@@ -51,24 +64,20 @@ async def load_past_sessions(db: NeonHTTPClient, user_id: str) -> list[dict]:
 
 
 async def load_user_profile(db: NeonHTTPClient, user_id: str) -> dict:
-    """Load user profile and style data."""
-    # Fetch user basic info
-    user_rows = await db.execute(
-        "SELECT id, name, email FROM users WHERE id = $1",
+    """Load user profile and style data in a single query."""
+    rows = await db.execute(
+        "SELECT u.id, u.name, u.email, "
+        "sp.brands, sp.price_range, sp.style_tags, sp.size_info, sp.narrative_summary "
+        "FROM users u "
+        "LEFT JOIN style_profiles sp ON sp.user_id = u.id "
+        "WHERE u.id = $1",
         [user_id],
     )
-    if not user_rows:
+    if not rows:
         return {}
 
-    user = user_rows[0]
-
-    # Fetch style profile
-    style_rows = await db.execute(
-        "SELECT brands, price_range, style_tags, size_info, narrative_summary "
-        "FROM style_profiles WHERE user_id = $1",
-        [user_id],
-    )
-    style = style_rows[0] if style_rows else {}
+    user = rows[0]
+    style = user  # All columns are in the same row now
 
     # Parse array fields from postgres format
     brands = style.get("brands", [])
@@ -99,7 +108,7 @@ async def load_user_purchases(db: NeonHTTPClient, user_id: str) -> list[dict]:
     rows = await db.execute(
         "SELECT brand, item_name, category, price, date "
         "FROM purchases WHERE user_id = $1 "
-        "ORDER BY date DESC LIMIT 30",
+        "ORDER BY date DESC LIMIT 200",
         [user_id],
     )
     return [
@@ -124,3 +133,74 @@ async def get_user_oauth_token(db: NeonHTTPClient, user_id: str) -> dict | None:
         token = rows[0]["google_oauth_token"]
         return token if isinstance(token, dict) else json.loads(token)
     return None
+
+
+async def load_purchase_statistics(db: NeonHTTPClient, user_id: str) -> dict:
+    """Compute aggregate statistics over the full purchase history.
+
+    Returns a dict with: total_count, total_spend, avg_price, min_price, max_price,
+    top_brands (list of {brand, count, spend}), categories (list of {category, count, spend}),
+    monthly_trend (list of {month, count, spend} for last 6 months).
+    """
+    filter_clause, filter_params = _fashion_filter_clause(param_offset=2)
+
+    # All three queries share user_id as $1 and filter_params as $2...$N
+    base_params = [user_id] + filter_params
+
+    # 1) Overall aggregates
+    agg_rows = await db.execute(
+        "SELECT COUNT(*) as total_count, "
+        "COALESCE(SUM(price), 0) as total_spend, "
+        "COALESCE(AVG(price), 0) as avg_price, "
+        "COALESCE(MIN(price), 0) as min_price, "
+        "COALESCE(MAX(price), 0) as max_price "
+        f"FROM purchases WHERE user_id = $1 AND {filter_clause} AND price IS NOT NULL",
+        base_params,
+    )
+    agg = agg_rows[0] if agg_rows else {}
+
+    # 2) Top 10 brands by frequency
+    brand_rows = await db.execute(
+        "SELECT brand, COUNT(*) as count, COALESCE(SUM(price), 0) as spend "
+        f"FROM purchases WHERE user_id = $1 AND {filter_clause} "
+        "GROUP BY brand ORDER BY count DESC LIMIT 10",
+        base_params,
+    )
+
+    # 3) Category breakdown
+    cat_rows = await db.execute(
+        "SELECT category, COUNT(*) as count, COALESCE(SUM(price), 0) as spend "
+        f"FROM purchases WHERE user_id = $1 AND {filter_clause} AND category IS NOT NULL "
+        "GROUP BY category ORDER BY count DESC",
+        base_params,
+    )
+
+    # 4) Monthly spending trend (last 6 months)
+    trend_rows = await db.execute(
+        "SELECT TO_CHAR(date, 'YYYY-MM') as month, COUNT(*) as count, "
+        "COALESCE(SUM(price), 0) as spend "
+        f"FROM purchases WHERE user_id = $1 AND {filter_clause} "
+        "AND date >= CURRENT_DATE - INTERVAL '6 months' "
+        "GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month DESC",
+        base_params,
+    )
+
+    return {
+        "total_count": int(agg.get("total_count", 0)),
+        "total_spend": round(float(agg.get("total_spend", 0)), 2),
+        "avg_price": round(float(agg.get("avg_price", 0)), 2),
+        "min_price": round(float(agg.get("min_price", 0)), 2),
+        "max_price": round(float(agg.get("max_price", 0)), 2),
+        "top_brands": [
+            {"brand": r["brand"], "count": int(r["count"]), "spend": round(float(r["spend"]), 2)}
+            for r in brand_rows
+        ],
+        "categories": [
+            {"category": r["category"], "count": int(r["count"]), "spend": round(float(r["spend"]), 2)}
+            for r in cat_rows
+        ],
+        "monthly_trend": [
+            {"month": r["month"], "count": int(r["count"]), "spend": round(float(r["spend"]), 2)}
+            for r in trend_rows
+        ],
+    }

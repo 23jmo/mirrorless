@@ -26,14 +26,14 @@ MOCK_PROFILE = {
 }
 
 MOCK_PURCHASES = [
-    {"brand": "Nike", "item_name": "Air Force 1 '07", "category": "shoes", "price": 115.0, "date": "2025-01-15"},
-    {"brand": "Zara", "item_name": "Oversized Blazer", "category": "outerwear", "price": 89.99, "date": "2025-01-10"},
-    {"brand": "Uniqlo", "item_name": "Heattech Crew Neck T-Shirt", "category": "tops", "price": 14.90, "date": "2025-01-05"},
-    {"brand": "ASOS", "item_name": "Slim Fit Chinos", "category": "bottoms", "price": 35.00, "date": "2024-12-20"},
-    {"brand": "Nike", "item_name": "Tech Fleece Joggers", "category": "bottoms", "price": 110.0, "date": "2024-12-15"},
-    {"brand": "Zara", "item_name": "Minimalist Leather Belt", "category": "accessories", "price": 29.90, "date": "2024-12-01"},
-    {"brand": "ASOS", "item_name": "Oversized Hoodie", "category": "tops", "price": 42.00, "date": "2024-11-28"},
-    {"brand": "Nike", "item_name": "Dunk Low Retro", "category": "shoes", "price": 110.0, "date": "2024-11-15"},
+    {"brand": "Nike", "item_name": "Air Force 1 '07", "category": "shoes", "price": 115.0, "date": "2026-02-10"},
+    {"brand": "Zara", "item_name": "Oversized Blazer", "category": "outerwear", "price": 89.99, "date": "2026-02-05"},
+    {"brand": "Uniqlo", "item_name": "Heattech Crew Neck T-Shirt", "category": "tops", "price": 14.90, "date": "2026-01-28"},
+    {"brand": "ASOS", "item_name": "Slim Fit Chinos", "category": "bottoms", "price": 35.00, "date": "2026-01-10"},
+    {"brand": "Nike", "item_name": "Tech Fleece Joggers", "category": "bottoms", "price": 110.0, "date": "2025-12-15"},
+    {"brand": "Zara", "item_name": "Minimalist Leather Belt", "category": "accessories", "price": 29.90, "date": "2025-12-01"},
+    {"brand": "ASOS", "item_name": "Oversized Hoodie", "category": "tops", "price": 42.00, "date": "2025-11-28"},
+    {"brand": "Nike", "item_name": "Dunk Low Retro", "category": "shoes", "price": 110.0, "date": "2025-11-15"},
 ]
 
 MOCK_PAST_SESSIONS = [
@@ -56,7 +56,8 @@ def test_system_prompt():
     assert "Jordan" in prompt, "User name should be in prompt"
     assert "Nike" in prompt, "Brand should be in prompt"
     assert "$20-$150" in prompt, "Price range should be in prompt"
-    assert "Air Force 1" in prompt, "Purchase should be in prompt"
+    assert "Air Force 1" in prompt, "Recent purchase should be in prompt"
+    assert "Tiered" in prompt or "Recent Purchases" in prompt, "Tiered purchase section should be in prompt"
     assert "bomber jacket" in prompt, "Past session should be in prompt"
     assert "Items shown: 3" in prompt, "Session state should be in prompt"
     print("PASSED - All user data injected correctly")

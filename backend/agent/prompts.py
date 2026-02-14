@@ -1,6 +1,7 @@
 """Mira personality and system prompts."""
 
-import json
+from collections import Counter
+from datetime import datetime, timedelta
 
 
 MIRA_PERSONALITY = """\
@@ -11,10 +12,11 @@ You are Mira, a personal AI stylist inside a smart mirror. You are talking to th
   - Good: "Oh honey, those cargo shorts are doing a LOT of heavy lifting right now"
   - Good: "I see you paired the $12 Uniqlo tee with the $400 Jordans — interesting flex"
 - You are confident and never break character. If search results aren't great, you make it work.
-- You are proactive. If the user goes silent for a few seconds, you fill the gap — ask a question, make an observation, crack a joke. Never let it get awkward.
-- You reference the user's purchase history AGGRESSIVELY. This is the wow factor. Lead with it, weave it in constantly.
-  - "9 orders from ASOS this year? We need to have a conversation."
-  - "You dropped $200 at Zara last month — let's see if it was worth it."
+- You reference the user's purchase history CONSTANTLY. Every single response should tie back to something they bought. This is your superpower — you know their receipts. Never give a generic response when you can name-drop a specific purchase.
+  - When recommending: "This would go crazy with that COS jacket you copped in November."
+  - When reacting: "You paid $60 for THAT but you're saying no to this?"
+  - When filling silence: "So are we gonna talk about those 3 ASOS orders in one week or..."
+  - When analyzing: "I see the Zara energy, but your wallet says H&M. Let's find the middle ground."
 - At the end of the day, you boost confidence. The roasts are fun, but you genuinely want them to feel good about their style.
 
 ## Your Voice
@@ -25,11 +27,14 @@ You are Mira, a personal AI stylist inside a smart mirror. You are talking to th
 
 ## Session Flow (Guided Freeform)
 You have goals but no rigid script. Read the room and flow naturally:
-1. INTRODUCE yourself with a bold opener that flexes your knowledge of their data
-2. ANALYZE their current outfit via the camera — compare it to their purchase history
-3. RECOMMEND items one at a time. You lead the search direction based on their profile and conversation. The user can redirect anytime.
-4. REACT to feedback — when they dislike something, make an educated guess about why ("Not feeling the color? Or the price?")
-5. CLOSE with a genuine confidence boost, quick recap of favorites, tell them to check their phone for links
+1. OPEN with a DIRECT ROAST of one specific, niche purchase from their history. Pick the most interesting, embarrassing, or revealing item and call it out by name, brand, and price. This is the hook — it proves you know them.
+   - Good: "So... you spent $85 on a COS shirt in November. Bold move for someone who also owns 4 Uniqlo basics."
+   - Good: "Three ASOS orders in one week? That's not shopping, that's a lifestyle."
+   - Pick something SPECIFIC and RECENT. Never be vague. The more niche the better.
+2. ANALYZE their current outfit via the camera — compare it to their purchase history. Reference specific items they own: "Is that the $45 H&M hoodie? I recognize my enemies."
+3. RECOMMEND items one at a time. Tie every recommendation back to something in their purchase history — what pairs with it, what upgrades it, what replaces it. "You clearly love basics — but THIS basic actually fits."
+4. REACT to feedback — when they dislike something, reference their past choices: "You spent $120 on a Nike hoodie but THIS is where you draw the line?"
+5. CLOSE with a genuine confidence boost, callback to their purchase history, and tell them to check their phone for links. "Your closet went from a 6 to an 8 today. We'll get you to a 10 next time."
 
 ## Tool Usage
 - When you need to search for clothing, use the search_clothing tool. Craft specific queries informed by the user's style and the conversation.
@@ -47,9 +52,147 @@ You have goals but no rigid script. Read the room and flow naturally:
 """
 
 
+# Brands that are clearly not fashion retailers
+_NON_FASHION_BRANDS = {
+    "github", "google", "robinhood", "supabase", "medium", "reddit",
+    "mail", "info", "news", "us", "gmail", "luma-mail", "united",
+    "starbucks", "uber", "lyft", "doordash", "grubhub", "venmo",
+    "paypal", "cashapp", "wise", "stripe", "anthropic", "openai",
+    "vercel", "netlify", "heroku", "aws", "azure", "lovable",
+    "bakedbymelissa", "slack", "notion", "figma", "linear",
+}
+
+
+def _filter_fashion_purchases(purchases: list[dict]) -> list[dict]:
+    """Filter purchases to likely fashion/clothing items, removing junk."""
+    filtered = []
+    for p in purchases:
+        brand = (p.get("brand") or "").strip()
+        item_name = (p.get("item_name") or "").strip()
+
+        # Skip non-fashion brands
+        if brand.lower() in _NON_FASHION_BRANDS:
+            continue
+
+        # Skip items with HTML in the name (broken scraper output)
+        if "<" in item_name or ">" in item_name:
+            continue
+
+        # Skip items with very long names (likely raw email body fragments)
+        if len(item_name) > 120:
+            continue
+
+        # Skip items that look like notifications, not purchases
+        skip_patterns = (
+            "account confirmation", "security", "log in", "password",
+            "oauth", "third-party", "background check", "attendance",
+            "offer confirmation", "meeting records", "form:",
+        )
+        if any(pat in item_name.lower() for pat in skip_patterns):
+            continue
+
+        filtered.append(p)
+    return filtered
+
+
+def _format_purchase_stats(stats: dict) -> str:
+    """Format aggregate purchase statistics for the system prompt."""
+    if not stats or stats.get("total_count", 0) == 0:
+        return ""
+
+    lines = ["## Purchase Overview (Full History)"]
+    lines.append(
+        f"Total: {stats['total_count']} items, ${stats['total_spend']:.0f} spent "
+        f"(avg ${stats['avg_price']:.0f}, range ${stats['min_price']:.0f}-${stats['max_price']:.0f})"
+    )
+
+    top_brands = stats.get("top_brands", [])
+    if top_brands:
+        brand_parts = [f"{b['brand']} ({b['count']}x, ${b['spend']:.0f})" for b in top_brands]
+        lines.append(f"Top brands: {', '.join(brand_parts)}")
+
+    categories = stats.get("categories", [])
+    if categories:
+        cat_parts = [f"{c['category']} ({c['count']})" for c in categories]
+        lines.append(f"Categories: {', '.join(cat_parts)}")
+
+    trend = stats.get("monthly_trend", [])
+    if trend:
+        trend_parts = [f"{t['month']}: {t['count']} items, ${t['spend']:.0f}" for t in trend]
+        lines.append(f"Monthly trend: {' | '.join(trend_parts)}")
+
+    return "\n".join(lines)
+
+
+def _build_tiered_purchases(filtered_purchases: list[dict]) -> str:
+    """Build a tiered display of purchases — recent at full detail, older compressed.
+
+    Tiers:
+    - Recent (last 30 days): Full detail — brand, item, price, date, category. Cap 25.
+    - Older (30-90 days): Compact — brand + item + price. Cap 30.
+    - Historical (90+ days): Brand counts only — "Nike x4, Zara x3".
+    """
+    now = datetime.now().date()
+    thirty_days_ago = now - timedelta(days=30)
+    ninety_days_ago = now - timedelta(days=90)
+
+    recent, older, historical = [], [], []
+    for p in filtered_purchases:
+        date_str = p.get("date")
+        if date_str:
+            try:
+                purchase_date = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                purchase_date = None
+        else:
+            purchase_date = None
+
+        if purchase_date and purchase_date >= thirty_days_ago:
+            recent.append(p)
+        elif purchase_date and purchase_date >= ninety_days_ago:
+            older.append(p)
+        else:
+            historical.append(p)
+
+    lines = []
+
+    # Tier 1: Recent — full detail
+    if recent:
+        lines.append("### Recent Purchases (last 30 days)")
+        for p in recent[:25]:
+            price_str = f" (${p['price']})" if p.get("price") else ""
+            date_str = f" on {p['date']}" if p.get("date") else ""
+            cat_str = f" [{p['category']}]" if p.get("category") else ""
+            lines.append(f"- {p.get('brand', '?')}: {p.get('item_name', '?')}{price_str}{date_str}{cat_str}")
+
+    # Tier 2: Older — compact
+    if older:
+        lines.append("### Older Purchases (30-90 days)")
+        for p in older[:30]:
+            price_str = f" ${p['price']}" if p.get("price") else ""
+            lines.append(f"- {p.get('brand', '?')} — {p.get('item_name', '?')}{price_str}")
+
+    # Tier 3: Historical — brand counts only
+    if historical:
+        brand_counts = Counter(p.get("brand", "Unknown") for p in historical)
+        brand_parts = [f"{brand} x{count}" for brand, count in brand_counts.most_common()]
+        lines.append(f"### Historical Purchases (90+ days): {', '.join(brand_parts)}")
+
+    if not lines:
+        return ""
+
+    lines.append(
+        "\nNote: Use the search_purchases tool to look up specific items, brands, or date ranges "
+        "from the user's full purchase archive."
+    )
+
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     user_profile: dict,
     purchases: list[dict],
+    purchase_stats: dict | None = None,
     session_history: list[dict] | None = None,
     session_state: dict | None = None,
 ) -> str:
@@ -80,19 +223,39 @@ def build_system_prompt(
     if narrative:
         parts.append(f"Style narrative: {narrative}")
 
-    # Recent purchases
-    if purchases:
-        parts.append("\n## Recent Purchases")
-        for p in purchases[:20]:  # Cap at 20 to keep context manageable
-            price_str = f" (${p['price']})" if p.get("price") else ""
-            date_str = f" on {p['date']}" if p.get("date") else ""
-            parts.append(f"- {p.get('brand', '?')}: {p.get('item_name', '?')}{price_str}{date_str}")
+    # Purchase statistics (aggregate view of full history)
+    if purchase_stats:
+        stats_section = _format_purchase_stats(purchase_stats)
+        if stats_section:
+            parts.append(f"\n{stats_section}")
+
+    # Tiered purchases — filtered to fashion items, then displayed by recency
+    filtered_purchases = _filter_fashion_purchases(purchases)
+    if filtered_purchases:
+        tiered = _build_tiered_purchases(filtered_purchases)
+        if tiered:
+            parts.append(f"\n## Purchase History (Tiered)")
+            parts.append(tiered)
+        else:
+            parts.append("\n## Purchase History")
+            parts.append("Purchases exist but could not be categorized by date.")
+    else:
+        parts.append("\n## Purchase History")
+        parts.append(
+            "No purchase history available. Skip the purchase roast — instead, "
+            "open by commenting on what you can see (their outfit, their vibe) "
+            "and ask about their style preferences directly."
+        )
 
     # Past session memory
     if session_history:
         parts.append("\n## Past Sessions")
         for session in session_history[-3:]:  # Last 3 sessions
             parts.append(f"- {session.get('summary', 'No summary')}")
+            liked = session.get("liked_items", [])
+            if liked:
+                names = [item.get("title", "?") for item in liked[:3]]
+                parts.append(f"  Liked: {', '.join(names)}")
 
     # Current session state
     if session_state:
