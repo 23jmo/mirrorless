@@ -1,13 +1,12 @@
 "use client";
 
+import { QRCodeSVG } from "qrcode.react";
+
 interface IdleScreenProps {
   qrUrl: string;
 }
 
 export function IdleScreen({ qrUrl }: IdleScreenProps) {
-  // Use Google Charts QR API (no npm dependency)
-  const qrImageUrl = `https://chart.googleapis.com/chart?cht=qr&chs=300x300&chl=${encodeURIComponent(qrUrl)}&choe=UTF-8`;
-
   return (
     <div
       style={{
@@ -21,16 +20,16 @@ export function IdleScreen({ qrUrl }: IdleScreenProps) {
         zIndex: 50,
       }}
     >
-      <img
-        src={qrImageUrl}
-        alt="Scan to start"
-        width={300}
-        height={300}
+      <div
         style={{
+          padding: 16,
+          background: "#fff",
           borderRadius: 16,
           border: "2px solid rgba(255,255,255,0.1)",
         }}
-      />
+      >
+        <QRCodeSVG value={qrUrl} size={268} />
+      </div>
       <div
         style={{
           marginTop: 24,
