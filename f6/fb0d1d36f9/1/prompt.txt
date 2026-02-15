@@ -1,0 +1,207 @@
+Implement the following plan:
+
+# Plan: Fix Assistant Message Token Overflow (ToolUseBlock Inputs)
+
+## Context
+
+The token overflow issue has evolved. The `give_recommendation` fix successfully reduced tool **results** from 671k chars to ~2k chars. However, a new issue has emerged: **Claude's assistant messages** are ballooning to 4.2 million characters (~1M tokens), causing API failures.
+
+Diagnostic logs reveal:
+```
+- Msg 15 (assistant): 4,219,870 chars (~1,054,967 tokens)
+```
+
+This is NOT a tool result - it's the assistant's response message itself.
+
+## Root Cause
+
+**The 4.2MB is from Gemini flat lay images being added to ToolUseBlock.input AFTER the assistant message is stored!**
+
+The bug has two parts:
+
+### Part 1: Storing a Reference (orchestrator.py:816)
+```python
+session.conversation_history.append({
+    "role": "assistant",
+    "content": final_message.content,  # ← REFERENCE to SDK objects, not a copy!
+})
+```
+
+### Part 2: Mutating the Stored Reference (tools.py:432-433)
+```python
+# Inside display_product tool execution:
+items = tool_input.get("items", [])  # ← Reference to ToolUseBlock.input["items"]
+...
+for item in items:
+    if pid in flat_lay_map:
+        item["cleaned_image_url"] = flat_lay_map[pid]  # ← MUTATES the stored input!
+        item["flat_image_url"] = flat_lay_map[pid]     # ← Adds 4.2MB base64!
+```
+
+**The sequence:**
+1. Line 816: Store `final_message.content` (includes ToolUseBlock with input dict reference)
+2. Line 860: Execute tool with `tool_use.input` (same reference!)
+3. Tools.py: Gemini generates flat lays and **mutates** the items array by adding base64 images
+4. The stored assistant message now contains 4.2MB because it references the same mutated dict!
+
+## Why This Wasn't Caught Before
+
+- **Tool results** are sanitized at insertion (line 893-914): stripped, truncated to 20k chars
+- **Assistant messages** are stored raw with no size limits
+- The compaction strategies (`_compact_history`, `_emergency_compact`) only truncate tool_result content, not assistant message ToolUseBlock inputs
+
+## Files Modified
+
+1. **`backend/agent/orchestrator.py`** - sanitize assistant messages before storage
+
+## Changes
+
+### Fix: Deep Copy Assistant Message Content Before Storage (orchestrator.py:814-817)
+
+The fix is simple: **deep copy** `final_message.content` before storing it, so tool execution can't mutate the stored reference.
+
+**Replace:**
+```python
+session.conversation_history.append({
+    "role": "assistant",
+    "content": final_message.content,  # ← REFERENCE - gets mutated!
+})
+```
+
+**With:**
+```python
+import copy
+
+# Deep copy to prevent tool execution from mutating stored assistant message
+session.conversation_history.append({
+    "role": "assistant",
+    "content": copy.deepcopy([
+        {
+            "type": block.type,
+            "id": getattr(block, "id", None),
+            "name": getattr(block, "name", None),
+            "input": getattr(block, "input", None),
+            "text": getattr(block, "text", None),
+        }
+        for block in final_message.content
+    ]),
+})
+```
+
+**Why this works:**
+- Creates a deep copy of the content blocks as plain dicts (not SDK objects)
+- Tool execution can mutate `tool_use.input` all it wants - the stored version is isolated
+- Bonus: Converts SDK objects to dicts, making them JSON-serializable
+
+**Alternative simpler fix** (using copy.deepcopy):
+```python
+import copy
+
+session.conversation_history.append({
+    "role": "assistant",
+    "content": copy.deepcopy(final_message.content),
+})
+```
+
+This also works but keeps SDK objects. The dict conversion approach is cleaner.
+
+### Optional Enhancement: Also Truncate Large Tool Inputs
+
+After fixing the mutation bug, you may also want to truncate large tool inputs to save space:
+
+```python
+import copy
+import json
+
+sanitized_content = []
+for block in final_message.content:
+    if block.type == "tool_use":
+        # Deep copy input to prevent mutation
+        input_copy = copy.deepcopy(block.input)
+
+        # Optional: Truncate large inputs
+        input_str = json.dumps(input_copy)
+        if len(input_str) > 500:
+            input_copy = {"_truncated": True, "_size": len(input_str)}
+
+        sanitized_content.append({
+            "type": "tool_use",
+            "id": block.id,
+            "name": block.name,
+            "input": input_copy,
+        })
+    elif block.type == "text":
+        sanitized_content.append({"type": "text", "text": block.text})
+
+session.conversation_history.append({
+    "role": "assistant",
+    "content": sanitized_content,
+})
+```
+
+But the **critical fix** is just the deep copy - the truncation is optional.
+
+## Expected Impact
+
+**Before (with mutation bug)**:
+- Assistant message stored with reference to ToolUseBlock.input
+- Tool execution adds 4.2MB of base64 flat lays to the input dict
+- Stored assistant message now has 4.2MB (mutation leaked through reference)
+
+**After (with deep copy fix)**:
+- Assistant message stored with deep copy of content blocks
+- Tool execution mutates its own copy of the input
+- Stored assistant message stays small (~500 chars for tool call metadata + text)
+
+**Token budget per session (20 turns)**:
+- System prompt: ~2.5k tokens
+- Assistant messages: ~5-10k tokens total (was ~1M tokens!)
+- Tool results: ~10k tokens (already capped at 20k chars)
+- User messages: ~2k tokens
+- **Total: ~20-25k tokens** (safely under 200k limit)
+
+## Critical Files
+
+- `backend/agent/orchestrator.py:814-817` - assistant message storage
+- Test after fix: lines 695-710 (diagnostic breakdown logging)
+
+## Verification
+
+1. **Import test**: `cd backend && python -c "from agent.orchestrator import MiraOrchestrator; print('OK')"`
+
+2. **Run a mirror session** that triggers multiple tool calls (especially `display_product`)
+
+3. **Check diagnostic logs** for assistant message sizes:
+   ```
+   [mira] History breakdown:
+     - Msg X (assistant): should be <5,000 chars, not 4,219,870
+   ```
+
+4. **Verify no token overflow**:
+   - No `prompt is too long` errors from Claude API
+   - Estimated tokens stay under 30k throughout session
+   - No emergency compaction triggered
+
+5. **Confirm functionality preserved**:
+   - Tool calls still work (Claude still sends them)
+   - Responses still stream correctly
+   - Mirror displays products correctly
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+commit
+
+---
+
+Yeah you can push this fix also. Can you make sure that the arrival QR code is somewhere on the screen always.
+
+---
+
+[Request interrupted by user]
+
+---
+
+Can you make sure that the arrival QR code is somewhere on the screen always.
