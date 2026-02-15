@@ -3,7 +3,7 @@
   "checkpoint_id": "2a0bd76d66b5",
   "strategy": "manual-commit",
   "branch": "feature/diagnostic-logging",
-  "checkpoints_count": 12,
+  "checkpoints_count": 11,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/agent/prompts.py",
@@ -107,10 +107,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 338,
-    "cache_creation_tokens": 661307,
-    "cache_read_tokens": 19513734,
-    "output_tokens": 33784,
-    "api_call_count": 270
+    "input_tokens": 346,
+    "cache_creation_tokens": 682817,
+    "cache_read_tokens": 19905541,
+    "output_tokens": 34646,
+    "api_call_count": 274
   }
 }

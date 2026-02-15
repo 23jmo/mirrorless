@@ -23,3 +23,11 @@ Next.js version: 15.5.12 (Webpack)
 
 
 Also can we remove the circle crop on the video avatar. just show the whole thing since it has black background
+
+---
+
+Can we add the 'Take Photo' tool and then let Mira call that one as a tool, but only let her call it one time or something like after the work, on the step that she's supposed to? Right now I think we're just saying that we're going to call it and we wait forever and it never comes in; it's like a big stall. Let's actually fix that
+
+---
+
+[Request interrupted by user for tool use]
