@@ -11,6 +11,8 @@ export interface UseMiraVideoAvatarReturn {
   avatarState: MiraAvatarState;
   isSpeaking: boolean;
   speak: (text: string, emotion?: MiraEmotion) => void;
+  speakQueued: (text: string, emotion?: MiraEmotion) => void;
+  flushQueue: () => void;
   setEmotion: (emotion: MiraEmotion) => void;
   setAvatarState: (state: MiraAvatarState) => void;
   stop: () => void;
@@ -98,6 +100,49 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
     []
   );
 
+  /**
+   * Enqueue a sentence for sequential playback.
+   * Keeps avatar in speaking state across the full queue.
+   * Call flushQueue() when all sentences have been enqueued (end-of-message).
+   */
+  const speakQueued = useCallback(
+    (text: string, speakEmotion: MiraEmotion = "idle") => {
+      if (!text.trim() || !ttsRef.current) return;
+
+      setEmotionInternal(speakEmotion);
+      setAvatarStateInternal("speaking");
+      setIsSpeaking(true);
+      setOrbStateInternal("speaking");
+
+      console.log(`[MiraVideoAvatar] Queuing sentence (emotion=${speakEmotion}):`, text.slice(0, 60));
+
+      ttsRef.current.speakQueued(
+        text,
+        undefined,
+        undefined,
+      );
+    },
+    []
+  );
+
+  /**
+   * Signal that all sentences have been enqueued.
+   * The drain callback will fire when the last sentence finishes playing.
+   */
+  const flushQueue = useCallback(() => {
+    if (!ttsRef.current) return;
+
+    ttsRef.current.onAllDone(() => {
+      console.log("[MiraVideoAvatar] Queue drained — all sentences played");
+      setIsSpeaking(false);
+      setAvatarStateInternal("idle");
+      setOrbStateInternal("idle");
+      setTimeout(() => {
+        setEmotionInternal("idle");
+      }, 500);
+    });
+  }, []);
+
   const stop = useCallback(() => {
     ttsRef.current?.stop();
     setIsSpeaking(false);
@@ -136,6 +181,8 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
     avatarState,
     isSpeaking,
     speak,
+    speakQueued,
+    flushQueue,
     setEmotion,
     setAvatarState,
     stop,

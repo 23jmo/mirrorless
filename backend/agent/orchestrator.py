@@ -492,12 +492,8 @@ class MiraOrchestrator:
             "content": tool_results,
         })
 
-        # Only re-call Claude if there are tools that return data it needs to process.
-        # Fire-and-forget tools (like send_voice_to_client) don't need a follow-up turn.
-        FIRE_AND_FORGET_TOOLS = {"send_voice_to_client"}
-        tool_names = {tu.name for tu in tool_uses}
-        if not tool_names.issubset(FIRE_AND_FORGET_TOOLS):
-            await self._call_claude(session, tool_depth=tool_depth + 1)
+        # Continue the conversation — Claude needs to process tool results
+        await self._call_claude(session, tool_depth=tool_depth + 1)
 
     async def end_session(self, user_id: str) -> dict | None:
         """End a session and save summary."""

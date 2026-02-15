@@ -50,7 +50,7 @@ export function MiraVideoAvatar({
   size = 200,
 }: MiraVideoAvatarProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [currentSrc, setCurrentSrc] = useState<string>("");
+  const [currentSrc, setCurrentSrc] = useState<string>(() => getVideoPath(emotion, state));
   const [isTransitioning, setIsTransitioning] = useState(false);
 
   // Update video source when emotion or state changes
@@ -86,7 +86,6 @@ export function MiraVideoAvatar({
       style={{
         width: size,
         height: size,
-        borderRadius: "50%",
         overflow: "hidden",
         background: "#000",
         position: "relative",

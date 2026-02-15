@@ -106,8 +106,12 @@ function MirrorV2Page() {
   // Queue transcripts while mira is speaking, send when quiet
   const pendingTranscriptRef = useRef<string | null>(null);
 
-  // Accumulate full response text before delivering
-  const responseAccumulatorRef = useRef<string>("");
+  // Sentence buffer for incremental TTS — flushes at sentence boundaries
+  const sentenceBufferRef = useRef<string>("");
+  // Track emotion for the current response (parsed from first chunk)
+  const currentEmotionRef = useRef<string>("idle");
+  // Track whether emotion has been parsed for this response
+  const emotionParsedRef = useRef(false);
 
   // Current user ID for session
   const userId = activeUser?.id ?? null;
@@ -212,8 +216,42 @@ function MirrorV2Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Mira speech events (streamed text from AI) ──
+  // ── Mira speech events (sentence-level streaming) ──
   useEffect(() => {
+    // Regex for sentence boundaries: .!? followed by a space or end of string
+    const SENTENCE_BOUNDARY = /[.!?](?:\s|$)/;
+
+    /**
+     * Flush complete sentences from the buffer to TTS.
+     * Returns any remaining partial sentence left in the buffer.
+     */
+    function flushSentences(buffer: string, emotion: string): string {
+      let remaining = buffer;
+
+      while (true) {
+        const match = SENTENCE_BOUNDARY.exec(remaining);
+        if (!match) break;
+
+        // Split at the sentence boundary (include the punctuation)
+        const endIdx = match.index + match[0].length;
+        const sentence = remaining.slice(0, endIdx).trim();
+        remaining = remaining.slice(endIdx);
+
+        if (sentence) {
+          mira.speakQueued(sentence, emotion as ReturnType<typeof parseEmotionTag>["emotion"]);
+
+          // Show sentence on screen immediately
+          setSpeechText(sentence);
+          setSpeechVisible(true);
+          if (speechFadeTimerRef.current) {
+            clearTimeout(speechFadeTimerRef.current);
+          }
+        }
+      }
+
+      return remaining;
+    }
+
     const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
       // Fallback session detection
       if (!sessionActive && !isStarting) {
@@ -225,34 +263,66 @@ function MirrorV2Page() {
       }
 
       if (data.is_chunk !== false) {
+        // ── Streaming chunk ──
         if (!data.text) return;
-        responseAccumulatorRef.current += data.text;
-        mira.setOrbState("thinking");
-        mira.setEmotion("thinking");
+
+        sentenceBufferRef.current += data.text;
+
+        // Parse emotion from first chunk (where [emotion:X] tag appears)
+        if (!emotionParsedRef.current) {
+          const { emotion, cleanText } = parseEmotionTag(sentenceBufferRef.current);
+          if (emotion !== "idle") {
+            currentEmotionRef.current = emotion;
+            emotionParsedRef.current = true;
+            sentenceBufferRef.current = cleanText;
+          } else {
+            // Try keyword detection on accumulated text
+            const detected = detectEmotionFromText(sentenceBufferRef.current);
+            if (detected !== "idle") {
+              currentEmotionRef.current = detected;
+              emotionParsedRef.current = true;
+            }
+          }
+        }
+
+        // Flush any complete sentences to TTS immediately
+        sentenceBufferRef.current = flushSentences(
+          sentenceBufferRef.current,
+          currentEmotionRef.current,
+        );
       } else {
+        // ── End of message ──
         if (data.text) {
-          responseAccumulatorRef.current += data.text;
-        }
-        const fullText = responseAccumulatorRef.current;
-        responseAccumulatorRef.current = "";
-        if (!fullText) return;
-
-        // Parse emotion tag, then detect from content as fallback
-        let { emotion, cleanText } = parseEmotionTag(fullText);
-        if (emotion === "idle") {
-          emotion = detectEmotionFromText(cleanText);
+          sentenceBufferRef.current += data.text;
         }
 
-        mira.speak(cleanText, emotion);
-
-        // Show speech text, then fade out 2s after TTS finishes
-        setSpeechText(cleanText);
-        setSpeechVisible(true);
-
-        // Clear any pending fade-out timer
-        if (speechFadeTimerRef.current) {
-          clearTimeout(speechFadeTimerRef.current);
+        // Parse emotion if we haven't yet (short responses)
+        if (!emotionParsedRef.current) {
+          const { emotion, cleanText } = parseEmotionTag(sentenceBufferRef.current);
+          currentEmotionRef.current = emotion === "idle"
+            ? detectEmotionFromText(sentenceBufferRef.current)
+            : emotion;
+          sentenceBufferRef.current = emotion !== "idle" ? cleanText : sentenceBufferRef.current;
         }
+
+        // Flush any remaining text as the final sentence
+        const remainder = sentenceBufferRef.current.trim();
+        if (remainder) {
+          mira.speakQueued(remainder, currentEmotionRef.current as ReturnType<typeof parseEmotionTag>["emotion"]);
+          setSpeechText(remainder);
+          setSpeechVisible(true);
+          if (speechFadeTimerRef.current) {
+            clearTimeout(speechFadeTimerRef.current);
+          }
+        }
+
+        // Signal end of queue — drain callback will reset avatar state
+        mira.flushQueue();
+
+        // Reset for next response
+        sentenceBufferRef.current = "";
+        currentEmotionRef.current = "idle";
+        emotionParsedRef.current = false;
       }
     };
 
