@@ -1,0 +1,270 @@
+Implement the following plan:
+
+# Plan: Wire Up Full Onboarding + Mirror Kiosk + Admin Panel
+
+## Context
+
+The phone onboarding page uses hardcoded UUIDs and a manual MVP flow. All building blocks exist (OAuth, scraping, queue) but aren't wired together. This plan implements the full end-to-end flow for a **public event booth**: QR scan → phone onboarding → queue → mirror kiosk → session recap. Full spec at `ONBOARDING_SPEC.md`.
+
+## Scope Summary
+
+Three workstreams:
+1. **Phone onboarding** — `signin → questionnaire → queue → idle → recap` with real Google OAuth, selfie capture, background scraping, returning user detection
+2. **Mirror kiosk** — continuous operation: `attract (QR) → waiting (Start/Skip) → session → cycle`. Auto-advances queue. Graceful degradation when scrape is incomplete.
+3. **Admin panel** — `/admin` route: queue list with reorder/skip, current session controls, booth stats
+
+---
+
+## Changes by File
+
+### Backend
+
+#### `backend/migrations/009_add_selfie_column.sql` (NEW)
+- `ALTER TABLE users ADD COLUMN IF NOT EXISTS selfie_base64 TEXT;`
+
+#### `backend/routers/auth.py`
+- Add `POST /auth/selfie` — stores base64 in `users.selfie_base64`
+- Make `phone` optional in `ProfileUpdateRequest` (default `None`), only update if provided
+
+#### `backend/scraper/routes.py`
+- In `_background_scrape()`: after Gmail scrape, run calendar fetch in parallel via `run_in_executor()`
+- Use existing `calendar_fetch.build_calendar_service()` + `fetch_events()` + `scraper.db.store_calendar_events()`
+- Wrap calendar in try/except — failure doesn't block Gmail completion
+
+#### `backend/routers/queue.py`
+- Add `POST /queue/skip/{user_id}` — skip a queued user
+- Add `PATCH /queue/reorder` — reorder queue positions
+- Add `POST /queue/advance` — mark current active as completed, advance next to active
+- Emit `queue_updated` socket event on all queue mutations
+- Add 2-min timeout task when user becomes active
+
+#### `backend/main.py`
+- On `session_ended`: call queue advance (auto-cycle to next user)
+- Add `mirror` socket room — mirror joins on connect
+- Emit `queue_updated` to `mirror` room on queue changes
+- Add `session_force_end` event handler (from admin)
+
+#### `backend/routers/admin.py` (NEW)
+- `GET /admin/queue` — full queue with user names and statuses
+- `GET /admin/session` — current session info (user, stats, API calls)
+- `GET /admin/stats` — booth stats (total users today, avg session length, etc.)
+
+### Frontend
+
+#### `frontend/src/components/phone/SelfieCapture.tsx` (NEW)
+- Camera `<video>` preview + "Take Photo" button
+- File upload fallback if camera denied
+- Canvas resize to 512x512 JPEG (quality 0.8)
+- `onCapture(base64: string)` callback + "Retake" option
+
+#### `frontend/src/app/phone/page.tsx` (REWRITE)
+New state machine: `signin → questionnaire → queue → idle → recap`
+- **Returning user check**: `localStorage` for `user_id` → verify via API → skip to queue
+- **signin**: Name + SelfieCapture + GoogleSignIn → triggers scrape → questionnaire
+- **questionnaire**: Current onboarding form (gender, brands, styles, occasions, price) → join queue
+- **queue**: QueueStatus component with `onBecameActive` callback → idle
+- **idle**: "You're at the mirror!" + cycling tips + ring timer. Listens for `session_ended` → recap
+- **recap**: Summary + liked items + "View on Poke" button (URL TBD) + "Done"
+- Use Tailwind + shadcn/ui (replace all inline styles)
+
+#### `frontend/src/components/phone/QueueStatus.tsx`
+- Add `onBecameActive?: () => void` callback prop
+- Fire once via `useRef` when `queue.status === "active"`
+
+#### `frontend/src/lib/api.ts`
+- Add `uploadSelfie(userId, selfieBase64)`
+- Make `phone` optional in `updateProfile()`
+- Add admin API functions: `getAdminQueue()`, `skipQueueUser()`, `reorderQueue()`, `forceEndSession()`, `getBoothStats()`
+
+#### `frontend/src/app/mirror/page.tsx` (MODIFY)
+Add kiosk cycling:
+- **attract state**: QR code + branding, listen for `queue_updated` socket event
+- **waiting state**: "Waiting for [Name]..." + Start/Skip buttons + 2-min countdown
+- **session state**: Existing behavior (no changes)
+- Remove `user_id` URL param requirement — mirror gets active user from queue
+- Join `mirror` socket room on mount
+
+#### `frontend/src/app/admin/page.tsx` (NEW)
+Simple admin panel:
+- Queue list with skip/reorder controls
+- Current session: user info + stats + "Force End" button
+- Booth stats: total users, avg session length, items shown/liked
+- Auto-refreshes via polling or socket events
+
+---
+
+## Existing Code Reused (no changes)
+
+| Code | File |
+|------|------|
+| Google OAuth component | `frontend/src/components/phone/GoogleSignIn.tsx` |
+| Gmail scraping pipeline | `backend/scraper/pipeline.py` |
+| Calendar fetch logic | `backend/scraper/calendar_fetch.py` |
+| Calendar DB storage | `backend/scraper/db.py` |
+| Queue join/status endpoints | `backend/routers/queue.py` |
+| OAuth token exchange | `backend/services/auth.py` |
+| API client functions | `frontend/src/lib/api.ts` |
+| Socket.io client | `frontend/src/lib/socket.ts` |
+| Onboarding submit endpoint | `backend/main.py` |
+| Scrape socket events | `backend/scraper/socket_events.py` |
+
+---
+
+## Implementation Order
+
+1. **DB migration** — `009_add_selfie_column.sql`
+2. **Backend auth** — selfie endpoint, phone optional
+3. **Backend scraper** — calendar fetch in `_background_scrape()`
+4. **Frontend API** — new functions
+5. **SelfieCapture** component
+6. **QueueStatus** — add `onBecameActive` callback
+7. **Phone page rewrite** — full state machine with Tailwind
+8. **Backend queue enhancements** — auto-advance, timeout, reorder, socket events
+9. **Mirror kiosk mode** — attract/waiting/session cycling
+10. **Admin panel** — `/admin` route
+11. **End-to-end testing**
+
+---
+
+## Verification
+
+1. `psql $DATABASE_URL -f backend/migrations/009_add_selfie_column.sql`
+2. `cd backend && pytest`
+3. `cd frontend && npm run build && npm run lint`
+4. Manual E2E: phone sign-in → questionnaire → queue → mirror auto-loads → session → recap on phone
+5. Admin: view queue, skip user, force-end session, check stats
+6. Returning user: close/reopen phone → skips to queue
+7. Edge case: deny camera → file upload works for selfie
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+<task-notification>
+<task-id>a23aa62</task-id>
+<status>completed</status>
+<summary>Agent "Run frontend build + lint" completed</summary>
+<result>The build completed successfully. Here is a summary:
+
+- **Compiled successfully** in 7.5 seconds
+- **All 10 static pages generated** without errors
+- **5 warnings** (non-blocking):
+  - 4 warnings about using `<img>` instead of Next.js `<Image />` in `chat/page.tsx`, `TestSidebar.tsx`, `test/page.tsx`, and `SelfieCapture.tsx`
+  - 1 warning about an unnecessary dependency (`cleanup`) in the `useCallback` hook in `useDeepgramSTT.ts`
+
+**Routes built:**
+
+| Route | Size | First Load JS |
+|-------|------|---------------|
+| `/` | 4.23 kB | 107 kB |
+| `/admin` | 2.03 kB | 104 kB |
+| `/chat` | 2.86 kB | 118 kB |
+| `/mirror` | 8.94 kB | 166 kB |
+| `/mirror/test` | 4.02 kB | 148 kB |
+| `/phone` | 5.56 kB | 120 kB |
+| `/test` | 2.7 kB | 105 kB |
+
+All pages are statically prerendered. The build is clean and ready for deployment.</result>
+<usage>total_tokens: 10175
+tool_uses: 1
+duration_ms: 27455</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a23aa62.output
+
+---
+
+<task-notification>
+<task-id>a663dc9</task-id>
+<status>completed</status>
+<summary>Agent "Run backend pytest" completed</summary>
+<result>Here are the test results:
+
+**68 passed, 4 failed, 2 skipped** (89.46s)
+
+The 4 failures break down into two categories:
+
+### 1. `tests/test_mira.py::test_claude_with_mira` (1 failure)
+This is a live Claude API call test. Claude responded with a `tool_use` block (calling `search_calendar`), but the test's follow-up message didn't include the required `tool_result` block before sending the next user message. The Anthropic API enforces that every `tool_use` must be immediately followed by a `tool_result`. This is a test logic issue -- the test needs to handle tool calls in Claude's response before continuing the conversation.
+
+### 2. `tests/test_users.py` (3 failures)
+All three user deletion tests are getting **405 Method Not Allowed** instead of the expected status codes (200, 404, 500). This means the DELETE endpoint for users either doesn't exist or the route isn't registered properly in `/Users/johnathanmo/mirrorless/backend/routers/users.py`.
+
+Would you like me to investigate and fix any of these failures?</result>
+<usage>total_tokens: 10075
+tool_uses: 1
+duration_ms: 102735</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a663dc9.output
+
+---
+
+the QR code isn't a real qr code rn - is that intentionaly?
+
+---
+
+ccess to fetch at 'http://localhost:8000/auth/selfie' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+
+127.0.0.1:55179 - "POST /auth/selfie HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+    await route.handle(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/auth.py", line 79, in upload_selfie
+    rows = await db.execute(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 68, in execute
+    resp.raise_for_status()
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '400 Bad Request' for url 'https://ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/sql'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+
+---
+
+[Request interrupted by user for tool use]

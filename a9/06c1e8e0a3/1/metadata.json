@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "a906c1e8e0a3",
+  "session_id": "a7dc16af-046e-4cca-b15b-6eca3a5c75ec",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T09:30:34.625364Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/main.py",
+    "backend/migrations/009_add_selfie_column.sql",
+    "backend/routers/admin.py",
+    "backend/routers/auth.py",
+    "backend/routers/queue.py",
+    "backend/scraper/routes.py",
+    "frontend/src/app/admin/page.tsx",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/app/phone/page.tsx",
+    "frontend/src/components/phone/QueueStatus.tsx",
+    "frontend/src/components/phone/SelfieCapture.tsx",
+    "frontend/src/lib/api.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 10774,
+    "cache_creation_tokens": 118787,
+    "cache_read_tokens": 4767000,
+    "output_tokens": 9385,
+    "api_call_count": 52
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T09:30:34.533669Z",
+    "agent_lines": 57,
+    "human_added": 0,
+    "human_modified": 608,
+    "human_removed": 917,
+    "total_committed": 665,
+    "agent_percentage": 8.571428571428571
+  }
+}
