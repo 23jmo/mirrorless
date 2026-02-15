@@ -1,0 +1,274 @@
+Implement the following plan:
+
+# Replace HeyGen LiveAvatar with Jenny Memoji Avatar System
+
+## Context
+
+HeyGen LiveAvatar SDK is broken (developer unresponsive) and being scrapped. The `jenny/` directory contains a working memoji avatar system with pre-recorded video loops, ElevenLabs TTS, and scripted response videos with baked-in audio. This plan merges Jenny's avatar tech into the Mira mirror app.
+
+**What stays**: Deepgram STT, Claude orchestrator, Socket.io, SentenceBuffer
+**What goes**: HeyGen SDK, `useLiveAvatar.ts`, `/api/heygen/token` endpoint
+**What's new**: Memoji video avatar, ElevenLabs TTS via backend proxy, scripted response matching
+
+---
+
+## New Data Flow
+
+```
+Claude streams text → mira_speech socket events
+    → Mirror page accumulates full response
+    → findScriptedResponse(fullText)
+        ├─ MATCH → play scripted MP4 (baked-in audio, perfect lip sync)
+        └─ NO MATCH → SentenceBuffer → avatar.speak(sentence)
+                        → POST /api/tts/speak (ElevenLabs proxy)
+                        → play audio blob + talking_loop.mp4
+                        → on ended → idle_loop.mp4 → next sentence
+```
+
+---
+
+## Phase 1: Copy Assets
+
+Copy Jenny's video files into the Next.js public directory:
+
+```
+jenny/assets/videos/idle_loop.mp4      → frontend/public/avatar/loops/idle.mp4
+jenny/assets/videos/thinking_loop.mp4  → frontend/public/avatar/loops/thinking.mp4
+jenny/assets/videos/talking_loop.mp4   → frontend/public/avatar/loops/talking.mp4
+jenny/assets/videos/happy_loop.mp4     → frontend/public/avatar/loops/happy.mp4
+jenny/assets/videos/excited_loop.mp4   → frontend/public/avatar/loops/excited.mp4
+jenny/assets/videos/concerned_loop.mp4 → frontend/public/avatar/loops/concerned.mp4
+jenny/assets/videos/scripted/*         → frontend/public/avatar/scripted/* (13 files)
+```
+
+---
+
+## Phase 2: Backend TTS Proxy
+
+**Create `backend/routers/tts.py`** — new endpoint to proxy ElevenLabs API
+
+```
+POST /api/tts/speak
+Body: { "text": "sentence to speak" }
+Returns: audio/mpeg binary (StreamingResponse)
+```
+
+- Uses `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` from backend `.env`
+- Same voice settings as Jenny: model `eleven_multilingual_v2`, stability 0.5, similarity_boost 0.8, style 0.5, speaker_boost true
+- Max 1000 chars per request (cost control)
+- 500 if key not configured, 502 on upstream error
+
+**Modify `backend/main.py`** — register the new router:
+- Add `from routers import tts`
+- Add `app.include_router(tts.router)`
+
+---
+
+## Phase 3: Frontend Core Modules (3 new files)
+
+### 3a: `frontend/src/lib/memoji-avatar.ts`
+TypeScript port of Jenny's `MiraAvatar` class (`jenny/src/avatar.js`).
+
+- Manages 6 looping muted `<video>` elements + 1 scripted (unmuted) `<video>`
+- States: idle, thinking, talking, happy (5s revert), excited (5s revert), concerned
+- Takes a `container: HTMLDivElement` in constructor (injected by React ref)
+- `init()` creates videos, preloads, shows idle
+- `setState(state)` hides current video, shows+plays new one
+- `playScriptedVideo(path): Promise<void>` plays one-shot video with audio, resolves on ended
+- `destroy()` pauses all videos, removes from DOM (React cleanup)
+- Video paths: `/avatar/loops/{state}.mp4` and `/avatar/scripted/{name}.mp4`
+
+### 3b: `frontend/src/lib/scripted-responses.ts`
+Direct TypeScript port of Jenny's `scripted-responses.js`.
+
+- `findScriptedResponse(text): ScriptedResponse | null` — two-tier matching: exact phrase includes, then keyword scoring (threshold 4)
+- `detectEmotion(text): AvatarState` — regex-based emotion detection for fallback
+- 13 scripted response mappings with video paths pointing to `/avatar/scripted/`
+- Export types: `ScriptedResponse`, `AvatarState`
+
+### 3c: `frontend/src/lib/elevenlabs-tts.ts`
+TTS client that calls the backend proxy.
+
+- `speak(text, onStart?, onEnd?): Promise<void>` — POST to `/api/tts/speak`, gets audio blob, plays via `Audio` element
+- `stop()` — pause and clear current audio
+- Revoke blob URLs on end/error to prevent memory leaks
+- Browser TTS fallback via `SpeechSynthesisUtterance` if backend proxy fails
+
+---
+
+## Phase 4: New React Hook
+
+**Create `frontend/src/hooks/useMemojiAvatar.ts`** — replaces `useLiveAvatar`
+
+Public API (mirrors existing interface shape):
+```typescript
+interface UseMemojiAvatarReturn {
+  isReady: boolean;
+  isSpeaking: boolean;
+  startSession: () => Promise<void>;
+  stopSession: () => Promise<void>;
+  speak: (text: string) => void;       // queue sentence for TTS + talking loop
+  playScripted: (videoPath: string) => Promise<void>;  // NEW: play scripted video
+  interrupt: () => void;
+  clearQueue: () => void;
+  containerRef: RefObject<HTMLDivElement | null>;  // changed from avatarRef/HTMLVideoElement
+}
+```
+
+Internal: same speech queue pattern as current `useLiveAvatar` — `speechQueueRef`, `isProcessingQueueRef`, `processQueue()`.
+
+- `startSession()`: create `MemojiAvatar(container)` + `ElevenLabsTTS(apiUrl)`, call `avatar.init()`, set ready
+- `speak(text)`: push to queue → `processQueue()` → `tts.speak(sentence, avatar.talking, avatar.idle)` → on ended process next
+- `playScripted(path)`: clear queue, stop TTS, call `avatar.playScriptedVideo(path)`, set isSpeaking during
+- `interrupt()`: stop TTS, avatar.idle(), clear queue
+- `stopSession()`: destroy avatar, stop TTS, clear queue
+
+---
+
+## Phase 5: Update AvatarPiP
+
+**Modify `frontend/src/components/mirror/AvatarPiP.tsx`**
+
+Change from `videoRef: RefObject<HTMLVideoElement>` to `containerRef: RefObject<HTMLDivElement>`. The outer PiP wrapper keeps the same styling (position, size, border-radius). Inside, render the container div that `MemojiAvatar` injects its video elements into.
+
+---
+
+## Phase 6: Update Mirror Page
+
+**Modify `frontend/src/app/mirror/page.tsx`**
+
+Key changes:
+1. Import `useMemojiAvatar` instead of `useLiveAvatar`
+2. Import `findScriptedResponse` and `detectEmotion` from scripted-responses
+3. Add `responseAccumulatorRef` to collect full response text before delivery
+4. Replace `mira_speech` handler:
+   - Accumulate chunks into `responseAccumulatorRef`
+   - On `is_chunk: false` (end of message): check `findScriptedResponse(fullText)`
+   - **Match** → `avatar.playScripted(video)` (plays video with baked audio)
+   - **No match** → feed full text to `SentenceBuffer` → per-sentence TTS
+   - Set avatar to `thinking` state while accumulating (visual feedback)
+5. Change `AvatarPiP` prop from `videoRef={avatar.avatarRef}` to `containerRef={avatar.containerRef}`
+
+---
+
+## Phase 7: Update Mira's Prompt
+
+**Modify `backend/agent/prompts.py`**
+
+Add scripted phrase instructions to Mira's system prompt (same as Jenny's `config.js` lines 46-61):
+
+```
+When possible, START your response with one of these exact phrases (they have pre-recorded video):
+- "okay i love that" (really like it)
+- "yes this is it" (perfect outfit)
+- "you look amazing" (genuine compliment)
+- "hmm let me see" (thinking/neutral)
+- ... (all 13 phrases)
+Use these phrases naturally when they fit. You can add more after the phrase.
+```
+
+---
+
+## Phase 8: Cleanup
+
+- Remove `@heygen/liveavatar-web-sdk` from `frontend/package.json`, run `npm install`
+- Delete `frontend/src/hooks/useLiveAvatar.ts`
+- Delete `backend/routers/heygen.py` and `backend/tests/test_heygen_routes.py`
+- Remove `heygen` import and router registration from `backend/main.py`
+- Update `.env.example`: remove `HEYGEN_API_KEY`, add `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`
+- Update `CLAUDE.md`: voice pipeline now "Deepgram STT → ElevenLabs TTS → Memoji avatar"
+
+---
+
+## Files Summary
+
+| Action | File |
+|--------|------|
+| **Create** | `backend/routers/tts.py` |
+| **Create** | `frontend/src/lib/memoji-avatar.ts` |
+| **Create** | `frontend/src/lib/scripted-responses.ts` |
+| **Create** | `frontend/src/lib/elevenlabs-tts.ts` |
+| **Create** | `frontend/src/hooks/useMemojiAvatar.ts` |
+| **Create** | `frontend/public/avatar/loops/*.mp4` (6 files) |
+| **Create** | `frontend/public/avatar/scripted/*.mp4` (13 files) |
+| **Modify** | `frontend/src/components/mirror/AvatarPiP.tsx` |
+| **Modify** | `frontend/src/app/mirror/page.tsx` |
+| **Modify** | `backend/main.py` |
+| **Modify** | `backend/agent/prompts.py` |
+| **Modify** | `backend/.env.example` |
+| **Delete** | `frontend/src/hooks/useLiveAvatar.ts` |
+| **Delete** | `backend/routers/heygen.py` |
+| **Delete** | `backend/tests/test_heygen_routes.py` |
+
+---
+
+## Verification
+
+1. **Type-check**: `cd frontend && npx tsc --noEmit`
+2. **Backend tests**: `cd backend && pytest tests/ -v`
+3. **Manual test on mirror page**:
+   - Avatar shows idle memoji in PiP on session start
+   - Switches to thinking while Claude responds
+   - Scripted phrase match → plays video with baked audio, perfect sync
+   - Non-scripted response → talking loop during TTS, idle between sentences
+   - Multi-sentence responses play sequentially
+   - Interrupt clears queue and returns to idle
+4. **TTS proxy**: `curl -X POST localhost:8000/api/tts/speak -H 'Content-Type: application/json' -d '{"text":"hello"}' --output test.mp3`
+
+---
+
+## Risks & Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| Accumulating full response adds latency before speech | Set avatar to "thinking" state for visual feedback. Mira's max_tokens=400 so delay is ~2-4s |
+| ElevenLabs TTS latency per sentence (~500ms-1s) | Speech queue processes serially; consider audio pre-fetch optimization later |
+| Browser autoplay blocks scripted video audio | AudioContext unlock on Start Session click already in place; scripted videos play after user gesture chain |
+| ~5.7MB of video assets in public/ | Acceptable for kiosk/TV display. Could lazy-load scripted videos later |
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+this button blocks my clicks lol
+
+---
+
+[Image: source: REDACTED 2026-02-14 22.07.51.png]
+
+---
+
+[Request interrupted by user]
+
+---
+
+try again
+
+---
+
+[Request interrupted by user]
+
+---
+
+try again
+
+---
+
+Wait nah the loading text is fine - one issue - start sessino button when i click doesn't appear to do anything
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+Okay, now I'm joining the mirror/mirror. I'm clicking with the right user ID. I'm clicking start session. 
+
+It shows a loading avatar thing in the top right. However, nothing loads. I don't see any person show up. I don't see any avatars. And then I don't see any text being generated installHook.js:1 [MemojiAvatar] No container ref — cannot start session
+
+I think adding more logs would be good
+
+---
+
+[Request interrupted by user for tool use]
