@@ -825,18 +825,20 @@ class MiraOrchestrator:
 
         # Add assistant message to history
         # Deep copy to prevent tool execution from mutating stored assistant message
+        sanitized_content = []
+        for block in final_message.content:
+            if block.type == "tool_use":
+                sanitized_content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": copy.deepcopy(block.input),
+                })
+            elif block.type == "text":
+                sanitized_content.append({"type": "text", "text": block.text})
         session.conversation_history.append({
             "role": "assistant",
-            "content": copy.deepcopy([
-                {
-                    "type": block.type,
-                    "id": getattr(block, "id", None),
-                    "name": getattr(block, "name", None),
-                    "input": getattr(block, "input", None),
-                    "text": getattr(block, "text", None),
-                }
-                for block in final_message.content
-            ]),
+            "content": sanitized_content,
         })
 
         # Handle tool calls
