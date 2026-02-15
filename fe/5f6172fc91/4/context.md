@@ -22,3 +22,7 @@ Sessions currently have no natural ending — they only stop when the API call l
 
 push
 
+### Prompt 3
+
+can you add a readme
+

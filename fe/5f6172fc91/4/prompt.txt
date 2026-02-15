@@ -110,3 +110,7 @@ If you need specific details from before exiting plan mode (like exact code snip
 ---
 
 push
+
+---
+
+can you add a readme

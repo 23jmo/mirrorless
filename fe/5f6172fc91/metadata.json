@@ -3,11 +3,10 @@
   "checkpoint_id": "fe5f6172fc91",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 7,
+  "checkpoints_count": 6,
   "files_touched": [
+    "README.md",
     "backend/agent/orchestrator.py",
-    "backend/agent/prompts.py",
-    "backend/agent/tools.py",
     "backend/mcp_server/server.py",
     "backend/requirements.txt",
     "backend/routers/admin.py",
@@ -23,7 +22,6 @@
     "frontend/src/app/api/queue/leave/[userId]/route.ts",
     "frontend/src/app/api/queue/status/[userId]/route.ts",
     "frontend/src/app/api/users/[userId]/route.ts",
-    "frontend/src/app/mirror/page.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/lib/api.ts",
     "frontend/src/lib/db.ts",
@@ -74,10 +72,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 365,
-    "cache_creation_tokens": 343912,
-    "cache_read_tokens": 11727537,
-    "output_tokens": 20691,
-    "api_call_count": 148
+    "input_tokens": 337,
+    "cache_creation_tokens": 264783,
+    "cache_read_tokens": 9371845,
+    "output_tokens": 16763,
+    "api_call_count": 122
   }
 }
