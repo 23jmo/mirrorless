@@ -3,10 +3,18 @@
 import { useState } from 'react';
 import type { ClothingItem, ClothingCategory } from '@/types/clothing';
 
+interface OutfitResultItem {
+  id: string;
+  category: string;
+  imageUrl: string;
+  name?: string;
+  title?: string;
+}
+
 interface OutfitResult {
   outfit_name: string;
   voice: string;
-  items: ClothingItem[];
+  items: OutfitResultItem[];
 }
 
 interface TestSidebarProps {
