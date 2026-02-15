@@ -1,0 +1,191 @@
+Implement the following plan:
+
+# Plan: Fix MCP Server Database Connection Timeout
+
+## Context
+
+The Poke MCP server (`backend/mcp_server/server.py`) connects to Neon Postgres via asyncpg, which requires port 5432 to be reachable. On local dev environments with VPN/firewall restrictions, port 5432 is blocked, causing connection timeouts when tools like `get_past_sessions` are called.
+
+The main FastAPI backend solves this with a dual-mode connection strategy in `backend/models/database.py`:
+- **Production (Render)**: asyncpg pool via port 5432
+- **Local dev**: Neon serverless HTTP API when port 5432 is blocked
+
+The MCP server needs the same dual-mode fallback.
+
+**Error:**
+```
+asyncpg.connection.py:2421 in connect
+TimeoutError
+```
+
+## Proposed Solution
+
+Add Neon HTTP fallback to the MCP server using the same pattern as the main backend.
+
+### Implementation Approach: Try-Catch with Timeout
+
+When `_get_pool()` is called:
+1. **Try** to create an asyncpg pool with a short timeout (3 seconds)
+2. **If successful** → use asyncpg for all queries (production path)
+3. **If timeout or connection refused** → fall back to `NeonHTTPClient` (local dev path)
+4. Cache the chosen client mode to avoid re-attempting asyncpg on every tool call
+
+This approach optimizes for the production case (no penalty) while gracefully handling local dev.
+
+## Files to Modify
+
+### 1. `backend/mcp_server/server.py`
+
+**Changes:**
+
+a) **Import NeonHTTPClient** from the main backend:
+```python
+import sys
+from pathlib import Path
+# Add backend/ to sys.path to import from models.database
+backend_dir = Path(__file__).parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+
+from models.database import NeonHTTPClient
+```
+
+b) **Refactor `_get_pool()` to return a union type:**
+
+Replace the current `_pool: asyncpg.Pool | None = None` global with:
+```python
+_db_client: asyncpg.Pool | NeonHTTPClient | None = None
+_db_mode: str | None = None  # "asyncpg" or "http"
+```
+
+Rewrite `_get_pool()` as `_get_db_client()`:
+```python
+async def _get_db_client() -> asyncpg.Pool | NeonHTTPClient:
+    global _db_client, _db_mode
+
+    if _db_client is not None:
+        return _db_client
+
+    # Try asyncpg first (production)
+    log.info("Attempting asyncpg connection (port 5432)...")
+    try:
+        _db_client = await asyncio.wait_for(
+            asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=1,
+                max_size=5,
+                ssl="require",
+            ),
+            timeout=3.0  # Short timeout for fast failover
+        )
+        _db_mode = "asyncpg"
+        log.info("Database connection: asyncpg (production mode)")
+        return _db_client
+    except (asyncio.TimeoutError, OSError, ConnectionRefusedError) as e:
+        log.warning("asyncpg connection failed (%s), falling back to Neon HTTP", type(e).__name__)
+
+    # Fallback to Neon HTTP (local dev)
+    _db_client = NeonHTTPClient(DATABASE_URL)
+    _db_mode = "http"
+    log.info("Database connection: Neon HTTP (local dev mode)")
+    return _db_client
+```
+
+c) **Update query logic to handle both client types:**
+
+Create adapter functions that normalize the API:
+```python
+async def _fetch(client, query: str, *params):
+    """Execute query and return all rows."""
+    if isinstance(client, NeonHTTPClient):
+        # Neon HTTP uses positional params as a list
+        return await client.execute(query, list(params))
+    else:
+        # asyncpg uses pool.fetch
+        async with client.acquire() as conn:
+            return await conn.fetch(query, *params)
+
+async def _fetchrow(client, query: str, *params):
+    """Execute query and return first row."""
+    if isinstance(client, NeonHTTPClient):
+        rows = await client.execute(query, list(params))
+        return rows[0] if rows else None
+    else:
+        async with client.acquire() as conn:
+            return await conn.fetchrow(query, *params)
+
+async def _execute(client, query: str, *params):
+    """Execute query without returning rows."""
+    if isinstance(client, NeonHTTPClient):
+        await client.execute(query, list(params))
+    else:
+        async with client.acquire() as conn:
+            await conn.execute(query, *params)
+```
+
+d) **Update `_get_past_sessions()` and `_save_session()`:**
+
+Replace all `pool.acquire()` blocks with the adapter functions:
+
+Before:
+```python
+async with pool.acquire() as conn:
+    user = await conn.fetchrow("SELECT id, phone FROM users WHERE phone = $1", phone)
+```
+
+After:
+```python
+user = await _fetchrow(client, "SELECT id, phone FROM users WHERE phone = $1", phone)
+```
+
+e) **Update tool handlers:**
+
+Change `pool = await _get_pool()` to `client = await _get_db_client()` and pass `client` instead of `pool`.
+
+### 2. `backend/models/database.py`
+
+**No changes needed.** The `NeonHTTPClient` class already exists and is ready to use.
+
+## Key Decisions
+
+- **Why try-catch instead of pre-flight port check?** Pre-flight adds 3+ seconds to every cold start in production (unnecessary). Try-catch is instant in production (asyncpg succeeds immediately) and only takes 3s timeout penalty once on local dev boot.
+
+- **Why 3-second timeout?** Long enough to succeed in production over slow networks, short enough to fail fast locally. asyncpg on Render typically connects in <200ms.
+
+- **Why global singleton?** FastMCP tools are stateless functions. A singleton client avoids re-attempting asyncpg on every tool call after the initial fallback decision.
+
+- **Row format differences?** asyncpg returns `Record` objects (dict-like), Neon HTTP returns plain dicts. Both support dict key access (`row["id"]`), so the adapter layer works transparently.
+
+## Verification
+
+1. **Local dev (port 5432 blocked):**
+   ```bash
+   cd backend
+   python -m mcp_server.server
+   ```
+   - Should log: "asyncpg connection failed (TimeoutError), falling back to Neon HTTP"
+   - Should log: "Database connection: Neon HTTP (local dev mode)"
+   - Call `get_past_sessions` via MCP inspector → should succeed
+
+2. **Production (Render):**
+   - Deploy to Render
+   - Should log: "Database connection: asyncpg (production mode)"
+   - Call `get_past_sessions` → should succeed
+
+3. **Test both tools:**
+   - `get_past_sessions(phone="+15551234567", limit=5)` → returns sessions
+   - `save_session(phone="+15551234567", session_id="<uuid>", summary="test")` → saves summary
+
+4. **Run existing tests:**
+   ```bash
+   cd backend
+   pytest mcp_server/tests/ -v
+   ```
+   - Tests should pass (they mock the pool, so they're mode-agnostic)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+the unit tests passed?
