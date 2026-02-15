@@ -7,6 +7,7 @@ import socketio
 from routers import auth, queue, users, heygen
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
+from agent.orchestrator import MiraOrchestrator
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
@@ -31,8 +32,10 @@ app.include_router(scraper_router)
 app.include_router(judges_router)
 app.include_router(heygen.router)
 
-# Make sio accessible to routes
+# Make sio and Mira accessible to routes
 app.state.sio = sio
+mira = MiraOrchestrator(socket_io=sio)
+app.state.mira = mira
 
 
 @app.get("/health")
@@ -66,7 +69,13 @@ async def join_room(sid, data):
 @sio.event
 async def disconnect(sid):
     print(f"[socket] Client disconnected: {sid}")
-    _sid_to_user.pop(sid, None)
+    user_id = _sid_to_user.pop(sid, None)
+    if user_id and user_id in mira.sessions:
+        try:
+            await mira.end_session(user_id)
+            print(f"[socket] Cleaned up session for {user_id}")
+        except Exception as e:
+            print(f"[socket] Failed to clean up session for {user_id}: {e}")
 
 
 def _is_valid_uuid(value: str) -> bool:
@@ -79,17 +88,13 @@ def _is_valid_uuid(value: str) -> bool:
 
 @sio.event
 async def start_session(sid, data):
-    """Signal that a session is starting.
-
-    The actual AI orchestration is handled by Poke (external MCP host).
-    This just notifies connected clients that the session is active.
-    """
+    """Start a Mira session for a user."""
     user_id = data.get("user_id")
     if not user_id:
         return
 
     if not _is_valid_uuid(user_id):
-        print(f"[session] Invalid UUID from {sid}: {user_id}")
+        print(f"[mira] Invalid UUID from {sid}: {user_id}")
         await sio.emit(
             "session_error",
             {"error": "Invalid user ID: must be a valid UUID"},
@@ -97,27 +102,40 @@ async def start_session(sid, data):
         )
         return
 
-    print(f"[session] Starting session for user {user_id}")
+    print(f"[mira] Starting session for user {user_id}")
+    # Notify frontend that session is active (starts avatar + STT)
     await sio.emit("session_active", {"user_id": user_id}, room=user_id)
+    try:
+        await mira.start_session(user_id)
+    except Exception as e:
+        print(f"[mira] start_session failed for {user_id}: {e}")
+        await sio.emit("session_error", {"error": f"Failed to start session: {e}"}, to=sid)
 
 
 @sio.event
 async def mirror_event(sid, data):
-    """Forward events from the mirror to the user's room (picked up by Poke)."""
+    """Handle events from the mirror (voice, gesture, pose, snapshot)."""
     user_id = data.get("user_id")
-    if not user_id:
+    event = data.get("event", {})
+    if not user_id or not event:
         return
-    await sio.emit("mirror_event", data, room=user_id, skip_sid=sid)
+    try:
+        await mira.handle_event(user_id, event)
+    except Exception as e:
+        print(f"[mira] mirror_event failed for {user_id}: {e}")
+        await sio.emit("session_error", {"error": f"Event processing failed: {e}"}, to=sid)
 
 
 @sio.event
 async def end_session(sid, data):
-    """End a session — notify connected clients."""
+    """End a Mira session."""
     user_id = data.get("user_id")
     if not user_id:
         return
-    print(f"[session] Ending session for user {user_id}")
-    await sio.emit("session_ended", {"user_id": user_id}, room=user_id)
+    print(f"[mira] Ending session for user {user_id}")
+    result = await mira.end_session(user_id)
+    if result:
+        await sio.emit("session_recap", result, room=user_id)
 
 
 # Wrap FastAPI with Socket.io — no outer CORS wrapper needed

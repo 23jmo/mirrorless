@@ -257,6 +257,12 @@ function MirrorPage() {
 
   const handleStartSession = useCallback(() => {
     if (!userId || isStarting || sessionActive) return;
+
+    // Unlock browser audio policy while we still have the user gesture context.
+    // When session.attach() later calls play(), the browser will allow it.
+    const ctx = new AudioContext();
+    ctx.resume().then(() => ctx.close());
+
     setIsStarting(true);
     socket.emit("start_session", { user_id: userId });
   }, [userId, isStarting, sessionActive]);
