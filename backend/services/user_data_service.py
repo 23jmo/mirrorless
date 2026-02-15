@@ -7,16 +7,64 @@ from uuid import UUID
 
 from models.database import NeonHTTPClient
 
+# Allowlist of known clothing/fashion brands for filtering scraped email data.
+# Only brands in this set will be considered as real clothing purchases.
+KNOWN_CLOTHING_BRANDS = {
+    # Fast fashion & mall brands
+    "zara", "h&m", "uniqlo", "gap", "old navy", "banana republic", "forever 21",
+    "shein", "asos", "topshop", "primark", "mango", "pull&bear", "bershka",
+    "stradivarius", "massimo dutti",
+    # Basics & essentials
+    "cos", "muji", "everlane", "uniqlo u",
+    # Sportswear
+    "nike", "adidas", "puma", "reebok", "under armour", "new balance",
+    "asics", "fila", "champion", "jordan",
+    # Streetwear
+    "supreme", "stussy", "stüssy", "bape", "palace", "kith", "off-white",
+    "fear of god", "essentials", "fog essentials",
+    # Denim
+    "levi's", "levis", "levi", "wrangler", "lee", "ag", "citizens of humanity",
+    "frame", "7 for all mankind",
+    # Premium / contemporary
+    "ralph lauren", "polo ralph lauren", "tommy hilfiger", "calvin klein",
+    "hugo boss", "lacoste", "fred perry", "j.crew", "j crew", "brooks brothers",
+    "club monaco", "theory", "vince", "ted baker", "reiss",
+    # Athletic / outdoor
+    "lululemon", "patagonia", "the north face", "north face", "columbia",
+    "arc'teryx", "arcteryx", "rei", "carhartt", "carhartt wip",
+    # Luxury
+    "prada", "gucci", "louis vuitton", "lv", "hermes", "hermès", "fendi",
+    "balenciaga", "burberry", "versace", "dior", "saint laurent", "ysl",
+    "bottega veneta", "valentino", "givenchy", "celine", "céline", "loewe",
+    "alexander mcqueen", "moncler", "stone island", "tom ford", "kenzo",
+    "acne studios", "ami paris", "maison margiela",
+    # Shoes
+    "vans", "converse", "dr. martens", "doc martens", "birkenstock",
+    "clarks", "timberland", "ugg", "crocs", "hoka", "on running",
+    "allen edmonds", "cole haan",
+    # Jewelry / accessories
+    "jaxxon", "mejuri", "david yurman", "tiffany", "pandora", "swarovski",
+    # Teen / young adult
+    "abercrombie", "abercrombie & fitch", "hollister", "american eagle",
+    "aerie", "pac sun", "pacsun", "urban outfitters", "free people",
+    "anthropologie",
+}
+
+
+def is_clothing_brand(brand: str) -> bool:
+    """Check if a brand name is a known clothing/fashion brand."""
+    return brand.lower().strip() in KNOWN_CLOTHING_BRANDS
+
 
 async def get_user_profile_and_purchases(db: NeonHTTPClient, user_id: str) -> Dict:
     """
-    Fetch user profile, style preferences, and recent purchases (3-6 months).
+    Fetch user profile, style preferences, and recent clothing purchases (6 months).
 
     Returns: {
         "user": {...},
         "style_profile": {...},
-        "recent_purchases": [...],
-        "top_brands": [...]
+        "recent_purchases": [...],  # Only actual clothing purchases
+        "top_brands": [...]         # Only known clothing brands
     }
     """
     six_months_ago = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
@@ -34,29 +82,29 @@ async def get_user_profile_and_purchases(db: NeonHTTPClient, user_id: str) -> Di
     style_rows = await db.execute(style_query, [user_id])
     style_profile = style_rows[0] if style_rows else None
 
-    # Fetch recent purchases (last 6 months)
+    # Fetch ALL recent purchases, then filter in Python by known clothing brands.
+    # The DB data comes from Gmail scraping and contains non-clothing items
+    # (software receipts, flight confirmations, etc.) that we need to exclude.
     purchases_query = """
         SELECT * FROM purchases
         WHERE user_id = $1 AND date >= $2
         ORDER BY date DESC
     """
-    recent_purchases = await db.execute(purchases_query, [user_id, six_months_ago])
+    all_purchases = await db.execute(purchases_query, [user_id, six_months_ago])
 
-    # Get top 5 clothing brands by purchase count (filter out non-clothing purchases)
-    brands_query = """
-        SELECT brand, COUNT(*) as count
-        FROM purchases
-        WHERE user_id = $1 AND date >= $2
-          AND (
-            item_name ~* '(shirt|pants|jacket|dress|shoe|sneaker|hoodie|sweater|jeans|tee|polo|shorts|coat|vest|blouse|skirt|boot|sandal|hat|cap|belt|sock|legging|jogger|blazer|suit|scarf|glove|beanie|top|bottom|wear|cloth|apparel|denim|chino|cardigan|pullover|parka|tracksuit|air.?max|air.?force|air.?jordan|dunk|yeezy|new.?balance|converse|vans|chuck)'
-            OR category IN ('shoes', 'top', 'bottom', 'outerwear', 'accessories', 'clothing')
-          )
-        GROUP BY brand
-        ORDER BY count DESC
-        LIMIT 5
-    """
-    brand_rows = await db.execute(brands_query, [user_id, six_months_ago])
-    top_brands = [row["brand"] for row in brand_rows]
+    # Filter to only clothing brand purchases
+    recent_purchases = [
+        p for p in all_purchases
+        if is_clothing_brand(p.get("brand", ""))
+    ]
+
+    # Get top 5 clothing brands by purchase count
+    brand_counts: Dict[str, int] = {}
+    for p in recent_purchases:
+        brand = p.get("brand", "")
+        brand_counts[brand] = brand_counts.get(brand, 0) + 1
+
+    top_brands = sorted(brand_counts, key=brand_counts.get, reverse=True)[:5]
 
     return {
         "user": user,

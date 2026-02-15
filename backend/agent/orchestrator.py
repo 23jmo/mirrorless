@@ -10,7 +10,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Optional
 from uuid import uuid4
 
 import anthropic
@@ -339,6 +339,7 @@ class MiraOrchestrator:
                     tool_input=tool_use.input,
                     user_context={
                         "user_id": session.user_id,
+                        "session_id": session.session_id,
                         "oauth_token": session.user_context.get("oauth_token"),
                     },
                 )
@@ -533,7 +534,29 @@ class MiraOrchestrator:
             task.cancel()
 
 
-# --- Recommendation Pipeline (standalone functions) ---
+# --- Recommendation Pipeline (standalone functions for REST endpoints) ---
+
+
+def _extract_json_from_text(text: str) -> Optional[dict]:
+    """Extract JSON from text that may contain markdown code blocks."""
+    try:
+        if "```json" in text:
+            json_start = text.find("```json") + 7
+            json_end = text.find("```", json_start)
+            return json.loads(text[json_start:json_end].strip())
+        elif "```" in text:
+            json_start = text.find("```") + 3
+            json_end = text.find("```", json_start)
+            return json.loads(text[json_start:json_end].strip())
+        else:
+            return json.loads(text.strip())
+    except json.JSONDecodeError:
+        try:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            return json.loads(text[start:end])
+        except (json.JSONDecodeError, ValueError):
+            return None
 
 
 async def generate_outfit_recommendations(
@@ -542,18 +565,16 @@ async def generate_outfit_recommendations(
     """
     Orchestrate the full recommendation flow.
 
-    1. Fetch user data (profile + 3-6mo purchases + top 5 brands)
+    1. Fetch user data (profile + purchases + top brands)
     2. Handle new users (check if needs onboarding)
-    3. Build brand-specific Serper queries (top 5 brands)
-    4. Check cache, or fetch from Serper in parallel
-    5. Cache results for session
-    6. Build Claude prompt (system + user context)
-    7. Call Claude 4.5 Sonnet
-    8. Parse JSON response
-    9. Async save to database (background task)
-    10. Return results immediately
+    3. Call Serper directly to fetch clothing items
+    4. Send user context + clothing items to Claude in a single call
+    5. Parse final JSON response
+    6. Generate flat lay images + save to DB in parallel
+    7. Return results
     """
-    from services.serper_search import build_brand_queries, fetch_clothing_batch
+    from agent.tools import execute_give_recommendation, _select_diverse_items
+    from services.serper_cache import serper_cache
 
     start_time = time.time()
 
@@ -570,79 +591,79 @@ async def generate_outfit_recommendations(
                 "message": "User needs to complete onboarding questionnaire",
             }
 
-        # Step 3 & 4: Get clothing items (fetch from Serper)
-        # Determine gender from style profile
-        gender = "mens"
-        if user_data.get("style_profile"):
-            gender = user_data["style_profile"].get("gender", "mens")
-
-        # Build queries for top 5 brands
+        # Step 3: Call Serper directly (no Claude tool loop)
         top_brands = user_data.get("top_brands", [])
-        if not top_brands:
-            # Fallback to style profile brands
-            if user_data.get("style_profile"):
-                top_brands = user_data["style_profile"].get("brands", [])[:5]
+        style_profile = user_data.get("style_profile")
+        gender = "mens"
+        if style_profile:
+            gender = style_profile.get("gender", "mens")
 
-        if not top_brands:
-            top_brands = ["Nike", "Zara", "H&M", "Uniqlo", "Levi's"]
+        tool_input = {"brands": top_brands[:5] if top_brands else [], "gender": gender}
+        print(f"[Mira] Fetching clothing from Serper (brands={tool_input['brands']}, gender={gender})")
+        clothing_text = await execute_give_recommendation(tool_input, session_id)
 
-        # Build and execute queries
-        brand_queries = build_brand_queries(top_brands[:5], gender)
-        all_queries = brand_queries["tops"] + brand_queries["bottoms"]
-
-        serper_api_key = os.getenv("SERPER_API_KEY")
-        if not serper_api_key:
-            return create_error_response("api_error", user_data["user"]["name"])
-
-        # Fetch clothing in parallel
-        available_clothing = await fetch_clothing_batch(
-            all_queries, serper_api_key, num_results_per_query=5
-        )
-
-        if not available_clothing:
+        if clothing_text.startswith("Error:") or clothing_text.startswith("No clothing"):
             return create_error_response("no_results", user_data["user"]["name"])
 
-        # Step 6: Build Claude prompt
-        system_prompt = get_mira_system_prompt()
-        # Limit items to avoid exceeding Claude's context window
-        user_prompt = build_recommendation_prompt(user_data, available_clothing[:50])
+        # Step 4: Single Claude call with clothing items already in the prompt
+        cached_items = serper_cache.get(session_id) or []
+        tops = [i for i in cached_items if i.get("clothing_category") == "top"]
+        bottoms = [i for i in cached_items if i.get("clothing_category") == "bottom"]
+        limited_items = _select_diverse_items(tops, 10) + _select_diverse_items(bottoms, 10)
 
-        # Step 7: Call Claude 4.5 Sonnet
-        response = await anthropic_client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=16384,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+        system_prompt = get_mira_system_prompt()
+        user_prompt = build_recommendation_prompt(user_data, limited_items)
+
+        # Step 4b: Pre-generate flat lays for ALL candidate items in parallel with Claude
+        async def _pregenerate_flat_lays():
+            """Generate flat lays for all candidate items while Claude thinks."""
+            try:
+                from services.gemini_flatlay import generate_flat_lays_batch
+                items_for_flatlay = [
+                    {"image_url": i["image_url"], "title": i["title"], "product_id": i["product_id"]}
+                    for i in limited_items if i.get("image_url") and i.get("product_id")
+                ]
+                if items_for_flatlay:
+                    print(f"[Mira] Generating flat lay images for {len(items_for_flatlay)} items...")
+                    return await generate_flat_lays_batch(items_for_flatlay)
+            except ImportError:
+                print("[Mira] Gemini flat lay service not available, skipping")
+            except Exception as e:
+                print(f"[Mira] Flat lay generation failed (non-fatal): {e}")
+            return {}
+
+        # Run Claude + flat lays in parallel
+        claude_response, flat_lay_map = await asyncio.gather(
+            anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=6144,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            ),
+            _pregenerate_flat_lays(),
         )
 
-        # Step 8: Parse JSON response
-        response_text = response.content[0].text
+        # Extract JSON from Claude response
+        recommendations = None
+        for block in claude_response.content:
+            if hasattr(block, "text"):
+                recommendations = _extract_json_from_text(block.text)
+                break
 
-        # Extract JSON from response (handle markdown code blocks)
-        try:
-            if "```json" in response_text:
-                json_start = response_text.find("```json") + 7
-                json_end = response_text.find("```", json_start)
-                json_text = response_text[json_start:json_end].strip()
-            elif "```" in response_text:
-                json_start = response_text.find("```") + 3
-                json_end = response_text.find("```", json_start)
-                json_text = response_text[json_start:json_end].strip()
-            else:
-                json_text = response_text.strip()
+        if not recommendations:
+            return create_error_response("api_error", user_data["user"]["name"])
 
-            recommendations = json.loads(json_text)
-        except json.JSONDecodeError:
-            # Fallback: try to extract JSON object directly
-            try:
-                start = response_text.find("{")
-                end = response_text.rfind("}") + 1
-                recommendations = json.loads(response_text[start:end])
-            except (json.JSONDecodeError, ValueError):
-                return create_error_response("api_error", user_data["user"]["name"])
-
-        # Step 9: Save to database and collect outfit IDs
+        # Step 5: Map flat lays to selected outfit items + save to DB
         outfits = recommendations.get("outfits", [])
+
+        # Attach flat lay images to outfit items
+        for outfit in outfits:
+            for outfit_item in outfit.get("items", []):
+                item = outfit_item.get("item", {})
+                pid = item.get("product_id", "")
+                if pid in flat_lay_map:
+                    item["flat_image_url"] = flat_lay_map[pid]
+
         outfit_ids = await save_outfits_to_database(db, session_id, outfits)
 
         # Attach database IDs to each outfit in the response
@@ -651,7 +672,7 @@ async def generate_outfit_recommendations(
             if name in outfit_ids:
                 outfit["id"] = outfit_ids[name]
 
-        # Step 10: Return results
+        # Step 6: Return results
         generation_time_ms = int((time.time() - start_time) * 1000)
 
         return {

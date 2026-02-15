@@ -4,6 +4,7 @@ export interface ClothingItem {
   price: string;
   price_numeric: number | null;
   image_url: string;
+  flat_image_url?: string;
   link: string;
   product_id: string;
   rating: number | null;
@@ -19,6 +20,7 @@ export interface Outfit {
   outfit_name: string;
   description: string;
   items: OutfitItem[];
+  why_its_a_match?: string;
   mira_comment: string;
 }
 
