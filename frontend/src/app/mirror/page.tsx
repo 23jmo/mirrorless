@@ -1,15 +1,15 @@
 "use client";
 
 import { Suspense } from "react";
-import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { usePoseDetection } from "@/hooks/usePoseDetection";
-import { useOrbAvatar } from "@/hooks/useOrbAvatar";
+import { useMiraVideoAvatar } from "@/hooks/useMiraVideoAvatar";
 import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
-import { parseEmotionTag } from "@/lib/emotion-parser";
+import { parseEmotionTag, detectEmotionFromText } from "@/lib/emotion-parser";
+import { MiraVideoAvatar } from "@/components/ui/mira-video-avatar";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
@@ -19,12 +19,6 @@ import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
 import { mapToClothingItems } from "@/lib/map-clothing-items";
-
-// Lazy-load the Orb (Three.js is heavy — don't block initial paint)
-const Orb = dynamic(
-  () => import("@/components/ui/orb").then((mod) => ({ default: mod.Orb })),
-  { ssr: false },
-);
 
 export default function MirrorPageWrapper() {
   return (
@@ -61,11 +55,11 @@ function MirrorPage() {
   const activeCanvasOutfit = canvasOutfits[canvasOutfitIndex]?.items ?? [];
   const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
 
-  // Orb avatar + voice
-  const orb = useOrbAvatar();
+  // Mira video avatar + voice
+  const mira = useMiraVideoAvatar();
   const stt = useDeepgramSTT();
 
-  // Queue transcripts while orb is speaking, send when quiet
+  // Queue transcripts while mira is speaking, send when quiet
   const pendingTranscriptRef = useRef<string | null>(null);
 
   // Accumulate full response text before delivering
@@ -102,7 +96,7 @@ function MirrorPage() {
       setIsStarting(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
-      orb.startSession();
+      mira.startSession();
       stt.startListening();
     };
 
@@ -120,7 +114,7 @@ function MirrorPage() {
       if (!sessionActive && !isStarting) {
         setSessionActive(true);
         setIsStarting(false);
-        orb.startSession();
+        mira.startSession();
         stt.startListening();
       }
 
@@ -129,7 +123,8 @@ function MirrorPage() {
         if (!data.text) return;
         console.log("[Mirror] mira_speech chunk received");
         responseAccumulatorRef.current += data.text;
-        orb.setOrbState("thinking");
+        mira.setOrbState("thinking");
+        mira.setEmotion("thinking");
       } else {
         // End of message — accumulate any final text, then deliver
         if (data.text) {
@@ -140,10 +135,16 @@ function MirrorPage() {
         console.log("[Mirror] Agent full response:", fullText);
         if (!fullText) return;
 
-        // Parse emotion tag and stream TTS
-        const { emotion, cleanText } = parseEmotionTag(fullText);
+        // Parse emotion tag first, then detect from content as fallback
+        let { emotion, cleanText } = parseEmotionTag(fullText);
+        
+        // If no explicit emotion tag, try to detect from content
+        if (emotion === "idle") {
+          emotion = detectEmotionFromText(cleanText);
+        }
+        
         console.log("[Mirror] Parsed emotion:", emotion);
-        orb.speak(cleanText, emotion);
+        mira.speak(cleanText, emotion);
       }
     };
 
@@ -186,7 +187,8 @@ function MirrorPage() {
       }
       // voice_message: text for TTS / display
       if (data.type === "voice_message" && data.text) {
-        orb.speak(data.text);
+        const emotion = detectEmotionFromText(data.text);
+        mira.speak(data.text, emotion);
         return;
       }
     };
@@ -196,12 +198,12 @@ function MirrorPage() {
       socket.off("tool_result", handleToolResult);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orb.speak]);
+  }, [mira.speak]);
 
   // Listen for session_ended
   useEffect(() => {
     const handleSessionEnded = () => {
-      orb.stopSession();
+      mira.stopSession();
       stt.stopListening();
       setSessionActive(false);
       setCanvasOutfits([]);
@@ -215,9 +217,9 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Send transcripts to backend when orb stops speaking
+  // Send transcripts to backend when mira stops speaking
   useEffect(() => {
-    if (!orb.isSpeaking && pendingTranscriptRef.current && userId) {
+    if (!mira.isSpeaking && pendingTranscriptRef.current && userId) {
       console.log("[Mirror] Flushing queued transcript:", pendingTranscriptRef.current);
       socket.emit("mirror_event", {
         user_id: userId,
@@ -225,14 +227,14 @@ function MirrorPage() {
       });
       pendingTranscriptRef.current = null;
     }
-  }, [orb.isSpeaking, userId]);
+  }, [mira.isSpeaking, userId]);
 
   // Forward final STT transcripts
   useEffect(() => {
     if (!stt.transcript || !userId) return;
 
-    if (orb.isSpeaking) {
-      console.log("[Mirror] Queuing transcript (orb speaking):", stt.transcript);
+    if (mira.isSpeaking) {
+      console.log("[Mirror] Queuing transcript (mira speaking):", stt.transcript);
       pendingTranscriptRef.current = stt.transcript;
     } else {
       console.log("[Mirror] Sending transcript to backend:", stt.transcript);
@@ -322,20 +324,23 @@ function MirrorPage() {
     socket.emit("start_session", { user_id: userId });
   }, [userId, isStarting, sessionActive]);
 
-  // Context-aware orb positioning
-  const orbStyle = useMemo<React.CSSProperties>(() => {
+  // Context-aware avatar positioning
+  const avatarStyle = useMemo<React.CSSProperties>(() => {
     const hasProducts = canvasOutfits.length > 0;
-    if (orb.orbState === "idle") {
+    if (mira.orbState === "idle") {
       return { top: 24, right: 24, width: 120, height: 120 };
     }
-    if (orb.orbState === "thinking") {
+    if (mira.orbState === "thinking") {
       return { top: "35%", left: "50%", transform: "translateX(-50%)", width: 180, height: 180 };
     }
     if (hasProducts) {
       return { top: 24, right: 24, width: 150, height: 150 };
     }
     return { top: "25%", right: 40, width: 200, height: 200 };
-  }, [orb.orbState, canvasOutfits.length]);
+  }, [mira.orbState, canvasOutfits.length]);
+
+  // Get avatar size from style
+  const avatarSize = typeof avatarStyle.width === "number" ? avatarStyle.width : 200;
 
   return (
     <main
@@ -434,25 +439,20 @@ function MirrorPage() {
         </div>
       )}
 
-      {/* Orb avatar (context-aware positioning) */}
+      {/* Mira Video Avatar (context-aware positioning) */}
       {sessionActive && (
         <div
           style={{
             position: "absolute",
             zIndex: 10,
-            borderRadius: "50%",
-            overflow: "hidden",
             transition: "all 0.6s ease-in-out",
-            ...orbStyle,
+            ...avatarStyle,
           }}
         >
-          <Orb
-            className="h-full w-full"
-            volumeMode="manual"
-            outputVolumeRef={orb.outputVolumeRef}
-            colorsRef={orb.colorsRef}
-            agentState={orb.agentState}
-            seed={42}
+          <MiraVideoAvatar
+            emotion={mira.emotion}
+            state={mira.avatarState}
+            size={avatarSize}
           />
         </div>
       )}
