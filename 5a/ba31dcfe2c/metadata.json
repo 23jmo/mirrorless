@@ -7,11 +7,17 @@
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/requirements.txt",
+    "backend/routers/admin.py",
+    "backend/scraper/routes.py",
+    "frontend/.vercel/project.json",
     "frontend/src/__tests__/gesture-classifier.test.ts",
+    "frontend/src/app/admin/page.tsx",
     "frontend/src/app/mirror/page.tsx",
     "frontend/src/components/mirror/GestureIndicator.tsx",
     "frontend/src/components/mirror/LikedItemsTray.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/hooks/useGestureRecognizer.ts",
+    "frontend/src/lib/api.ts",
     "frontend/src/lib/gesture-classifier.ts",
     "frontend/src/types/gestures.ts"
   ],
@@ -29,13 +35,20 @@
       "context": "/5a/ba31dcfe2c/1/context.md",
       "content_hash": "/5a/ba31dcfe2c/1/content_hash.txt",
       "prompt": "/5a/ba31dcfe2c/1/prompt.txt"
+    },
+    {
+      "metadata": "/5a/ba31dcfe2c/2/metadata.json",
+      "transcript": "/5a/ba31dcfe2c/2/full.jsonl",
+      "context": "/5a/ba31dcfe2c/2/context.md",
+      "content_hash": "/5a/ba31dcfe2c/2/content_hash.txt",
+      "prompt": "/5a/ba31dcfe2c/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 89,
-    "cache_creation_tokens": 121366,
-    "cache_read_tokens": 5300766,
-    "output_tokens": 8158,
-    "api_call_count": 64
+    "input_tokens": 136,
+    "cache_creation_tokens": 214861,
+    "cache_read_tokens": 7634744,
+    "output_tokens": 9595,
+    "api_call_count": 89
   }
 }
