@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "2a0bd76d66b5",
+  "session_id": "6f7717ed-4e2b-4e3c-8efe-7a47143fcdf2",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T10:51:01.923081Z",
+  "branch": "fix/admin-dashboard-sql-errors",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/tests/test_tts_dedup.py",
+    "frontend/src/app/mirror/page.tsx"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 30,
+    "cache_creation_tokens": 67447,
+    "cache_read_tokens": 1269668,
+    "output_tokens": 4743,
+    "api_call_count": 20
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T10:51:01.85026Z",
+    "agent_lines": 532,
+    "human_added": 955,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1487,
+    "agent_percentage": 35.77673167451244
+  }
+}

@@ -1,0 +1,267 @@
+Implement the following plan:
+
+# Plan: Fix TTS audio getting cut off — two root causes
+
+## Context
+
+After applying the snapshot delay fix, TTS still gets cut off. Investigation of the backend logs reveals **two additional root causes** that compound to create the problem:
+
+1. **Duplicate TTS requests**: Every Mira response triggers TTS **twice** — once via `mira_speech` streaming, once via `send_voice_to_client` tool result
+2. **Agent turn looping**: After calling `send_voice_to_client`, the orchestrator unconditionally calls Claude again, which generates a near-identical response (and another `send_voice_to_client`), creating a feedback loop
+
+The combined effect: one user message → 4+ TTS requests hitting the frontend in rapid succession, each killing the previous via the generation counter.
+
+---
+
+## Root Cause 1: Duplicate TTS per message
+
+**Two parallel paths trigger `mira.speak()` on the frontend for the same text:**
+
+**Path A — Streaming chunks** (`mira_speech` socket events):
+- `orchestrator.py:398-402` streams each Claude text delta via `mira_speech`
+- `mirror/page.tsx:188-224` accumulates chunks, calls `mira.speak(cleanText)` on end-of-message
+
+**Path B — Tool result** (`tool_result` socket event):
+- Claude also calls `send_voice_to_client` tool with the same text
+- `tools.py:510-518` returns a `frontend_payload` with `type: "voice_message"`
+- `orchestrator.py:480-486` emits this as a `tool_result` socket event
+- `mirror/page.tsx:263-266` catches `voice_message` type and calls `mira.speak()` again
+
+Both paths fire for the same content → two `/api/tts/stream` requests → second one kills the first via generation counter.
+
+## Root Cause 2: Agent turn looping
+
+**`_handle_tool_calls()` always re-calls Claude after processing tool results:**
+
+- `orchestrator.py:509-510`: After executing tools, it unconditionally calls `await self._call_claude(session, tool_depth=tool_depth + 1)`
+- When `send_voice_to_client` returns `{"sent": True}`, Claude receives this as a tool result and generates another near-identical spoken response
+- This creates: turn #5 (sonnet, response) → turn #6 (haiku, processes tool result) → turn #7 (sonnet, near-duplicate response) → turn #8 (haiku) → ...
+
+The haiku/sonnet alternation comes from `_select_model()` (line 264-280): tool-result turns use Haiku, conversational turns use Sonnet.
+
+---
+
+## Fix
+
+### Change 1: Stop the agent loop after `send_voice_to_client`
+
+**File**: `backend/agent/orchestrator.py` — `_handle_tool_calls()` method (line ~503-510)
+
+After collecting tool results, check if **all** tool calls were fire-and-forget (i.e., `send_voice_to_client`). If so, skip the re-call to Claude. Only re-call Claude when there are tools that return meaningful data Claude needs to process (like `give_recommendation`, `search_purchases`, etc.).
+
+```python
+# Add tool results to conversation and continue
+session.conversation_history.append({
+    "role": "user",
+    "content": tool_results,
+})
+
+# Only call Claude again if there are tools that return data Claude needs to process.
+# Fire-and-forget tools (like send_voice_to_client) don't need a follow-up turn.
+FIRE_AND_FORGET_TOOLS = {"send_voice_to_client"}
+tool_names = {tu.name for tu in tool_uses}
+if not tool_names.issubset(FIRE_AND_FORGET_TOOLS):
+    await self._call_claude(session, tool_depth=tool_depth + 1)
+```
+
+This stops the loop: Claude says something + calls `send_voice_to_client` → tool executes → **done** (no re-call).
+
+### Change 2: Use Sonnet for all agent turns (remove Haiku downgrade)
+
+**File**: `backend/agent/orchestrator.py` — `_select_model()` method (line ~264-280)
+
+Remove the Haiku branching logic entirely. Always use Sonnet with generous token limits:
+
+```python
+def _select_model(self, session: SessionState) -> tuple[str, int]:
+    """Select the right model and max_tokens for this turn."""
+    return SONNET_MODEL, 2048
+```
+
+- **Always Sonnet** — no more Haiku for any turn (conversational or tool-result processing)
+- **Always 2048 max_tokens** — no more restricting conversational turns to 400 tokens, giving Mira room to be expressive
+- This eliminates the model alternation entirely and gives the best conversational experience across all turns
+
+### Change 3: Remove the duplicate `voice_message` TTS path on the frontend
+
+**File**: `frontend/src/app/mirror/page.tsx` — `handleToolResult` (line ~263-266)
+
+Remove the `voice_message` branch that calls `mira.speak()`, since the streaming `mira_speech` path already handles TTS for all Claude responses:
+
+```typescript
+// REMOVE this block:
+if (data.type === "voice_message" && data.text) {
+    const emotion = detectEmotionFromText(data.text);
+    mira.speak(data.text, emotion);
+    return;
+}
+```
+
+The `mira_speech` streaming path (Path A) is the primary pipeline — it includes emotion tag parsing, chunk accumulation, and proper emotion detection. The `voice_message` path (Path B) was a redundant second trigger.
+
+---
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| `backend/agent/orchestrator.py` | Skip re-calling Claude after fire-and-forget tools; use Sonnet for all turns |
+| `frontend/src/app/mirror/page.tsx` | Remove `voice_message` → `mira.speak()` duplicate path |
+
+## Verification
+
+1. Start a mirror session
+2. Check backend logs: each user message should produce **one** Claude response (not 2+), and **one** `[tts] TTS stream request` per message (not 2+)
+3. First greeting should play fully without cutoff
+4. Normal conversation should work — each response plays once
+5. Barge-in (speaking while Mira is talking) should still interrupt her
+6. `display_product` tool results should still render clothing items on the canvas (this path is unchanged)
+7. Tools that return data Claude needs (like `give_recommendation`) should still trigger a follow-up Claude turn
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/d022448c-2b3d-4737-bb27-e32c874e0723.jsonl
+
+---
+
+did u write tests?
+
+---
+
+httpx.HTTPStatusError: Neon SQL error (400): column "api_call_count" does not exist
+INFO:     127.0.0.1:65032 - "GET /admin/stats HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+    await route.handle(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/admin.py", line 115, in get_booth_stats
+    avg_seconds = await db.fetchval(
+                  ^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 85, in fetchval
+    rows = await self.execute(query, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 75, in execute
+    raise httpx.HTTPStatusError(
+httpx.HTTPStatusError: Neon SQL error (400): column "created_at" does not exist
+INFO:     127.0.0.1:65098 - "GET /admin/queue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65099 - "GET /admin/session HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+    await route.handle(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/admin.py", line 60, in get_admin_session
+    session_rows = await db.execute(
+                   ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 75, in execute
+    raise httpx.HTTPStatusError(
+httpx.HTTPStatusError: Neon SQL error (400): column "api_call_count" does not exist
+INFO:     127.0.0.1:65100 - "GET /admin/stats HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc - potneitally new issue
+
+---
+
+[Request interrupted by user for tool use]
