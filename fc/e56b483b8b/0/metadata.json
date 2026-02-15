@@ -3,7 +3,7 @@
   "checkpoint_id": "fce56b483b8b",
   "session_id": "8f2c1410-c0fc-4d6d-9ad6-d856e17d93ce",
   "strategy": "manual-commit",
-  "created_at": "2026-02-15T15:46:18.266194Z",
+  "created_at": "2026-02-15T15:47:11.430696Z",
   "branch": "main",
   "checkpoints_count": 1,
   "files_touched": [
@@ -740,19 +740,19 @@
   "checkpoint_transcript_start": 423,
   "transcript_lines_at_start": 423,
   "token_usage": {
-    "input_tokens": 27,
-    "cache_creation_tokens": 103217,
-    "cache_read_tokens": 1974540,
-    "output_tokens": 1090,
-    "api_call_count": 19
+    "input_tokens": 35,
+    "cache_creation_tokens": 106102,
+    "cache_read_tokens": 2686667,
+    "output_tokens": 1304,
+    "api_call_count": 25
   },
   "initial_attribution": {
-    "calculated_at": "2026-02-15T15:46:18.155244Z",
-    "agent_lines": 0,
+    "calculated_at": "2026-02-15T15:47:11.316405Z",
+    "agent_lines": 32,
     "human_added": 0,
-    "human_modified": 27,
-    "human_removed": 213954,
-    "total_committed": 26,
-    "agent_percentage": 0
+    "human_modified": 360,
+    "human_removed": 213588,
+    "total_committed": 392,
+    "agent_percentage": 8.16326530612245
   }
 }
