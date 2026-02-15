@@ -1,0 +1,168 @@
+Implement the following plan:
+
+# Fix: Backend responds but frontend never plays voice/avatar
+
+## Context
+
+The backend IS generating Claude responses — server logs show `[mira] AGENT SAID: ...` with full text. But the frontend plays no voice and shows no avatar lip sync. The browser console shows zero `mira_speech`-related logs (no `[Mirror] Agent full response:`, no `[SentenceBuffer]`, no `[TTS]`).
+
+## Root cause: `!data.text` guard kills end-of-message signal
+
+**File:** `frontend/src/app/mirror/page.tsx`, line 128
+
+```typescript
+const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
+  // ...fallback session detection...
+
+  if (!data.text) return;          // ← LINE 128: "" is falsy → exits!
+
+  if (data.is_chunk !== false) {
+    responseAccumulatorRef.current += data.text;     // chunks accumulate fine
+    avatar.setAvatarState("thinking");
+  } else {
+    // End-of-message — flush to TTS                 ← NEVER REACHED
+    const fullText = responseAccumulatorRef.current;
+    sentenceBuffer.feed(fullText);
+    sentenceBuffer.flush();
+  }
+};
+```
+
+The backend sends two kinds of `mira_speech` events:
+- **Chunks**: `{"text": "some words", "is_chunk": true}` — pass the guard fine
+- **End-of-message**: `{"text": "", "is_chunk": false}` — `""` is falsy in JS → dropped
+
+All chunks accumulate silently in `responseAccumulatorRef`, but the end-of-message signal that triggers `sentenceBuffer.feed()` → TTS → avatar is completely dropped.
+
+## Confidence: Very high
+
+This is a direct code trace, not speculation:
+1. `orchestrator.py:306` sends `_stream_text(user_id, "", end_of_message=True)`
+2. `_stream_text` emits `{"text": "", "is_chunk": false}`
+3. Frontend line 128: `if (!data.text) return` — `!""` is `true` in JS → exits
+4. Lines 134-157 (sentence buffer → TTS) never execute
+
+## Proof: test that reproduces the bug
+
+Write `frontend/src/__tests__/mira-speech-handler.test.ts` that extracts and tests the handler logic:
+
+```typescript
+// Simulate the exact handler behavior from page.tsx
+// 1. CURRENT (buggy): !data.text guard before is_chunk check → end-of-message dropped
+// 2. FIXED: guard scoped to chunk branch only → end-of-message processed
+```
+
+The test sends simulated streaming events (chunks + end-of-message) and asserts the sentence callback fires. This test will FAIL with the current code pattern and PASS with the fix.
+
+## Fix
+
+### 1. `frontend/src/app/mirror/page.tsx` — Fix the guard logic (line 128)
+
+Move the `!data.text` check inside the chunk branch. The end-of-message branch must always run:
+
+```typescript
+if (data.is_chunk !== false) {
+  if (!data.text) return;                            // Only skip empty chunks
+  console.log("[Mirror] mira_speech chunk received");
+  responseAccumulatorRef.current += data.text;
+  avatar.setAvatarState("thinking");
+} else {
+  if (data.text) {
+    responseAccumulatorRef.current += data.text;
+  }
+  const fullText = responseAccumulatorRef.current;
+  responseAccumulatorRef.current = "";
+  console.log("[Mirror] Agent full response:", fullText);
+  if (!fullText) return;                             // Nothing accumulated → skip
+  // ... scripted response check, sentence buffer, TTS (unchanged)
+}
+```
+
+### 2. `frontend/src/__tests__/mira-speech-handler.test.ts` — Regression test
+
+Test the mira_speech handler logic by simulating the streaming event sequence:
+- Send 3 chunk events with text
+- Send 1 end-of-message event with `text: ""`
+- Assert sentence callback was called with the accumulated text
+
+### 3. `backend/agent/orchestrator.py` — Add logging at silent returns
+
+- `handle_event`: log when session not found (currently silent `return`)
+- `_call_claude`: emit fallback error message to frontend when Claude API fails
+
+### Files to modify
+
+| File | Change |
+|---|---|
+| `frontend/src/app/mirror/page.tsx` | Fix `!data.text` guard (line 128), add chunk logging |
+| `frontend/src/__tests__/mira-speech-handler.test.ts` | New regression test for the handler logic |
+| `backend/agent/orchestrator.py` | Add logging at silent returns, emit fallback on Claude API failure |
+
+## Verification
+
+1. `cd frontend && npx vitest run` — new test passes
+2. `cd frontend && npx tsc --noEmit` — no type errors
+3. Start backend + frontend, open `/mirror?user_id=...`, click Start Session
+4. Frontend console should now show:
+   - `[Mirror] mira_speech chunk received` — for each streamed chunk
+   - `[Mirror] Agent full response: ...` — full accumulated text
+   - `[SentenceBuffer] Sentence: ...` — per-sentence TTS
+   - `[TTS] Sending to ElevenLabs: ...` — TTS proxy call
+5. Audio plays through speakers, avatar switches to talking state
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+Okay, nice. Mira can talk to me, I hear audio, but the problem is that it only plays the pre-recorded snippets, and it doesn't ever transition into the main talking. I have two separate things where I have the speech that Mira's supposed to be saying, like I see the context from Collade, but it never says that part. It should probably say that part, right, with the fake talking transition shit. happened and you're calling mom tomorrow morning at 3:45 AM, which is either very sweet or a reminder you keep ignoring.
+
+But right now, I need to see what you're wearing. Turn on that camera so I can getokay a look here at the's the thing fit John, becauseathan — you we've spent $100 got work to do. on a C
+page.tsx:149 [Mirror] Scripted match: okay here's the thing
+useMemojiAvatar.ts:141 [MemojiAvatar] playScripted: /avatar/scripted/neutral_thing.mp4
+38page.tsx:131 [Mirror] mira_speech chunk received
+page.tsx:141 [Mirror] Agent full response: OS cleaning fee for "foul odors and spills" back in February, and honestly I need to hear that story. I'm Mira, your personal stylist.
+
+And I see you've got a flight to San Francisco coming up on Friday — we need to make sure you're not showing up in whatever got you that cleaning charge.
+
+Let me get a look at what you're wearing right now so I know what we're working with.
+page.tsx:149 [Mirror] Scripted match: wait what is happening here
+useMemojiAvatar.ts:141 [MemojiAvatar] playScripted: /avatar/scripted/confused_what.mp4
+31page.tsx:131 [Mirror] mira_speech chunk received
+page.tsx:141 [Mirror] Agent full response: Hello? Johnathan? I can't help you if I can't see you. The camera should be on — just step in front of the mirror so I can actually see what's happening with this outfit.
+
+Or are you hiding from me because you know I'm about to have opinions?
+page.tsx:149 [Mirror] Scripted match: wait what is happening here
+useMemojiAvatar.ts:141 [MemojiAvatar] playScripted: /avatar/scripted/confused_what.mp4[SentenceBuffer] Sentence: The-recorded phrases aren't actually camera still playing being out weird, loud or, can you you see yourself now're just seeing?
+useMemojiAvatar.ts:127 [MemojiAvatar] Queued: The-recorded phrases aren't actually camera still playing be (queue=2)
+sentence-buffer.ts:43 [SentenceBuffer] Sentence: I need that the visual to actually start text?
+useMemojiAvatar.ts:127 [MemojiAvatar] Queued: I need that the visual to actually start text? (queue=3)
+sentence-buffer.ts:43 [SentenceBuffer] Sentence: styling you properly
+
+So.
+useMemojiAvatar.ts:127 [MemojiAvatar] Queued: styling you properly
+
+So. (queue=4)
+sentence-buffer.ts:24 [SentenceBuffer] Flushing remainder: when
+useMemojiAvatar.ts:127 [MemojiAvatar] Queued: when (queue=5)
+25page.tsx:131 [Mirror] mira_speech chunk received
+useDeepgramSTT.ts:122 [STT] Final transcript: It should it should probably say that part, right, with the with the fake talking transition shit.
+page.tsx:131 [Mirror] mira_speech chunk received
+page.tsx:217 [Mirror] Queuing transcript (avatar speaking): It should it should probably say that part, right, with the with the fake talking transition shit.
+21page.tsx:131 [Mirror] mira_speech chunk received
+page.tsx:141 [Mirror] Agent full response:  I say "okay here's the thing" or "yes this is it" — those specific phrases should trigger video clips with my face and perfect lip sync, but you're only hearing the regular synthesized voice for everything?
+
+That's a technical issue on the mirror's end. Let me know if that's what's happening, because those scripted phrases are supposed to make me look way better when I talk.
+page.tsx:149 [Mirror] Scripted match: yes this is it
+useMemojiAvatar.ts:141 [MemojiAvatar] playScripted: /avatar/scripted/positive_yes.mp4
+37page.tsx:131 [Mirror] mira_speech chunk received
+page.tsx:141 [Mirror] Agent full response: hmm let me see — are you still there Johnathan? I feel like I'm talking to myself here. 
+
+If the tech is being glitchy just say literally anything so I know you can hear me. Otherwise I'm about to start pulling up clothes based purely on the fact that you own a $79.99 item and spent $250,000 on something mysterious in January.
+page.tsx:149 [Mirror] Scripted match: hmm let me see
+useMemojiAvatar.ts:141 [MemojiAvatar] playScripted: /avatar/scripted/neutral_see.mp4
+page.tsx:203 [Mirror] Flushing queued transcript: It should it should probably say that part, right, with the with the fake talking transition shit.
+
+---
+
+[Request interrupted by user for tool use]
