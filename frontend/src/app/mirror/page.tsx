@@ -35,7 +35,7 @@ interface ActiveUser {
   name: string;
 }
 
-const PHONE_URL = process.env.NEXT_PUBLIC_PHONE_URL || "https://mirrorless.vercel.app/phone";
+const PHONE_URL = "https://poke.com/r/fU6M2CeFtp6";
 const WAITING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 const HOLD_DURATION_MS = 2000;
 const CANVAS_WIDTH = 1920;
