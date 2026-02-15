@@ -1,0 +1,99 @@
+Implement the following plan:
+
+# Railway Deployment Plan
+
+## Context
+Railway build is failing with `pip not found` because Railway uses Nixpacks (not raw shell), and the Render-style build command doesn't work. Fix: use Dockerfiles for reliable, portable builds.
+
+## Files to Create (4 files)
+
+### 1. `backend/mcp_server/requirements.txt` — Lean MCP deps
+The MCP server only needs 4 packages. No need to install 500MB of rembg/onnxruntime.
+```
+fastmcp==2.14.5
+asyncpg==0.30.0
+python-dotenv>=1.1.0
+uvicorn[standard]>=0.35
+```
+
+### 2. `backend/Dockerfile.mcp` — MCP server image (priority)
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY mcp_server/requirements.txt ./mcp_server/requirements.txt
+RUN pip install --no-cache-dir -r mcp_server/requirements.txt
+COPY mcp_server/ ./mcp_server/
+EXPOSE ${PORT:-8001}
+CMD uvicorn mcp_server.server:app --host 0.0.0.0 --port ${PORT:-8001}
+```
+- Does NOT copy `mcp/` directory — avoids the import shadowing problem entirely
+- The `sys.path` fix in `server.py:_create_http_app()` still runs harmlessly
+
+### 3. `backend/Dockerfile` — Main backend image
+```dockerfile
+FROM python:3.11-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE ${PORT:-8000}
+CMD uvicorn main:socket_app --host 0.0.0.0 --port ${PORT:-8000}
+```
+- Includes system deps for rembg/onnxruntime (libgl1, libglib2)
+
+### 4. `backend/.dockerignore`
+```
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.*
+tests/
+test_env/
+test_gmail_diag.py
+scrape_debug.py
+.venv/
+```
+
+## Railway Dashboard Setup
+
+### Service 1: `mirrorless-mcp` (priority)
+| Setting | Value |
+|---------|-------|
+| Source | GitHub repo `23jmo/mirrorless` |
+| Root Directory | `backend` |
+| Builder | Dockerfile |
+| Dockerfile Path | `Dockerfile.mcp` |
+| Start Command | (leave blank — CMD in Dockerfile) |
+
+Env vars: `DATABASE_URL`
+
+### Service 2: `mirrorless-backend`
+| Setting | Value |
+|---------|-------|
+| Source | Same GitHub repo |
+| Root Directory | `backend` |
+| Builder | Dockerfile |
+| Dockerfile Path | `Dockerfile` |
+| Start Command | (leave blank) |
+
+Env vars: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_API_KEY`
+
+## Port Note
+Railway assigns `$PORT` dynamically. The external URL (e.g. `mirrorless-mcp-production.up.railway.app`) is HTTPS on 443. Poke connects to the Railway URL, not a raw port. The Dockerfiles default to 8001/8000 as fallback if `$PORT` is unset (local dev).
+
+## Verification
+1. Push to `main` → both Railway services auto-build
+2. Check MCP service logs for `MCP server created with tools: get_past_sessions, save_session`
+3. Test MCP endpoint: `curl https://<railway-mcp-url>/mcp/`
+4. Check backend service logs for `Uvicorn running on 0.0.0.0:<port>`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+ready - do it
