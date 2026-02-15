@@ -3,13 +3,15 @@
   "checkpoint_id": "0d69d4008416",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 0,
+  "checkpoints_count": 2,
   "files_touched": [
     "backend/main.py",
     "backend/routers/admin.py",
     "backend/routers/queue.py",
+    "backend/scraper/routes.py",
     "frontend/src/app/admin/page.tsx",
     "frontend/src/app/mirror-v2/page.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/lib/api.ts"
   ],
   "sessions": [
@@ -19,13 +21,20 @@
       "context": "/0d/69d4008416/0/context.md",
       "content_hash": "/0d/69d4008416/0/content_hash.txt",
       "prompt": "/0d/69d4008416/0/prompt.txt"
+    },
+    {
+      "metadata": "/0d/69d4008416/1/metadata.json",
+      "transcript": "/0d/69d4008416/1/full.jsonl",
+      "context": "/0d/69d4008416/1/context.md",
+      "content_hash": "/0d/69d4008416/1/content_hash.txt",
+      "prompt": "/0d/69d4008416/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 29,
-    "cache_creation_tokens": 45455,
-    "cache_read_tokens": 1808766,
-    "output_tokens": 3442,
-    "api_call_count": 17
+    "input_tokens": 95,
+    "cache_creation_tokens": 179417,
+    "cache_read_tokens": 5329223,
+    "output_tokens": 9483,
+    "api_call_count": 76
   }
 }

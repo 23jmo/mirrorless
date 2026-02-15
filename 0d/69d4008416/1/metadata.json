@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "0d69d4008416",
+  "session_id": "8f2c1410-c0fc-4d6d-9ad6-d856e17d93ce",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T15:06:26.291832Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/routers/admin.py",
+    "backend/scraper/routes.py",
+    "frontend/src/app/admin/page.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
+    "frontend/src/lib/api.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 66,
+    "cache_creation_tokens": 133962,
+    "cache_read_tokens": 3520457,
+    "output_tokens": 6041,
+    "api_call_count": 59
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T15:06:26.180784Z",
+    "agent_lines": 183,
+    "human_added": 0,
+    "human_modified": 25,
+    "human_removed": 8,
+    "total_committed": 208,
+    "agent_percentage": 87.98076923076923
+  }
+}
