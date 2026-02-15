@@ -12,9 +12,7 @@ import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
 import AvatarPiP from "@/components/mirror/AvatarPiP";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
-import ProductCarousel, {
-  type ProductCard,
-} from "@/components/mirror/ProductCarousel";
+import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
 import { SentenceBuffer } from "@/lib/sentence-buffer";
 import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
@@ -43,7 +41,6 @@ function MirrorPage() {
   // Session state
   const [sessionActive, setSessionActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
-  const [products, setProducts] = useState<ProductCard[]>([]);
   const [voiceMessage, setVoiceMessage] = useState<{ text: string; emotion: string } | null>(null);
 
   // Pose detection + clothing overlay state
@@ -52,10 +49,12 @@ function MirrorPage() {
   interface CanvasOutfit {
     name: string;
     items: ClothingItem[];
+    productInfo: PriceStripItem[];
   }
   const [canvasOutfits, setCanvasOutfits] = useState<CanvasOutfit[]>([]);
   const [canvasOutfitIndex, setCanvasOutfitIndex] = useState(0);
   const activeCanvasOutfit = canvasOutfits[canvasOutfitIndex]?.items ?? [];
+  const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
 
   // Avatar + voice
   const avatar = useLiveAvatar();
@@ -152,7 +151,7 @@ function MirrorPage() {
     const handleToolResult = (data: {
       type?: string;
       tool?: string;
-      items?: ProductCard[];
+      items?: { title: string; price?: string; [key: string]: unknown }[];
       text?: string;
       emotion?: string;
       outfit_name?: string;
@@ -160,14 +159,21 @@ function MirrorPage() {
       // display_product: flat lay items from Gemini pipeline
       if (data.type === "display_product" && data.items) {
         const clothingItems = mapToClothingItems(data.items);
+        const priceInfo: PriceStripItem[] = data.items.map((it) => ({
+          title: it.title,
+          price: it.price,
+        }));
         if (clothingItems.length > 0) {
           setCanvasOutfits((prev) => {
-            const next = [...prev, { name: data.outfit_name || `Outfit ${prev.length + 1}`, items: clothingItems }];
-            setCanvasOutfitIndex(next.length - 1); // auto-switch to latest
+            const next = [...prev, {
+              name: data.outfit_name || `Outfit ${prev.length + 1}`,
+              items: clothingItems,
+              productInfo: priceInfo,
+            }];
+            setCanvasOutfitIndex(next.length - 1);
             return next;
           });
         }
-        setProducts(data.items); // keep card display too
         return;
       }
       // voice_message: text for TTS / display
@@ -175,10 +181,6 @@ function MirrorPage() {
         setVoiceMessage({ text: data.text, emotion: data.emotion ?? "neutral" });
         avatar.speak(data.text);
         return;
-      }
-      // Legacy: present_items / clothing_results
-      if ((data.type === "clothing_results" || data.tool === "present_items") && data.items) {
-        setProducts(data.items);
       }
     };
 
@@ -195,7 +197,6 @@ function MirrorPage() {
       avatar.stopSession();
       stt.stopListening();
       setSessionActive(false);
-      setProducts([]);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
     };
@@ -281,14 +282,6 @@ function MirrorPage() {
         }
       }
 
-      // Forward to carousel if it exists
-      const carouselGesture = (
-        window as unknown as Record<string, unknown>
-      ).__carouselGesture as ((g: GestureType) => void) | undefined;
-      if (carouselGesture) {
-        carouselGesture(gesture.type);
-      }
-
       socket.emit("mirror_event", {
         user_id: userId,
         event: {
@@ -308,21 +301,6 @@ function MirrorPage() {
       isVideoReady: isCameraReady,
       onGesture: handleGesture,
     });
-
-  const handleProductGesture = useCallback(
-    (gesture: GestureType, item: ProductCard) => {
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: {
-          type: "product_gesture",
-          gesture,
-          product_id: item.product_id,
-          title: item.title,
-        },
-      });
-    },
-    [userId],
-  );
 
   const handleStartSession = useCallback(() => {
     if (!userId || isStarting || sessionActive) return;
@@ -441,9 +419,9 @@ function MirrorPage() {
       {/* Gesture visual feedback */}
       <GestureIndicator key={gestureKey} gesture={lastGesture} />
 
-      {/* Product carousel (bottom, when products exist) */}
-      {sessionActive && products.length > 0 && (
-        <ProductCarousel items={products} onGesture={handleProductGesture} />
+      {/* Price strip (bottom, when outfit active) */}
+      {sessionActive && activePriceItems.length > 0 && (
+        <PriceStrip items={activePriceItems} />
       )}
 
       {/* Voice indicator (bottom-left, session only) */}
