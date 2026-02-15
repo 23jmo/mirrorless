@@ -2,14 +2,17 @@
   "cli_version": "0.4.2",
   "checkpoint_id": "2a0bd76d66b5",
   "strategy": "manual-commit",
-  "branch": "feature/full-merge",
-  "checkpoints_count": 10,
+  "branch": "feature/diagnostic-logging",
+  "checkpoints_count": 11,
   "files_touched": [
     "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/agent/tools.py",
     "backend/main.py",
     "backend/routers/admin.py",
     "backend/routers/queue.py",
     "backend/tests/test_history_integrity.py",
+    "backend/tests/test_mira.py",
     "backend/tests/test_tts_dedup.py",
     "frontend/src/app/mirror-v2/page.tsx",
     "frontend/src/app/mirror/page.tsx",
@@ -87,13 +90,20 @@
       "context": "/2a/0bd76d66b5/8/context.md",
       "content_hash": "/2a/0bd76d66b5/8/content_hash.txt",
       "prompt": "/2a/0bd76d66b5/8/prompt.txt"
+    },
+    {
+      "metadata": "/2a/0bd76d66b5/9/metadata.json",
+      "transcript": "/2a/0bd76d66b5/9/full.jsonl",
+      "context": "/2a/0bd76d66b5/9/context.md",
+      "content_hash": "/2a/0bd76d66b5/9/content_hash.txt",
+      "prompt": "/2a/0bd76d66b5/9/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 259,
-    "cache_creation_tokens": 508665,
-    "cache_read_tokens": 13538328,
-    "output_tokens": 27413,
-    "api_call_count": 203
+    "input_tokens": 323,
+    "cache_creation_tokens": 625047,
+    "cache_read_tokens": 18997585,
+    "output_tokens": 32796,
+    "api_call_count": 259
   }
 }

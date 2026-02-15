@@ -1,0 +1,110 @@
+Implement the following plan:
+
+# Plan: Add `take_photo` Tool for Mira
+
+## Context
+
+Mira's prompt tells her to say "Let me see what you're working with today" to transition from Phase 1 (roast) to Phase 2 (outfit check). But there's no tool for her to actually capture a photo. The current approach is a **hardcoded 10-second delayed snapshot** after session start — and even that is broken due to a **format mismatch bug** where the frontend sends snapshot data in a format the backend silently drops. Result: Mira says she'll look at what you're wearing, and then the session stalls forever.
+
+**Root cause:** Frontend sends `{type: "snapshot", image_base64, user_id}` but `main.py` expects `{user_id, event: {type: "snapshot", ...}}`. The `data.get("event", {})` returns `{}` (falsy) → early return → snapshot never reaches the orchestrator.
+
+## Changes
+
+### 1. Add `take_photo` tool definition
+**File:** `backend/agent/tools.py` — Add to `TOOL_DEFINITIONS` array
+
+- No input params needed (just triggers the mirror camera)
+- Description tells Claude it's once-per-session for the Phase 1→2 transition
+- NOT handled in `execute_tool()` — requires Socket.io + session state only available in the orchestrator
+
+### 2. Add `_photo_taken` and `_snapshot_future` to `SessionState`
+**File:** `backend/agent/orchestrator.py` (line 50-69)
+
+- `_snapshot_future: asyncio.Future | None = None` — pending Future when waiting for mirror response
+- `_photo_taken: bool = False` — enforces once-per-session
+
+### 3. Handle `take_photo` in `_handle_tool_calls()`
+**File:** `backend/agent/orchestrator.py` (line 440-496)
+
+Intercept `take_photo` before calling `execute_tool()`. New method `_handle_take_photo()`:
+1. Check `_photo_taken` flag — return error if already used
+2. Create `asyncio.Future` on the session
+3. Emit `request_snapshot` to the mirror via Socket.io
+4. `await asyncio.wait_for(future, timeout=5.0)`
+5. Return image as content blocks in tool result (text + image block — Claude API supports this in tool results)
+6. On timeout: return error message telling Claude to proceed without the photo
+
+### 4. Resolve the Future in `handle_event()` for snapshots
+**File:** `backend/agent/orchestrator.py` (line 196+)
+
+At the top of `handle_event()`, before acquiring `_event_lock`:
+- If event is `snapshot` AND `_snapshot_future` is pending → resolve the Future with `image_base64` and return early
+- This avoids deadlock since the lock is held by the `_handle_take_photo` caller chain
+
+If no Future is pending, fall through to existing behavior (backward compat).
+
+### 5. Fix snapshot emit format in frontend
+**File:** `frontend/src/app/mirror-v2/page.tsx` (line 489-493)
+**File:** `frontend/src/app/mirror/page.tsx` (line 365-369)
+
+Change from:
+```typescript
+socket.emit("mirror_event", { type: "snapshot", image_base64, user_id });
+```
+To:
+```typescript
+socket.emit("mirror_event", { user_id, event: { type: "snapshot", image_base64 } });
+```
+Matches the `{user_id, event: {...}}` format used by voice/gesture events.
+
+### 6. Add backward-compat format handling in `main.py`
+**File:** `backend/main.py` (line 406-422)
+
+Before the `if not event` early return, detect legacy top-level format and wrap it:
+```python
+if not event and data.get("type") == "snapshot":
+    event = {"type": "snapshot", "image_base64": data.get("image_base64", "")}
+```
+
+### 7. Remove hardcoded 10-second delayed snapshot
+**File:** `backend/agent/orchestrator.py` (line 182-192)
+
+Delete the `_delayed_snapshot()` function and its `asyncio.create_task` call. The `take_photo` tool replaces this.
+
+### 8. Update Mira's prompt
+**File:** `backend/agent/prompts.py`
+
+- **Phase 1** (line 43): Tell Mira to call `take_photo` while saying her transition line
+- **Phase 2** (line 46): Reference "after take_photo result" instead of "after snapshot arrives"
+- **Tool Usage** (line 72-81): Add `take_photo` tool description
+
+## Verification
+
+1. Run `pytest` from `backend/` — ensure existing tests pass
+2. Start backend + frontend, begin a mirror session
+3. Confirm Mira calls `take_photo` during Phase 1 transition (visible in backend logs as `[mira] Tool call: take_photo`)
+4. Confirm the snapshot is captured and returned (log: `[mira] take_photo: got snapshot`)
+5. Confirm Mira reacts to the outfit in Phase 2
+6. Confirm no stall — if camera isn't ready, 5-second timeout returns error and Mira proceeds gracefully
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+u sure thats the issue right and not like some sort of race condition?
+
+---
+
+no we still get this error now: Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #5)...
+[mira] Claude API call failed for cee077b2-b367-4b73-8d84-7dcc04cc562c: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages: text content blocks must be non-empty'}, 'request_id': 'REDACTED'}
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #6)...
+[mira] Claude API call failed for cee077b2-b367-4b73-8d84-7dcc04cc562c: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages: text content blocks must be non-empty'}, 'request_id': 'req_011CY9tJT79vqN6RWSxJAVSx'}
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c- can you think harder about it. I think it has something to do with me interrupting - what exactly are we passnig to claude...
+
+---
+
+[Request interrupted by user for tool use]
