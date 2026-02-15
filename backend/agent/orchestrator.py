@@ -565,12 +565,12 @@ class MiraOrchestrator:
         """Create a sanitized copy of conversation history for the API call.
 
         Strips ALL base64 image data from older messages, keeping only the
-        most recent image (take_photo) so Claude can see the user. This is
-        the final safety net — even if insertion-time stripping missed something,
-        this ensures no oversized content reaches the API.
+        very last message's images so Claude can see the take_photo result
+        on the turn it arrives. After that turn, the image is stripped.
+        Also strips any surviving data URLs from tool_result strings.
         """
         IMAGE_PLACEHOLDER = {"type": "text", "text": "[image — see earlier in conversation]"}
-        KEEP_IMAGES_IN_LAST = 2  # only keep images in the last N messages
+        KEEP_IMAGES_IN_LAST = 1  # only keep images in the very last message
 
         history = session.conversation_history
         cutoff = len(history) - KEEP_IMAGES_IN_LAST
@@ -702,6 +702,8 @@ class MiraOrchestrator:
 
         # Prepare sanitized messages — strips old images and data URLs
         api_messages = self._prepare_messages(session)
+        prepared_chars = sum(self._count_chars_recursive(msg) for msg in api_messages) + len(session.system_prompt)
+        print(f"[mira] Prepared messages: {prepared_chars // 4:,} est tokens (from {estimated_tokens:,} raw) for {session.user_id}")
 
         # Collect full response (streaming to frontend happens via callback)
         collected_text = ""
@@ -860,10 +862,19 @@ class MiraOrchestrator:
                 if result["items"]:
                     session._last_shown_item = result["items"][0]
 
+            # Strip base64 data URLs before storing in conversation history
+            # Two-pass approach: recursive dict strip + string-level fallback
+            raw_json = json.dumps(result)
+            stripped_json = json.dumps(self._strip_data_urls(result))
+            # Belt-and-suspenders: string-level scan catches anything the dict walker missed
+            stripped_json = self._strip_data_urls_in_string(stripped_json)
+
+            print(f"[mira] Tool result for {tool_use.name}: raw={len(raw_json):,} → stripped={len(stripped_json):,} chars")
+
             tool_result_block = {
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
-                "content": json.dumps(self._strip_data_urls(result)),
+                "content": stripped_json,
             }
             if "error" in result:
                 tool_result_block["is_error"] = True
