@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "fe5f6172fc91",
+  "session_id": "8f2c1410-c0fc-4d6d-9ad6-d856e17d93ce",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T16:19:34.000268Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "backend/routers/admin.py",
+    "backend/scraper/routes.py",
+    "frontend/.vercel/project.json",
+    "frontend/src/app/admin/page.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
+    "frontend/src/lib/api.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "b291ead4-6793-4535-9c7c-88a9971b7a9b",
+  "checkpoint_transcript_start": 541,
+  "transcript_lines_at_start": 541,
+  "token_usage": {
+    "input_tokens": 23,
+    "cache_creation_tokens": 21984,
+    "cache_read_tokens": 1400325,
+    "output_tokens": 4502,
+    "api_call_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T16:19:33.865518Z",
+    "agent_lines": 0,
+    "human_added": 133,
+    "human_modified": 1,
+    "human_removed": 0,
+    "total_committed": 134,
+    "agent_percentage": 0
+  }
+}
