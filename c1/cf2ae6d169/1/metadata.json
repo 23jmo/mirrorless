@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "c1cf2ae6d169",
+  "session_id": "6fdff919-4df7-4b42-b525-30c25d6ce9ec",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T07:10:10.888687Z",
+  "branch": "jmo-attempt-merge",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "frontend/src/lib/elevenlabs-tts.ts",
+    "frontend/src/lib/scripted-responses.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "a0d7226f-14a0-4c2d-8b8c-e5aeeb03bc46",
+  "token_usage": {
+    "input_tokens": 20,
+    "cache_creation_tokens": 33494,
+    "cache_read_tokens": 441671,
+    "output_tokens": 3138,
+    "api_call_count": 12
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T07:10:10.874105Z",
+    "agent_lines": 331,
+    "human_added": 2882,
+    "human_modified": 2,
+    "human_removed": 0,
+    "total_committed": 3215,
+    "agent_percentage": 10.295489891135304
+  }
+}
