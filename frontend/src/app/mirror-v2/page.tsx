@@ -23,7 +23,8 @@ import { skipQueueUser } from "@/lib/api";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
-import { mapToClothingItems } from "@/lib/map-clothing-items";
+import ProductCarousel, { type ProductCard } from "@/components/mirror/ProductCarousel";
+import { processToolResult } from "@/lib/process-tool-result";
 
 type KioskState = "attract" | "waiting" | "session" | "recap";
 
@@ -79,6 +80,9 @@ function MirrorV2Page() {
 
   // ── Outfit opacity for fade-in ──
   const [outfitOpacity, setOutfitOpacity] = useState(1);
+
+  // ── Product carousel (fallback when no flat lays / from present_items) ──
+  const [carouselItems, setCarouselItems] = useState<ProductCard[]>([]);
 
   // ── Debug overlay ──
   const [debugMode, setDebugMode] = useState(false);
@@ -202,6 +206,7 @@ function MirrorV2Page() {
       setIsStarting(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
+      setCarouselItems([]);
       setOutfitOpacity(1);
       setSpeechText("");
       setSpeechVisible(false);
@@ -358,35 +363,36 @@ function MirrorV2Page() {
       emotion?: string;
       outfit_name?: string;
     }) => {
-      if (data.type === "display_product" && data.items) {
-        const clothingItems = mapToClothingItems(data.items);
-        const priceInfo: PriceStripItem[] = data.items.map((it) => ({
-          title: it.title,
-          price: it.price,
-        }));
-        if (clothingItems.length > 0) {
-          // Fade in: set opacity to 0, then transition to 1
-          setOutfitOpacity(0);
-          setCanvasOutfits((prev) => {
-            const next = [
-              ...prev,
-              {
-                name: data.outfit_name || `Outfit ${prev.length + 1}`,
-                items: clothingItems,
-                productInfo: priceInfo,
-              },
-            ];
-            setCanvasOutfitIndex(next.length - 1);
-            return next;
-          });
-          // Ramp opacity to 1 after a frame
+      const result = processToolResult(data);
+      if (!result) return;
+
+      // Canvas overlay (display_product with flat lays)
+      if (result.canvasItems.length > 0) {
+        setCarouselItems([]);
+        setOutfitOpacity(0);
+        setCanvasOutfits((prev) => {
+          const next = [
+            ...prev,
+            {
+              name: result.outfitName || `Outfit ${prev.length + 1}`,
+              items: result.canvasItems,
+              productInfo: result.priceInfo,
+            },
+          ];
+          setCanvasOutfitIndex(next.length - 1);
+          return next;
+        });
+        requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              setOutfitOpacity(1);
-            });
+            setOutfitOpacity(1);
           });
-        }
+        });
         return;
+      }
+
+      // Carousel cards (clothing_results or display_product fallback)
+      if (result.carouselCards.length > 0) {
+        setCarouselItems(result.carouselCards);
       }
     };
 
@@ -408,6 +414,7 @@ function MirrorV2Page() {
       setSessionActive(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
+      setCarouselItems([]);
       setSpeechText("");
       setSpeechVisible(false);
 
@@ -599,6 +606,22 @@ function MirrorV2Page() {
     if (!activeUser) return;
     skipQueueUser(activeUser.id).catch(() => {});
   }, [activeUser]);
+
+  // ── Carousel gesture callback ──
+  const handleCarouselGesture = useCallback(
+    (gesture: GestureType, item: ProductCard) => {
+      socket.emit("mirror_event", {
+        user_id: userId,
+        event: {
+          type: "gesture",
+          gesture,
+          product_id: item.product_id,
+          product_title: item.title,
+        },
+      });
+    },
+    [userId],
+  );
 
   // ── Dismiss recap ──
   const handleRecapDismiss = useCallback(() => {
@@ -803,8 +826,13 @@ function MirrorV2Page() {
         <SpeechDisplay text={speechText} visible={speechVisible} />
       )}
 
-      {/* Price strip (z-15, bottom) */}
-      {sessionActive && activePriceItems.length > 0 && (
+      {/* Product carousel fallback (z-10, bottom) */}
+      {sessionActive && carouselItems.length > 0 && (
+        <ProductCarousel items={carouselItems} onGesture={handleCarouselGesture} />
+      )}
+
+      {/* Price strip (z-15, bottom) — hidden when carousel is showing */}
+      {sessionActive && activePriceItems.length > 0 && carouselItems.length === 0 && (
         <PriceStrip items={activePriceItems} />
       )}
 
