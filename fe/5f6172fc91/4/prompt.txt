@@ -1,0 +1,112 @@
+Implement the following plan:
+
+# Plan: Add Session Ending Mechanisms
+
+## Context
+
+Sessions currently have no natural ending — they only stop when the API call limit is hit (20 calls), admin force-ends, or socket disconnects. Users can't say "I'm done" and leave, and there's no end button. This plan adds both: a Mira `end_session` tool (so Claude can end the session when the conversation naturally concludes) and a manual "End Session" button on the mirror UI.
+
+---
+
+## Changes
+
+### 1. Add `end_session` tool definition
+**File:** `backend/agent/tools.py`
+
+- Add to `TOOL_DEFINITIONS` list:
+  ```python
+  {
+      "name": "end_session",
+      "description": "End the current styling session. Call this when the user says goodbye, "
+                     "they're done, or the conversation reaches a natural stopping point. "
+                     "Say your goodbye/wrap-up line BEFORE calling this tool in the same response.",
+      "input_schema": { "type": "object", "properties": {}, "required": [] },
+  }
+  ```
+- No changes to `execute_tool()` — handled specially in orchestrator (like `take_photo`)
+
+### 2. Handle `end_session` tool in orchestrator
+**File:** `backend/agent/orchestrator.py`
+
+In `_handle_tool_calls()` (line 823):
+- Add `session_ending = False` flag at top
+- Add branch inside the `for tool_use in tool_uses:` loop (after `take_photo` check, before `execute_tool`):
+  ```python
+  if tool_use.name == "end_session":
+      tool_results.append({"type": "tool_result", "tool_use_id": tool_use.id, "content": "Session ended."})
+      session_ending = True
+      break
+  ```
+- Move `session.conversation_history.append(...)` before the conditional
+- After the loop, check flag:
+  ```python
+  if session_ending:
+      user_id = session.user_id
+      await self.end_session(user_id)
+      await self._advance_queue(user_id)
+      return  # Do NOT call _call_claude — conversation is over
+  ```
+
+Add `_advance_queue()` helper method to `MiraOrchestrator`:
+- Marks queue entry as `completed`, calls `_try_advance_next`, emits `queue_updated`
+- Same logic as `_auto_advance_queue` in `main.py` but accessible from orchestrator
+- Wrapped in try/except (best-effort, shouldn't block session end)
+
+### 3. Update Mira's prompt
+**File:** `backend/agent/prompts.py`
+
+- **Phase 4 "THE WRAP-UP"** (line 65): Add instruction to call `end_session` tool after goodbye
+- **Tool Usage section** (line 72): Add `end_session` tool docs
+- **Important Rules** (line 84): Add rule: when user says "goodbye"/"I'm done"/"thanks"/etc., transition to Phase 4 and call `end_session`
+
+### 4. Add "End Session" button to mirror UI
+**File:** `frontend/src/app/mirror/page.tsx`
+
+- Add `handleEndSession` callback: emits `end_session` socket event (reuses existing handler in `main.py` line 441)
+- Add ghost-style button in **top-left corner** during session state:
+  - Subdued appearance (low opacity, transparent bg) so it doesn't distract
+  - Brightens on hover
+  - z-10 (same level as avatar), position: top:24 left:24
+  - Top-left is empty — avatar is top-right, speech is bottom, gestures are center
+
+No changes needed to `backend/main.py` — the existing `end_session` socket handler already calls `mira.end_session()` + `_auto_advance_queue()`.
+
+---
+
+## Data Flow
+
+**Tool path** (Mira ends session):
+```
+Claude streams goodbye text → emits end_session tool_use → _handle_tool_calls detects it
+→ sets flag, breaks loop → self.end_session() (summary + DB save + emit session_ended)
+→ self._advance_queue() → frontend transitions to recap
+```
+
+**Button path** (manual end):
+```
+Click → socket.emit("end_session") → main.py handler → mira.end_session()
+→ _auto_advance_queue() → frontend transitions to recap
+```
+
+Both converge on the existing `session_ended` socket event and `SessionRecap` component.
+
+---
+
+## Files Modified
+1. `backend/agent/tools.py` — tool definition
+2. `backend/agent/orchestrator.py` — tool handling + queue helper
+3. `backend/agent/prompts.py` — prompt updates
+4. `frontend/src/app/mirror/page.tsx` — button UI + handler
+
+## Verification
+1. Start session, say "I'm done" → Mira says goodbye, calls `end_session`, recap appears, queue advances
+2. Start session, click "End Session" → recap appears immediately, queue advances
+3. Let API limit trigger `_graceful_shutdown` → still works as before (regression check)
+4. Click button while Mira is speaking → session ends cleanly
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+push
