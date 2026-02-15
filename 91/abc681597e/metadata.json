@@ -8,6 +8,8 @@
     "backend/agent/orchestrator.py",
     "backend/agent/tools.py",
     "backend/migrations/010_phone_constraints.sql",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/components/mirror/SessionRecap.tsx",
     "test_format_size.py"
   ],
   "sessions": [
@@ -17,13 +19,20 @@
       "context": "/91/abc681597e/0/context.md",
       "content_hash": "/91/abc681597e/0/content_hash.txt",
       "prompt": "/91/abc681597e/0/prompt.txt"
+    },
+    {
+      "metadata": "/91/abc681597e/1/metadata.json",
+      "transcript": "/91/abc681597e/1/full.jsonl",
+      "context": "/91/abc681597e/1/context.md",
+      "content_hash": "/91/abc681597e/1/content_hash.txt",
+      "prompt": "/91/abc681597e/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 110,
-    "cache_creation_tokens": 73668,
-    "cache_read_tokens": 1022419,
-    "output_tokens": 1411,
-    "api_call_count": 13
+    "input_tokens": 164,
+    "cache_creation_tokens": 95251,
+    "cache_read_tokens": 1287985,
+    "output_tokens": 2558,
+    "api_call_count": 19
   }
 }

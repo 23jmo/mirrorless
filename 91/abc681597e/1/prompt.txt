@@ -1,0 +1,87 @@
+Implement the following plan:
+
+# Plan: Fix QR Code URLs
+
+## Context
+
+Two QR codes need to be configured correctly:
+
+1. **Attract screen QR code** — should point to the phone onboarding flow at `https://mirrorless.vercel.app/phone` (the user scans this to join the queue)
+2. **Session recap QR code** — should point to Poke at `https://poke.com/r/fU6M2CeFtp6` (after session ends, user scans this to continue shopping with their AI stylist)
+
+Currently, the attract screen QR was mistakenly changed to point to Poke. This needs to be reverted. The recap QR is currently controlled by an environment variable (`NEXT_PUBLIC_POKE_RECIPE_URL`) which should be replaced with a hard-coded URL.
+
+---
+
+## Changes
+
+### 1. Revert attract screen QR code to phone onboarding URL
+**File:** `frontend/src/app/mirror/page.tsx`
+
+**Current state (line 38):**
+```typescript
+const PHONE_URL = "https://poke.com/r/fU6M2CeFtp6";
+```
+
+**Change to:**
+```typescript
+const PHONE_URL = "https://mirrorless.vercel.app/phone";
+```
+
+This QR code is rendered in the attract state (lines 944-954) and directs users to the phone onboarding flow.
+
+### 2. Hard-code Poke URL in SessionRecap component
+**File:** `frontend/src/components/mirror/SessionRecap.tsx`
+
+**Current state (lines 11-12):**
+```typescript
+const POKE_RECIPE_URL = process.env.NEXT_PUBLIC_POKE_RECIPE_URL;
+```
+
+**Change to:**
+```typescript
+const POKE_RECIPE_URL = "https://poke.com/r/fU6M2CeFtp6";
+```
+
+This removes the environment variable dependency and ensures the "Continue on Poke" QR code always shows with the correct URL after sessions end.
+
+The QR code renders at lines 213-250 with the label "Continue on Poke" and copy "Scan to keep shopping with your AI stylist".
+
+---
+
+## Data Flow
+
+**Attract screen flow:**
+```
+Mirror shows attract state → User scans QR → Opens mirrorless.vercel.app/phone
+→ Phone onboarding (Google OAuth, questionnaire) → Joins queue → Session starts
+```
+
+**Session end flow:**
+```
+Session ends → SessionRecap displays for 20s → Shows Poke QR code
+→ User scans → Opens poke.com/r/fU6M2CeFtp6 → Continues shopping with AI stylist
+```
+
+---
+
+## Files Modified
+
+1. `frontend/src/app/mirror/page.tsx` — revert `PHONE_URL` to onboarding URL
+2. `frontend/src/components/mirror/SessionRecap.tsx` — hard-code Poke URL
+
+## Verification
+
+1. Mirror attract screen shows QR code → scan it → opens `mirrorless.vercel.app/phone`
+2. Complete a session → recap screen shows → "Continue on Poke" QR code appears → scan it → opens `poke.com/r/fU6M2CeFtp6`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+A quick question: how are we doing the auth for Poke's MCP? Shouldn't we be doing auth via their phone number? Shouldn't we take in their phone number during the onboarding form? Otherwise how do we link sessions to a Poke?
+
+---
+
+[Request interrupted by user for tool use]
