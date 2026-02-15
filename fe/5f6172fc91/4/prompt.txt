@@ -142,3 +142,11 @@ no changes added to commit (use "git add" and/or "git commit -a")</bash-stdout><
 ---
 
 The QR code for Poke needs to point exactly to this link https://poke.com/r/fU6M2CeFtp6
+
+---
+
+No, no, no, no, you fucking idiot. Revert the QR code change to the attract QR code. That attract QR code should go to mirrorless.vercel.app/phone. Always hardcode that the poke URL is for the end, okay, and the really end, when we session end, okay. That needs to go to that one, okay, when we direct the poke
+
+---
+
+[Request interrupted by user for tool use]
