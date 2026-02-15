@@ -1,0 +1,140 @@
+Implement the following plan:
+
+# Plan: Fix give_recommendation Token Overflow
+
+## Context
+
+The Claude API is still failing with `213,932 tokens > 200,000 maximum` at turn ~12. The diagnostic logging we added reveals the **real culprit** is NOT base64 images (those are now properly stripped), but the `give_recommendation` tool returning **671,282 chars** (~168k tokens) of plain text:
+
+```
+[mira] Tool result for give_recommendation: raw=671,282 → stripped=671,282 chars
+```
+
+The stripping correctly shows `raw=stripped` — there are no data URLs to strip. This is pure text: 50 product listings with long Google Shopping URLs.
+
+## Root Cause
+
+Two compounding issues in `backend/agent/tools.py`:
+
+1. **Too many items**: `execute_give_recommendation` returns 50 items (25 tops + 25 bottoms). Each formatted item is ~1000-2000 chars (dominated by long URLs). On cache hit, ALL ~90 raw items get formatted (no limit applied).
+
+2. **Verbose format with unnecessary URLs**: `_format_clothing_for_claude()` includes `Link:` (Google Shopping redirect URL, 500-2000 chars) and `Image:` (CDN URL, 200-500 chars) per item. Claude doesn't need these — it only needs `product_id`, `title`, `image_url`, and `source`/`price` to call `display_product`.
+
+3. **No insertion-time size cap in orchestrator**: `_handle_tool_calls()` stores the full tool result JSON in conversation history with no maximum size.
+
+The result survives all compaction because it's in the last 2 messages (just added), and `_emergency_compact` / `_prepare_messages` only strip images/data URLs, not large strings.
+
+## Files Modified
+
+1. **`backend/agent/tools.py`** — reduce give_recommendation output
+2. **`backend/agent/orchestrator.py`** — add insertion-time size cap + prepare-time cap
+
+## Changes
+
+### 1. Slim down `_format_clothing_for_claude()` (tools.py:737-767)
+
+Remove `Link:` and `Rating:` lines from per-item format. Keep `Image:` (Claude needs image_url for display_product) but these are the shorter URLs. Remove `Link:` which contains the massive Google Shopping redirect URLs.
+
+New format per item:
+```
+- **{title}** | {source} | {price}
+  Image: {image_url} | ID: {product_id}
+```
+
+Reduces per-item output from ~1000-2000 chars to ~400-600 chars.
+
+### 2. Limit items in `_format_clothing_for_claude()` (tools.py:737)
+
+Add a hard cap of **10 items per category** (10 tops + 10 bottoms = 20 max) inside `_format_clothing_for_claude` itself, not just at the call site. This fixes the cache-hit path (line 693) which currently bypasses the `_select_diverse_items` limit.
+
+```python
+tops = tops[:10]
+bottoms = bottoms[:10]
+```
+
+**Expected output size**: 20 items × 500 chars = ~10,000 chars. Well under limits.
+
+### 3. Add `MAX_TOOL_RESULT_CHARS` cap at insertion time (orchestrator.py:~870)
+
+After the two-pass data URL stripping, add a hard character cap:
+
+```python
+MAX_TOOL_RESULT_CHARS = 20_000  # ~5k tokens max per tool result in history
+if len(stripped_json) > MAX_TOOL_RESULT_CHARS:
+    stripped_json = stripped_json[:MAX_TOOL_RESULT_CHARS] + ' ...[truncated]'
+    print(f"[mira] Tool result for {tool_use.name} truncated: {len(stripped_json):,} chars")
+```
+
+This is a safety net — with Change 1+2, no tool should exceed 20k chars. But if one does, it gets truncated rather than blowing up the context.
+
+### 4. Add size cap in `_prepare_messages()` (orchestrator.py:~609)
+
+In the tool_result sanitization path, after stripping data URLs, add a size cap:
+
+```python
+if isinstance(rc, str):
+    cleaned = self._strip_data_urls_in_string(rc)
+    if len(cleaned) > MAX_TOOL_RESULT_CHARS:
+        cleaned = cleaned[:MAX_TOOL_RESULT_CHARS] + ' ...[truncated]'
+    new_content.append({**block, "content": cleaned})
+```
+
+This catches any tool results that were stored before the insertion-time cap was added (e.g., from earlier in the conversation before a code deploy).
+
+## Token Budget After Fix
+
+Per tool call:
+- `give_recommendation`: ~10,000 chars → ~2,500 tokens (was 671k chars → 168k tokens)
+- `search_clothing`: ~5,000 chars → ~1,250 tokens (unchanged, already reasonable)
+- `display_product`: ~500 chars → ~125 tokens (data URLs stripped)
+
+Per 12-turn session:
+- System prompt: ~6k tokens
+- Tool definitions: ~2k tokens
+- Conversation text: ~5k tokens
+- Tool results (all combined): ~5-10k tokens
+- **Total: ~18-23k tokens** (safely under 200k limit)
+
+## Verification
+
+1. `cd backend && python -c "from agent.orchestrator import MiraOrchestrator; print('OK')"` — imports clean
+2. Run a mirror session and trigger `give_recommendation`
+3. Check log: `Tool result for give_recommendation: raw=X → stripped=Y chars` — Y should be ~10k, not 671k
+4. Check log: `Prepared messages: Z est tokens` — should stay under 30k throughout session
+5. Confirm no `Emergency compaction triggered` message
+6. Confirm `display_product` still works (Claude still gets image_url + product_id from recommendation results)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+commit and push please
+
+---
+
+lemme test this
+
+---
+
+socket] mirror_event voice from cee077b2-b367-4b73-8d84-7dcc04cc562c: Okay. One moment. I'll just be uploading the
+[Gemini] Generated 2/2 flat lay images
+[mira-tools] display_product: generated 2 flat lays
+[mira-tools] display_product item: 'H&M Men's Lightweight Bomber Jacket' type=top flat_lay=YES → canvas=YES
+[mira-tools] display_product item: 'H&M Men's Slim-Fit Cargo Pants' type=bottom flat_lay=YES → canvas=YES
+[mira] Emitting tool_result to room=cee077b2-b367-4b73-8d84-7dcc04cc562c: type=display_product items=2 with_flat_lay=2 with_type=2
+[mira] Tool result for display_product: raw=2,400,757 → stripped=1,353 chars
+[mira] History compacted for cee077b2-b367-4b73-8d84-7dcc04cc562c: removed 0 images, truncated 1 tool results (kept last 6 messages intact)
+[mira] Estimated history tokens: 614,659 for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Emergency compaction triggered (614,659 > 120,000)
+[mira] Emergency compaction done for cee077b2-b367-4b73-8d84-7dcc04cc562c (kept last 2)
+[mira] Post-emergency estimated tokens: 604,709
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Prepared messages: 604,740 est tokens (from 604,709 raw) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #13)...
+[mira] Claude API call failed for cee077b2-b367-4b73-8d84-7dcc04cc562c: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'prompt is too long: 200336 tokens > 200000 maximum'}, 'request_id': 'REDACTED'}
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] USER SAID: That's all.
+[mira] History validation: consecutive user messages at index 17 — truncating
+[mira] History validation: removed 1 messages, kept 17 for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Estimated history tokens: 4,248 for cee077b2-b367-4b73-8d84-7dcc04cc562c - wb this?? i feel like it usually comes after recommendation + gemini images

@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "fe5f6172fc91",
+  "session_id": "0d292ff1-2dbc-44d1-af87-b8e759459349",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T16:03:02.613792Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/agent/orchestrator.py"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "22bf2bef-ed3d-44bc-99bc-4c4019a6e8f3",
+  "checkpoint_transcript_start": 60,
+  "transcript_lines_at_start": 60,
+  "token_usage": {
+    "input_tokens": 206,
+    "cache_creation_tokens": 26551,
+    "cache_read_tokens": 1356322,
+    "output_tokens": 2853,
+    "api_call_count": 25
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T16:03:02.541629Z",
+    "agent_lines": 16,
+    "human_added": 412,
+    "human_modified": 11,
+    "human_removed": 0,
+    "total_committed": 439,
+    "agent_percentage": 3.644646924829157
+  }
+}
