@@ -3,13 +3,41 @@
   "checkpoint_id": "420ce2d13dea",
   "strategy": "manual-commit",
   "branch": "orb",
-  "checkpoints_count": 0,
+  "checkpoints_count": 4,
   "files_touched": [
     "CLAUDE.md",
+    "backend/routers/tts.py",
+    "frontend/public/avatar/loops/concerned.mp4",
+    "frontend/public/avatar/loops/excited.mp4",
+    "frontend/public/avatar/loops/happy.mp4",
+    "frontend/public/avatar/loops/idle.mp4",
+    "frontend/public/avatar/loops/talking.mp4",
+    "frontend/public/avatar/loops/thinking.mp4",
+    "frontend/public/avatar/scripted/confused_lost.mp4",
+    "frontend/public/avatar/scripted/confused_what.mp4",
+    "frontend/public/avatar/scripted/confused_why.mp4",
+    "frontend/public/avatar/scripted/judgmental_choice.mp4",
+    "frontend/public/avatar/scripted/judgmental_gross.mp4",
+    "frontend/public/avatar/scripted/judgmental_honey.mp4",
+    "frontend/public/avatar/scripted/neutral_see.mp4",
+    "frontend/public/avatar/scripted/neutral_thing.mp4",
+    "frontend/public/avatar/scripted/positive_amazing.mp4",
+    "frontend/public/avatar/scripted/positive_love.mp4",
+    "frontend/public/avatar/scripted/positive_yes.mp4",
+    "frontend/public/avatar/scripted/supportive_notbad.mp4",
+    "frontend/public/avatar/scripted/supportive_works.mp4",
     "frontend/src/__tests__/emotion-parser.test.ts",
+    "frontend/src/__tests__/scripted-responses.test.ts",
+    "frontend/src/__tests__/sentence-buffer.test.ts",
     "frontend/src/__tests__/streaming-tts.test.ts",
+    "frontend/src/components/mirror/AvatarPiP.tsx",
+    "frontend/src/hooks/useMemojiAvatar.ts",
     "frontend/src/hooks/useOrbAvatar.ts",
-    "frontend/src/lib/emotion-parser.ts"
+    "frontend/src/lib/elevenlabs-tts.ts",
+    "frontend/src/lib/emotion-parser.ts",
+    "frontend/src/lib/memoji-avatar.ts",
+    "frontend/src/lib/scripted-responses.ts",
+    "frontend/src/lib/sentence-buffer.ts"
   ],
   "sessions": [
     {
@@ -18,13 +46,20 @@
       "context": "/42/0ce2d13dea/0/context.md",
       "content_hash": "/42/0ce2d13dea/0/content_hash.txt",
       "prompt": "/42/0ce2d13dea/0/prompt.txt"
+    },
+    {
+      "metadata": "/42/0ce2d13dea/1/metadata.json",
+      "transcript": "/42/0ce2d13dea/1/full.jsonl",
+      "context": "/42/0ce2d13dea/1/context.md",
+      "content_hash": "/42/0ce2d13dea/1/content_hash.txt",
+      "prompt": "/42/0ce2d13dea/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 17,
-    "cache_creation_tokens": 53305,
-    "cache_read_tokens": 638799,
-    "output_tokens": 5782,
-    "api_call_count": 9
+    "input_tokens": 147,
+    "cache_creation_tokens": 437708,
+    "cache_read_tokens": 13258881,
+    "output_tokens": 20953,
+    "api_call_count": 131
   }
 }
