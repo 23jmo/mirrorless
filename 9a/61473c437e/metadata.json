@@ -3,7 +3,7 @@
   "checkpoint_id": "9a61473c437e",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 6,
+  "checkpoints_count": 7,
   "files_touched": [
     "CLAUDE.md",
     "MERGE_RESOLUTION_SPEC.md",
@@ -26,13 +26,20 @@
       "context": "/9a/61473c437e/1/context.md",
       "content_hash": "/9a/61473c437e/1/content_hash.txt",
       "prompt": "/9a/61473c437e/1/prompt.txt"
+    },
+    {
+      "metadata": "/9a/61473c437e/2/metadata.json",
+      "transcript": "/9a/61473c437e/2/full.jsonl",
+      "context": "/9a/61473c437e/2/context.md",
+      "content_hash": "/9a/61473c437e/2/content_hash.txt",
+      "prompt": "/9a/61473c437e/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 92,
-    "cache_creation_tokens": 273232,
-    "cache_read_tokens": 6682066,
-    "output_tokens": 11025,
-    "api_call_count": 66
+    "input_tokens": 103,
+    "cache_creation_tokens": 292717,
+    "cache_read_tokens": 6915162,
+    "output_tokens": 11092,
+    "api_call_count": 73
   }
 }
