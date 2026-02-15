@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "a8c359763333",
+  "strategy": "manual-commit",
+  "branch": "feature/diagnostic-logging",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/agent/tools.py",
+    "backend/services/gemini_flatlay.py",
+    "frontend/src/app/chat/page.tsx",
+    "frontend/src/app/mirror-v2/page.tsx",
+    "frontend/src/components/mirror/ClothingCanvas.tsx",
+    "frontend/src/lib/map-clothing-items.ts",
+    "frontend/src/lib/process-tool-result.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a8/c359763333/0/metadata.json",
+      "transcript": "/a8/c359763333/0/full.jsonl",
+      "context": "/a8/c359763333/0/context.md",
+      "content_hash": "/a8/c359763333/0/content_hash.txt",
+      "prompt": "/a8/c359763333/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 24673,
+    "cache_read_tokens": 847819,
+    "output_tokens": 2809,
+    "api_call_count": 8
+  }
+}

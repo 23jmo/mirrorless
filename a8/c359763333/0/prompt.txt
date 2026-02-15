@@ -1,0 +1,104 @@
+Implement the following plan:
+
+# Plan: Make Pose Debug Overlay Visible in Mirror-V2
+
+## Context
+
+The user wants to verify MediaPipe body tracking is working in `/mirror-v2` by seeing skeleton/landmark points on a black background. All the infrastructure already exists — `usePoseDetection` runs in all kiosk states, and `DebugOverlay` toggles with the `d` key — but the skeleton is **invisible** because the DebugOverlay wrapper is at `z-index: 6` while the attract/waiting state overlays sit at `z-index: 20` with opaque black backgrounds, completely covering it.
+
+## Change
+
+**File:** `frontend/src/app/mirror-v2/page.tsx` — **line 911**
+
+Change:
+```tsx
+<div style={{ position: "absolute", inset: 0, zIndex: 6 }}>
+```
+To:
+```tsx
+<div style={{ position: "absolute", inset: 0, zIndex: debugMode ? 50 : 6 }}>
+```
+
+That's it — one line.
+
+### Why this works
+- **`debugMode` false (default):** z-index stays at 6, no behavior change. DebugOverlay returns `null` anyway when not visible.
+- **`debugMode` true (press `d`):** z-index jumps to 50, above attract (z-20), waiting (z-20), recap (z-25), and fit indicator (z-30). The attract/waiting `#000` backgrounds serve as the black backdrop the user wants, with cyan skeleton points drawn on top.
+
+### No other files need changes
+- `DebugOverlay.tsx` — already draws skeleton + landmarks correctly
+- `usePoseDetection.ts` — already runs in all kiosk states (not gated behind session)
+- `useCamera()` — already always-on
+
+## Verification
+
+1. Open `/mirror-v2` in browser (starts in attract state)
+2. Stand in front of camera
+3. Press `d` — cyan skeleton and dots should appear on black background
+4. Press `d` again — returns to normal attract screen
+5. Start a session, press `d` — skeleton still works during session
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+is there a log that tells me when i press it
+
+---
+
+Okay that confirms it. Basically I'm able to see my skeleton but we must just not be pulling in the close and running like the LLM to nano banana to remove background back and then back to the user. Can we be logging that stuff? Add a lot of logs for that and also think about why it's not working
+
+---
+
+mira] Tool call: present_items({"items": [{"title": "COS Men's Knitted Cotton Crew-neck", "price": "$110.00", "image_url": "https://encrypted-tbn1.gstatic.com/shopping?q=tbn:REDACTED...)
+[mira-tools] present_items: sending 3 curated items to frontend
+[mira] Emitting tool_result to room=cee077b2-b367-4b73-8d84-7dcc04cc562c: type=clothing_results items=3 with_flat_lay=0 with_type=0
+[mira] ⚠ No items have flat lay images — canvas overlay will be empty on frontend
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #6)...
+[tts] TTS stream request: First up, that COS knitted crew neck is in your wheelhouse — you clearly trust the brand based on th
+INFO:     127.0.0.1:64600 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[mira] AGENT SAID: First up, that COS knitted crew neck is in your wheelhouse — you clearly trust the brand based on that November spending spree. Pair it with those Everlane transit chinos for thirty bucks and you've got an actual outfit for tomorrow's PM Fellowship. And that Uniqlo merino sweater is the sweet spot between your budget Mail picks and your COS taste.
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] USER SAID: It's not
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #7)...
+[mira] AGENT SAID: Alright, the COS piece isn't hitting. Let me find something else — hold on.
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Tool call: search_clothing({"query": "mens minimalist black crewneck sweater casual elevated under 150", "num_results": 15})
+[mira-tools] search_clothing: query="mens minimalist black crewneck sweater casual elevated under 150" num_results=15
+[mira-tools] search_clothing: → 40 results
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #8)...
+
+---
+
+ohhh - wait lowkey can we combine the two tool calls - we should not rly be calling one without the other
+
+---
+
+ira-tools] display_product: processing 2 items (outfit: 'PM Fellowship Ready')
+[Gemini] GOOGLE_API_KEY not configured, skipping flat lay generation
+[mira-tools] display_product: generated 0 flat lays
+[mira-tools] display_product item: 'Abercrombie & Fitch Men's Oversized Waff' type=top flat_lay=NO → canvas=NO
+[mira-tools] display_product item: 'Old Navy Men's Slim Rotation Chino Pants' type=bottom flat_lay=NO → canvas=NO
+[mira] Emitting tool_result to room=cee077b2-b367-4b73-8d84-7dcc04cc562c: type=display_product items=2 with_flat_lay=0 with_type=2
+[mira] ⚠ No items have flat lay images — canvas overlay will be empty on frontend
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #12)...
+[tts] TTS stream request: There we go.
+
+I don't have the Gemini API keys. What's it referenced as? What do I need to store it as?
+
+---
+
+Okay by the way right now after the Gemini generates flat images, you don't need to show them on the Canvas. You can just show the actual product images that we get from get recommendations on the Canvas, on the carousel.
+You're doing a good job removing the background images for the tracking using the media pipe, like body stuff. You need to find the first colored pixel and place a ink line:
+- the point on the shoulders, right
+- the bottom of the shirt for the hips
+This is for like tops and then you should connect those to the corresponding body points of the actual person you can reference/mirrors. Sorry you can reference/mirror/test for how this is done. Also you are not mirroring the display so if I lean left like that it should be mirrored. The body post should be mirrored, okay? The input needs to be mirrored; it's not mirrored right now
+
+---
+
+[Request interrupted by user for tool use]
