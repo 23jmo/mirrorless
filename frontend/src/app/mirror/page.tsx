@@ -7,20 +7,25 @@ import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { usePoseDetection } from "@/hooks/usePoseDetection";
 import { useMiraVideoAvatar } from "@/hooks/useMiraVideoAvatar";
-import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
-import { parseEmotionTag, detectEmotionFromText } from "@/lib/emotion-parser";
+import type { MiraEmotion } from "@/components/ui/mira-video-avatar";
+import { useDeepgramSTT, type DeepgramSTTConfig } from "@/hooks/useDeepgramSTT";
+import { detectEmotionFromText } from "@/lib/emotion-parser";
 import { MiraVideoAvatar } from "@/components/ui/mira-video-avatar";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
-import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
+import { ClothingCanvas, type FitMethod } from "@/components/mirror/ClothingCanvas";
+import { DebugOverlay } from "@/components/mirror/DebugOverlay";
+import { SpeechDisplay } from "@/components/mirror/SpeechDisplay";
+import { OutfitDots } from "@/components/mirror/OutfitDots";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
 import SessionRecap from "@/components/mirror/SessionRecap";
 import { socket } from "@/lib/socket";
-import { skipQueueUser } from "@/lib/api";
+import { skipQueueUser, getSTTConfig } from "@/lib/api";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
-import { mapToClothingItems } from "@/lib/map-clothing-items";
+import ProductCarousel, { type ProductCard } from "@/components/mirror/ProductCarousel";
+import { processToolResult } from "@/lib/process-tool-result";
 
 type KioskState = "attract" | "waiting" | "session" | "recap";
 
@@ -31,6 +36,9 @@ interface ActiveUser {
 
 const PHONE_URL = process.env.NEXT_PUBLIC_PHONE_URL || "https://mirrorless.vercel.app/phone";
 const WAITING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const HOLD_DURATION_MS = 2000;
+const CANVAS_WIDTH = 1920;
+const CANVAS_HEIGHT = 1080;
 
 export default function MirrorPageWrapper() {
   return (
@@ -41,23 +49,32 @@ export default function MirrorPageWrapper() {
 }
 
 function MirrorPage() {
-  // Kiosk state
+  // ── Kiosk state ──
   const [kioskState, setKioskState] = useState<KioskState>("attract");
   const [activeUser, setActiveUser] = useState<ActiveUser | null>(null);
   const waitingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingQueueRef = useRef<ActiveUser | null | undefined>(undefined);
 
-  // Camera + gesture recognition
-  const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
+  // ── Camera (hidden, 1080p for better pose accuracy) ──
+  const { videoRef, isReady: isCameraReady } = useCamera();
+
+  // ── Gesture recognition ──
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
   const gestureKeyRef = useRef(0);
   const [gestureKey, setGestureKey] = useState(0);
+  const [pendingGestureType, setPendingGestureType] = useState<GestureType | null>(null);
+  const holdKeyRef = useRef(0);
+  const [holdKey, setHoldKey] = useState(0);
+  const holdStartRef = useRef<number | null>(null);
+  const holdGestureRef = useRef<GestureType | null>(null);
+  const holdLastSeenRef = useRef<number>(0);
+  const holdRafRef = useRef<number>(0);
 
-  // Session state
+  // ── Session state ──
   const [sessionActive, setSessionActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
-  // Pose detection + clothing overlay state
+  // ── Pose detection + clothing overlay ──
   const [currentPose, setCurrentPose] = useState<PoseResult | null>(null);
 
   interface CanvasOutfit {
@@ -70,7 +87,19 @@ function MirrorPage() {
   const activeCanvasOutfit = canvasOutfits[canvasOutfitIndex]?.items ?? [];
   const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
 
-  // Recap state (shown after session ends)
+  // ── Outfit opacity for fade-in ──
+  const [outfitOpacity, setOutfitOpacity] = useState(1);
+
+  // ── Product carousel (fallback when no flat lays available) ──
+  const [carouselItems, setCarouselItems] = useState<ProductCard[]>([]);
+
+  // ── Debug overlay ──
+  const [debugMode, setDebugMode] = useState(false);
+
+  // ── Fit status tracking ──
+  const [fitStatuses, setFitStatuses] = useState<Map<string, FitMethod>>(new Map());
+
+  // ── Recap state ──
   const [recapData, setRecapData] = useState<{
     summary?: string;
     liked_items?: Array<{ title: string; price?: string; image_url?: string }>;
@@ -78,20 +107,40 @@ function MirrorPage() {
     user_name?: string;
   } | null>(null);
 
-  // Mira video avatar + voice
+  // ── STT config (live-tunable from admin panel) ──
+  const [sttConfig, setSttConfig] = useState<DeepgramSTTConfig | undefined>();
+
+  // ── Mira video avatar + voice ──
   const mira = useMiraVideoAvatar();
-  const stt = useDeepgramSTT();
+  const stt = useDeepgramSTT(sttConfig);
+
+  // ── Speech display state ──
+  const [speechText, setSpeechText] = useState("");
+  const [speechVisible, setSpeechVisible] = useState(false);
+  const speechFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Queue transcripts while mira is speaking, send when quiet
   const pendingTranscriptRef = useRef<string | null>(null);
 
-  // Accumulate full response text before delivering
-  const responseAccumulatorRef = useRef<string>("");
+  // Sentence buffer for incremental TTS — flushes at sentence boundaries
+  const sentenceBufferRef = useRef<string>("");
+  // Track emotion for the current response (parsed from first chunk)
+  const currentEmotionRef = useRef<string>("idle");
+  // Track whether emotion has been detected for this response
+  const emotionDetectedRef = useRef(false);
 
-  // Current user ID for session (from queue, not URL)
+  // Track whether we just interrupted Mira (ignore stale mira_speech chunks)
+  const interruptedRef = useRef(false);
+
+  // Current user ID for session
   const userId = activeUser?.id ?? null;
 
-  // Pose detection for clothing overlay
+  // ── Log kiosk state transitions ──
+  useEffect(() => {
+    console.log("[Mirror:State]", kioskState, activeUser ? `user=${activeUser.name}` : "");
+  }, [kioskState, activeUser]);
+
+  // ── Pose detection callback ──
   const handlePoseUpdate = useCallback((result: PoseResult) => {
     setCurrentPose(result);
   }, []);
@@ -102,13 +151,46 @@ function MirrorPage() {
     onPoseUpdate: handlePoseUpdate,
   });
 
-  // Connect socket and join mirror room
+  // ── Fit status callback ──
+  const handleFitStatus = useCallback((statuses: Map<string, FitMethod>) => {
+    setFitStatuses(statuses);
+  }, []);
+
+  // ── Connect socket and join mirror room ──
   useEffect(() => {
     socket.connect();
     socket.emit("join_mirror_room");
 
+    const onConnect = () => console.log("[Mirror:Socket] Connected, id:", socket.id);
+    const onConnectError = (err: Error) => console.error("[Mirror:Socket] Connection error:", err.message);
+    const onDisconnect = (reason: string) => console.warn("[Mirror:Socket] Disconnected:", reason);
+
+    socket.on("connect", onConnect);
+    socket.on("connect_error", onConnectError);
+    socket.on("disconnect", onDisconnect);
+
     return () => {
+      socket.off("connect", onConnect);
+      socket.off("connect_error", onConnectError);
+      socket.off("disconnect", onDisconnect);
       socket.disconnect();
+    };
+  }, []);
+
+  // ── Fetch initial STT config + listen for admin updates ──
+  useEffect(() => {
+    getSTTConfig()
+      .then(setSttConfig)
+      .catch(() => console.warn("[Mirror] Failed to fetch STT config, using defaults"));
+
+    const handleSttConfigUpdated = (data: DeepgramSTTConfig) => {
+      console.log("[Mirror] STT config updated:", data);
+      setSttConfig(data);
+    };
+
+    socket.on("stt_config_updated", handleSttConfigUpdated);
+    return () => {
+      socket.off("stt_config_updated", handleSttConfigUpdated);
     };
   }, []);
 
@@ -119,16 +201,15 @@ function MirrorPage() {
     }
   }, [userId]);
 
-  // Listen for queue_updated events (drives attract ↔ waiting transitions)
+  // ── Queue events (drives attract <-> waiting) ──
   useEffect(() => {
     const handleQueueUpdated = (data: {
       active_user: ActiveUser | null;
       queue: Array<{ id: string; user_id: string; name: string; position: number; status: string }>;
     }) => {
       console.log("[Mirror] queue_updated:", data);
-      if (kioskState === "session") return; // Don't interrupt active sessions
+      if (kioskState === "session") return;
 
-      // During recap, store the update for when recap dismisses
       if (kioskState === "recap") {
         pendingQueueRef.current = data.active_user ?? null;
         return;
@@ -149,7 +230,7 @@ function MirrorPage() {
     };
   }, [kioskState]);
 
-  // 2-minute timeout in waiting state
+  // ── 2-minute timeout in waiting state ──
   useEffect(() => {
     if (kioskState === "waiting" && activeUser) {
       waitingTimerRef.current = setTimeout(() => {
@@ -165,7 +246,7 @@ function MirrorPage() {
     };
   }, [kioskState, activeUser]);
 
-  // Listen for session_active from backend
+  // ── Session active from backend ──
   useEffect(() => {
     const handleSessionActive = () => {
       setKioskState("session");
@@ -173,6 +254,10 @@ function MirrorPage() {
       setIsStarting(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
+      setCarouselItems([]);
+      setOutfitOpacity(1);
+      setSpeechText("");
+      setSpeechVisible(false);
       mira.startSession();
       stt.startListening();
     };
@@ -184,9 +269,57 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Listen for mira_speech events (streamed text from AI)
+  // ── Mira speech events (sentence-level streaming) ──
   useEffect(() => {
+    // Regex for sentence boundaries: .!? followed by a space or end of string
+    const SENTENCE_BOUNDARY = /[.!?](?:\s|$)/;
+
+    /**
+     * Flush complete sentences from the buffer to TTS.
+     * Returns any remaining partial sentence left in the buffer.
+     */
+    function flushSentences(buffer: string, emotion: string): string {
+      let remaining = buffer;
+
+      while (true) {
+        const match = SENTENCE_BOUNDARY.exec(remaining);
+        if (!match) break;
+
+        // Split at the sentence boundary (include the punctuation)
+        const endIdx = match.index + match[0].length;
+        const sentence = remaining.slice(0, endIdx).trim();
+        remaining = remaining.slice(endIdx);
+
+        if (sentence) {
+          // Capture sentence in closure for the onStart callback
+          const displaySentence = sentence;
+          mira.speakQueued(
+            sentence,
+            emotion as MiraEmotion,
+            () => {
+              // Fires when TTS actually starts playing this sentence
+              setSpeechText(displaySentence);
+              setSpeechVisible(true);
+              if (speechFadeTimerRef.current) {
+                clearTimeout(speechFadeTimerRef.current);
+              }
+            },
+          );
+        }
+      }
+
+      return remaining;
+    }
+
     const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
+      // Ignore stale chunks from the pre-interrupt response
+      if (interruptedRef.current) {
+        if (data.is_chunk === false) {
+          interruptedRef.current = false; // Old response ended
+        }
+        return;
+      }
+
       // Fallback session detection
       if (!sessionActive && !isStarting) {
         setKioskState("session");
@@ -197,30 +330,61 @@ function MirrorPage() {
       }
 
       if (data.is_chunk !== false) {
+        // ── Streaming chunk ──
         if (!data.text) return;
-        console.log("[Mirror] mira_speech chunk received");
-        responseAccumulatorRef.current += data.text;
-        mira.setOrbState("thinking");
-        mira.setEmotion("thinking");
+
+        sentenceBufferRef.current += data.text;
+
+        // Detect emotion from keywords in accumulated text
+        if (!emotionDetectedRef.current) {
+          const detected = detectEmotionFromText(sentenceBufferRef.current);
+          if (detected !== "idle") {
+            currentEmotionRef.current = detected;
+            emotionDetectedRef.current = true;
+          }
+        }
+
+        // Flush any complete sentences to TTS immediately
+        sentenceBufferRef.current = flushSentences(
+          sentenceBufferRef.current,
+          currentEmotionRef.current,
+        );
       } else {
+        // ── End of message ──
         if (data.text) {
-          responseAccumulatorRef.current += data.text;
-        }
-        const fullText = responseAccumulatorRef.current;
-        responseAccumulatorRef.current = "";
-        console.log("[Mirror] Agent full response:", fullText);
-        if (!fullText) return;
-
-        // Parse emotion tag first, then detect from content as fallback
-        let { emotion, cleanText } = parseEmotionTag(fullText);
-
-        // If no explicit emotion tag, try to detect from content
-        if (emotion === "idle") {
-          emotion = detectEmotionFromText(cleanText);
+          sentenceBufferRef.current += data.text;
         }
 
-        console.log("[Mirror] Parsed emotion:", emotion);
-        mira.speak(cleanText, emotion);
+        // Detect emotion if we haven't yet (short responses)
+        if (!emotionDetectedRef.current) {
+          currentEmotionRef.current = detectEmotionFromText(sentenceBufferRef.current);
+        }
+
+        // Flush any remaining text as the final sentence
+        const remainder = sentenceBufferRef.current.trim();
+        if (remainder) {
+          const displayRemainder = remainder;
+          mira.speakQueued(
+            remainder,
+            currentEmotionRef.current as MiraEmotion,
+            () => {
+              // Fires when TTS actually starts playing this sentence
+              setSpeechText(displayRemainder);
+              setSpeechVisible(true);
+              if (speechFadeTimerRef.current) {
+                clearTimeout(speechFadeTimerRef.current);
+              }
+            },
+          );
+        }
+
+        // Signal end of queue — drain callback will reset avatar state
+        mira.flushQueue();
+
+        // Reset for next response
+        sentenceBufferRef.current = "";
+        currentEmotionRef.current = "idle";
+        emotionDetectedRef.current = false;
       }
     };
 
@@ -231,7 +395,22 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionActive, isStarting]);
 
-  // Listen for tool_result events (product recommendations + voice messages)
+  // Fade out speech text 2s after mira stops speaking
+  useEffect(() => {
+    if (!mira.isSpeaking && speechVisible) {
+      speechFadeTimerRef.current = setTimeout(() => {
+        setSpeechVisible(false);
+      }, 2000);
+    }
+    return () => {
+      if (speechFadeTimerRef.current) {
+        clearTimeout(speechFadeTimerRef.current);
+        speechFadeTimerRef.current = null;
+      }
+    };
+  }, [mira.isSpeaking, speechVisible]);
+
+  // ── Tool result events (product recommendations) ──
   useEffect(() => {
     const handleToolResult = (data: {
       type?: string;
@@ -241,36 +420,51 @@ function MirrorPage() {
       emotion?: string;
       outfit_name?: string;
     }) => {
-      if (data.type === "display_product" && data.items) {
-        const clothingItems = mapToClothingItems(data.items);
-        const priceInfo: PriceStripItem[] = data.items.map((it) => ({
-          title: it.title,
-          price: it.price,
-        }));
-        if (clothingItems.length > 0) {
-          setCanvasOutfits((prev) => {
-            const next = [...prev, {
-              name: data.outfit_name || `Outfit ${prev.length + 1}`,
-              items: clothingItems,
-              productInfo: priceInfo,
-            }];
-            setCanvasOutfitIndex(next.length - 1);
-            return next;
-          });
-        }
+      const result = processToolResult(data);
+      if (!result) {
+        console.warn("[Mirror:ToolResult] Ignored — processToolResult returned null for:", data.type, data);
         return;
       }
-      // voice_message type removed — TTS is handled by the mira_speech streaming path
+      console.log("[Mirror:ToolResult] Processed:", data.type, "canvas:", result.canvasItems.length, "carousel:", result.carouselCards.length);
+
+      // Always show carousel cards (doesn't need pose detection)
+      if (result.carouselCards.length > 0) {
+        setCarouselItems(result.carouselCards);
+      }
+
+      // Additionally populate canvas overlay (renders when pose available)
+      if (result.canvasItems.length > 0 && !currentPose) {
+        console.warn("[Mirror:ToolResult] Canvas items received but currentPose is null — overlay won't render until pose is detected");
+      }
+      if (result.canvasItems.length > 0) {
+        setOutfitOpacity(0);
+        setCanvasOutfits((prev) => {
+          const next = [
+            ...prev,
+            {
+              name: result.outfitName || `Outfit ${prev.length + 1}`,
+              items: result.canvasItems,
+              productInfo: result.priceInfo,
+            },
+          ];
+          setCanvasOutfitIndex(next.length - 1);
+          return next;
+        });
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setOutfitOpacity(1);
+          });
+        });
+      }
     };
 
     socket.on("tool_result", handleToolResult);
     return () => {
       socket.off("tool_result", handleToolResult);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mira.speak]);
+  }, []);
 
-  // Listen for session_ended — show recap overlay, then return to attract
+  // ── Session ended — show recap ──
   useEffect(() => {
     const handleSessionEnded = (data?: {
       summary?: string;
@@ -278,18 +472,18 @@ function MirrorPage() {
       stats?: { items_shown: number; likes: number; dislikes: number };
       user_name?: string;
     }) => {
-      // Don't stop mira immediately — let closing speech TTS finish playing
       stt.stopListening();
       setSessionActive(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
+      setCarouselItems([]);
+      setSpeechText("");
+      setSpeechVisible(false);
 
-      // Show recap overlay (keep activeUser set for display)
       if (data && (data.summary || data.liked_items?.length || data.stats)) {
         setRecapData(data);
         setKioskState("recap");
       } else {
-        // No recap data — go straight to attract
         mira.stopSession();
         setActiveUser(null);
         setKioskState("attract");
@@ -303,7 +497,7 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Listen for session_force_end — same as session_ended
+  // ── Force end from admin ──
   useEffect(() => {
     const handleForceEnd = (data: { user_id?: string }) => {
       if (userId && data.user_id === userId) {
@@ -317,10 +511,9 @@ function MirrorPage() {
     };
   }, [userId]);
 
-  // Send transcripts to backend when mira stops speaking
+  // ── Flush queued transcripts when mira stops speaking ──
   useEffect(() => {
     if (!mira.isSpeaking && pendingTranscriptRef.current && userId) {
-      console.log("[Mirror] Flushing queued transcript:", pendingTranscriptRef.current);
       socket.emit("mirror_event", {
         user_id: userId,
         event: { type: "voice", transcript: pendingTranscriptRef.current },
@@ -329,24 +522,32 @@ function MirrorPage() {
     }
   }, [mira.isSpeaking, userId]);
 
-  // Forward final STT transcripts
+  // ── Forward final STT transcripts (interrupt Mira if speaking) ──
   useEffect(() => {
     if (!stt.transcript || !userId) return;
 
     if (mira.isSpeaking) {
-      console.log("[Mirror] Queuing transcript (mira speaking):", stt.transcript);
-      pendingTranscriptRef.current = stt.transcript;
-    } else {
-      console.log("[Mirror] Sending transcript to backend:", stt.transcript);
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: { type: "voice", transcript: stt.transcript },
-      });
+      // INTERRUPT: stop TTS/avatar and tell backend to abort the stream
+      mira.stop();
+      interruptedRef.current = true;
+      sentenceBufferRef.current = "";
+      currentEmotionRef.current = "idle";
+      emotionDetectedRef.current = false;
+      setSpeechText("");
+      setSpeechVisible(false);
+      socket.emit("interrupt", { user_id: userId });
     }
+
+    // Always send transcript immediately (whether interrupting or not)
+    socket.emit("mirror_event", {
+      user_id: userId,
+      event: { type: "voice", transcript: stt.transcript },
+    });
+    pendingTranscriptRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stt.transcript, userId]);
 
-  // Listen for snapshot requests from the backend
+  // ── Snapshot handler ──
   useEffect(() => {
     const handleSnapshotRequest = () => {
       const video = videoRef.current;
@@ -374,43 +575,162 @@ function MirrorPage() {
     };
   }, [videoRef, userId]);
 
-  // Gesture handler
+  // ── Gesture handler ──
   const handleGesture = useCallback(
     (gesture: DetectedGesture) => {
-      console.log("[Mirror] Gesture detected:", gesture.type, gesture.confidence);
+      // Swipes → dispatch immediately (unchanged behavior)
+      if (gesture.type === "swipe_left" || gesture.type === "swipe_right") {
+        setLastGesture(gesture.type);
+        gestureKeyRef.current += 1;
+        setGestureKey(gestureKeyRef.current);
 
-      setLastGesture(gesture.type);
-      gestureKeyRef.current += 1;
-      setGestureKey(gestureKeyRef.current);
-
-      if (canvasOutfits.length > 1) {
-        if (gesture.type === "swipe_left") {
-          setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
-        } else if (gesture.type === "swipe_right") {
-          setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+        if (canvasOutfits.length > 1) {
+          if (gesture.type === "swipe_left") {
+            setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
+          } else if (gesture.type === "swipe_right") {
+            setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+          }
         }
+
+        socket.emit("mirror_event", {
+          user_id: userId,
+          event: {
+            type: "gesture",
+            gesture: gesture.type,
+            confidence: gesture.confidence,
+            timestamp: gesture.timestamp,
+          },
+        });
+        return;
       }
 
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: {
-          type: "gesture",
-          gesture: gesture.type,
-          confidence: gesture.confidence,
-          timestamp: gesture.timestamp,
-        },
-      });
+      // Thumbs → hold-to-confirm (update last-seen time each frame)
+      const now = Date.now();
+      holdLastSeenRef.current = now;
+
+      // If gesture type changed, reset and start a fresh hold
+      if (holdGestureRef.current !== gesture.type) {
+        holdGestureRef.current = gesture.type;
+        holdStartRef.current = now;
+        setPendingGestureType(gesture.type);
+        holdKeyRef.current += 1;
+        setHoldKey(holdKeyRef.current);
+      }
     },
     [userId, canvasOutfits.length],
   );
 
-  const { isLoading: isModelLoading, error: modelError } =
-    useGestureRecognizer({
-      videoRef,
-      isVideoReady: isCameraReady,
-      onGesture: handleGesture,
-    });
+  // ── Hold-to-confirm timer loop (rAF) ──
+  // The visual ring animation is CSS-driven; this loop only handles
+  // staleness cancellation and dispatching at completion.
+  useEffect(() => {
+    const tick = () => {
+      holdRafRef.current = requestAnimationFrame(tick);
 
+      if (!holdGestureRef.current || !holdStartRef.current) return;
+
+      const now = Date.now();
+
+      // If gesture hasn't been seen in 300ms, cancel the hold
+      if (now - holdLastSeenRef.current > 300) {
+        holdGestureRef.current = null;
+        holdStartRef.current = null;
+        setPendingGestureType(null);
+        return;
+      }
+
+      // Hold completed → dispatch the gesture event
+      const elapsed = now - holdStartRef.current;
+      if (elapsed >= HOLD_DURATION_MS) {
+        const gestureType = holdGestureRef.current;
+
+        setLastGesture(gestureType);
+        gestureKeyRef.current += 1;
+        setGestureKey(gestureKeyRef.current);
+
+        socket.emit("mirror_event", {
+          user_id: userId,
+          event: {
+            type: "gesture",
+            gesture: gestureType,
+            confidence: 1,
+            timestamp: Date.now(),
+          },
+        });
+
+        // Reset hold state
+        holdGestureRef.current = null;
+        holdStartRef.current = null;
+        setPendingGestureType(null);
+      }
+    };
+
+    holdRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(holdRafRef.current);
+  }, [userId]);
+
+  useGestureRecognizer({
+    videoRef,
+    isVideoReady: isCameraReady,
+    onGesture: handleGesture,
+  });
+
+  // ── Keyboard shortcuts ──
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      switch (e.key) {
+        case "d":
+        case "D":
+          setDebugMode((d) => {
+            console.log(`[Mirror] Debug overlay ${d ? "OFF" : "ON"}`);
+            return !d;
+          });
+          break;
+
+        case "f":
+        case "F":
+          if (document.fullscreenElement) {
+            document.exitFullscreen();
+          } else {
+            document.documentElement.requestFullscreen();
+          }
+          break;
+
+        case "ArrowLeft":
+          if (canvasOutfits.length > 1) {
+            setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+          }
+          break;
+
+        case "ArrowRight":
+          if (canvasOutfits.length > 1) {
+            setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
+          }
+          break;
+
+        case "r":
+        case "R":
+          setCanvasOutfitIndex(0);
+          break;
+
+        default: {
+          const num = parseInt(e.key);
+          if (num >= 1 && num <= 9 && num - 1 < canvasOutfits.length) {
+            setCanvasOutfitIndex(num - 1);
+          }
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canvasOutfits.length]);
+
+  // ── Start session handler ──
   const handleStartSession = useCallback(() => {
     if (!userId || isStarting || sessionActive) return;
 
@@ -419,8 +739,6 @@ function MirrorPage() {
     ctx.resume().then(() => ctx.close());
 
     setIsStarting(true);
-
-    // Emit start via socket (server-side orchestrator)
     socket.emit("start_session", { user_id: userId });
   }, [userId, isStarting, sessionActive]);
 
@@ -429,12 +747,27 @@ function MirrorPage() {
     skipQueueUser(activeUser.id).catch(() => {});
   }, [activeUser]);
 
-  // Dismiss recap overlay — transition to next queued user or attract
+  // ── Carousel gesture callback ──
+  const handleCarouselGesture = useCallback(
+    (gesture: GestureType, item: ProductCard) => {
+      socket.emit("mirror_event", {
+        user_id: userId,
+        event: {
+          type: "gesture",
+          gesture,
+          product_id: item.product_id,
+          product_title: item.title,
+        },
+      });
+    },
+    [userId],
+  );
+
+  // ── Dismiss recap ──
   const handleRecapDismiss = useCallback(() => {
     mira.stopSession();
     setRecapData(null);
 
-    // Check if a queue_updated arrived during recap
     const pending = pendingQueueRef.current;
     pendingQueueRef.current = undefined;
 
@@ -458,7 +791,7 @@ function MirrorPage() {
         overflow: "hidden",
       }}
     >
-      {/* Webcam feed (mirrored) */}
+      {/* Hidden camera feed (1x1 pixel, invisible — only used for pose detection) */}
       <video
         ref={videoRef}
         autoPlay
@@ -468,10 +801,10 @@ function MirrorPage() {
           position: "absolute",
           top: 0,
           left: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          transform: "scaleX(-1)",
+          width: 1,
+          height: 1,
+          opacity: 0,
+          pointerEvents: "none",
         }}
       />
 
@@ -486,8 +819,7 @@ function MirrorPage() {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(0,0,0,0.7)",
-            backdropFilter: "blur(20px)",
+            background: "#000",
           }}
         >
           <h1
@@ -538,8 +870,7 @@ function MirrorPage() {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(0,0,0,0.6)",
-            backdropFilter: "blur(10px)",
+            background: "#000",
           }}
         >
           <p style={{ color: "rgba(255,255,255,0.5)", fontSize: "1rem", marginBottom: 8 }}>
@@ -561,7 +892,6 @@ function MirrorPage() {
                 border: "none",
                 borderRadius: 12,
                 cursor: "pointer",
-                backdropFilter: "blur(10px)",
                 boxShadow: "0 4px 20px rgba(100, 140, 255, 0.4)",
               }}
             >
@@ -578,7 +908,6 @@ function MirrorPage() {
                 border: "1px solid rgba(255,255,255,0.3)",
                 borderRadius: 12,
                 cursor: "pointer",
-                backdropFilter: "blur(10px)",
               }}
             >
               Skip
@@ -590,29 +919,31 @@ function MirrorPage() {
 
       {/* === SESSION STATE === */}
 
-      {/* Clothing overlay canvas */}
+      {/* Clothing overlay canvas (z-5) */}
       {activeCanvasOutfit.length > 0 && currentPose && (
-        <ClothingCanvas
-          pose={currentPose}
-          items={activeCanvasOutfit}
-          width={1920}
-          height={1080}
-        />
-      )}
-
-      {/* Outfit dot indicator */}
-      {canvasOutfits.length > 1 && (
-        <div style={{ position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8, zIndex: 18 }}>
-          {canvasOutfits.map((_, i) => (
-            <div key={i} style={{
-              width: 10, height: 10, borderRadius: "50%",
-              background: i === canvasOutfitIndex ? "#fff" : "rgba(255,255,255,0.3)",
-            }} />
-          ))}
+        <div style={{ position: "absolute", inset: 0, zIndex: 5, transition: "opacity 500ms ease", opacity: outfitOpacity }}>
+          <ClothingCanvas
+            pose={currentPose}
+            items={activeCanvasOutfit}
+            width={CANVAS_WIDTH}
+            height={CANVAS_HEIGHT}
+            onFitStatus={handleFitStatus}
+          />
         </div>
       )}
 
-      {/* Mira Video Avatar (fixed top-right corner) */}
+      {/* Debug overlay (z-6 normally, z-50 when active to render above attract/waiting overlays) */}
+      <div style={{ position: "absolute", inset: 0, zIndex: debugMode ? 50 : 6 }}>
+        <DebugOverlay
+          pose={currentPose}
+          items={activeCanvasOutfit}
+          width={CANVAS_WIDTH}
+          height={CANVAS_HEIGHT}
+          visible={debugMode}
+        />
+      </div>
+
+      {/* Mira Video Avatar (z-10, top-right corner) */}
       {sessionActive && (
         <div
           style={{
@@ -630,15 +961,25 @@ function MirrorPage() {
         </div>
       )}
 
-      {/* Gesture visual feedback */}
-      <GestureIndicator key={gestureKey} gesture={lastGesture} />
+      {/* Speech display (z-10, bottom-center, above price strip) */}
+      {sessionActive && (
+        <SpeechDisplay text={speechText} visible={speechVisible} />
+      )}
 
-      {/* Price strip (bottom, when outfit active) */}
-      {sessionActive && activePriceItems.length > 0 && (
+      {/* Product carousel (z-10, bottom) — hidden when canvas overlay is active on body */}
+      {sessionActive && carouselItems.length > 0 && !(activeCanvasOutfit.length > 0 && currentPose) && (
+        <ProductCarousel items={carouselItems} onGesture={handleCarouselGesture} />
+      )}
+
+      {/* Price strip (z-15, bottom) — shows when canvas overlay is active */}
+      {sessionActive && activePriceItems.length > 0 && activeCanvasOutfit.length > 0 && currentPose && (
         <PriceStrip items={activePriceItems} />
       )}
 
-      {/* Voice indicator (bottom-left, session only) */}
+      {/* Outfit dots (z-18, bottom) */}
+      <OutfitDots count={canvasOutfits.length} activeIndex={canvasOutfitIndex} />
+
+      {/* Voice indicator for user STT (z-15, bottom-left) */}
       {sessionActive && (
         <VoiceIndicator
           isListening={stt.isListening}
@@ -646,7 +987,15 @@ function MirrorPage() {
         />
       )}
 
-      {/* === RECAP STATE === */}
+      {/* Gesture visual feedback (z-20, center) */}
+      <GestureIndicator
+        gesture={lastGesture}
+        gestureKey={gestureKey}
+        pendingGesture={pendingGestureType}
+        holdKey={holdKey}
+      />
+
+      {/* === RECAP STATE === (z-25) */}
       {recapData && (
         <SessionRecap
           summary={recapData.summary}
@@ -657,37 +1006,27 @@ function MirrorPage() {
         />
       )}
 
-      {/* Error indicators */}
-      {(cameraError || modelError) && (
+      {/* Fit status indicator (bottom-right, debug-only) */}
+      {debugMode && fitStatuses.size > 0 && (
         <div
           style={{
             position: "absolute",
             bottom: 20,
-            left: 20,
-            color: "#f44",
-            fontSize: "1rem",
-            zIndex: 30,
-          }}
-        >
-          {cameraError && <div>Camera: {cameraError}</div>}
-          {modelError && <div>Model: {modelError}</div>}
-        </div>
-      )}
-
-      {isModelLoading && (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
+            right: 20,
+            padding: "8px 12px",
+            background: "rgba(0,0,0,0.7)",
+            borderRadius: 8,
             color: "#fff",
-            fontSize: "1.5rem",
+            fontSize: "0.75rem",
             zIndex: 30,
-            pointerEvents: "none",
+            fontFamily: "monospace",
           }}
         >
-          Loading gesture recognition...
+          {Array.from(fitStatuses.entries()).map(([id, method]) => (
+            <div key={id}>
+              {id.slice(0, 8)}: {method === "precise" ? "anchor" : "quad"}
+            </div>
+          ))}
         </div>
       )}
     </main>

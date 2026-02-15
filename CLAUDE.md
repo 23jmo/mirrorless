@@ -30,14 +30,14 @@ Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth)
 
 ## Mirror Kiosk Flow
 
-The primary mirror page is `/mirror-v2` (`frontend/src/app/mirror-v2/page.tsx`). It runs as a kiosk with four states:
+The mirror page is `/mirror` (`frontend/src/app/mirror/page.tsx`). It runs as a kiosk with four states:
 
 1. **Attract**: QR code + "Mirrorless" branding. Shown when no one is in queue. Users scan QR to open phone UI.
 2. **Waiting**: Shows "Up next: [name]" with Start Session and Skip buttons. 2-minute auto-skip timeout. Triggered by `queue_updated` Socket.io event when a user becomes active in queue.
 3. **Session**: Active AI stylist session with video avatar, voice, gesture recognition, clothing overlay. Triggered by clicking "Start Session" at the mirror.
 4. **Recap**: Session summary with liked items and stats. Auto-transitions to attract/waiting after dismissal.
 
-On socket connect, the mirror receives the current queue snapshot (so it doesn't miss events if opened late). The legacy `/mirror` route still exists but `/mirror-v2` is the active version.
+On socket connect, the mirror receives the current queue snapshot (so it doesn't miss events if opened late).
 
 ## Voice & TTS Pipeline
 
@@ -45,7 +45,7 @@ Mira's voice flows through a streaming pipeline from Claude's output to audio pl
 
 1. **Claude streaming** (`backend/agent/orchestrator.py`): `_call_claude()` streams via Anthropic async API. Each `content_block_delta` is emitted as a `mira_speech` Socket.io event with `{text, is_chunk: true}`. An empty event with `is_chunk: false` signals end-of-message.
 
-2. **Frontend sentence-level streaming** (`frontend/src/app/mirror-v2/page.tsx`): Chunks accumulate in `sentenceBufferRef`. At each sentence boundary (`.!?` followed by space/end), the sentence is flushed to TTS immediately — no waiting for end-of-message. Speech text updates on-screen as each sentence is spoken.
+2. **Frontend sentence-level streaming** (`frontend/src/app/mirror/page.tsx`): Chunks accumulate in `sentenceBufferRef`. At each sentence boundary (`.!?` followed by space/end), the sentence is flushed to TTS immediately — no waiting for end-of-message. Speech text updates on-screen as each sentence is spoken.
 
 3. **Emotion parsing** (`frontend/src/lib/emotion-parser.ts`): Claude prefixes each response with `[emotion:X]`. Parsed on frontend, tag stripped before TTS. Falls back to `detectEmotionFromText()` keyword matching if no tag present. 13 emotion states supported (happy, sassy, proud, judgy, excited, etc.). Controls video avatar emotion loop.
 
@@ -128,8 +128,7 @@ vercel --prod                           # Frontend to Vercel
 frontend/           # Next.js app (mirror display + phone UI)
   src/
     app/
-      mirror-v2/    # Primary mirror display (kiosk: attract → waiting → session → recap)
-      mirror/       # Legacy mirror display page
+      mirror/       # Mirror display (kiosk: attract → waiting → session → recap)
       phone/        # Phone onboarding (sign-in → questionnaire → queue → idle → recap)
       admin/        # Admin dashboard (queue management, session controls, stats)
       demo/         # Mira video avatar demo page
@@ -247,7 +246,7 @@ Or use the Neon SQL Editor in the dashboard, or the Neon MCP `run_sql` tool.
 - Selfie capture during onboarding
 - rembg background removal for clothing flat lays
 - Google OAuth sign-in
-- Mirror V2 page with full kiosk flow (attract → waiting → session → recap)
+- Mirror page with full kiosk flow (attract → waiting → session → recap)
 - Sentence-level TTS streaming (flush at sentence boundaries, no end-of-message wait)
 - ProductCarousel fallback when flat lay generation fails
 - `processToolResult` extracted for testable tool result handling
