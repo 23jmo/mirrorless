@@ -1,15 +1,34 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const DEEPGRAM_API_KEY = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY || "";
-const DEEPGRAM_WS_URL =
-  "wss://api.deepgram.com/v1/listen?" +
-  "model=nova-2&smart_format=true&interim_results=true" +
-  "&vad_events=true&utterance_end_ms=1500" +
-  "&encoding=linear16&sample_rate=16000";
-
 const MAX_RECONNECTS = 3;
+
+export interface DeepgramSTTConfig {
+  utterance_end_ms: number;
+  model: string;
+  smart_format: boolean;
+}
+
+const DEFAULT_CONFIG: DeepgramSTTConfig = {
+  utterance_end_ms: 1500,
+  model: "nova-2",
+  smart_format: true,
+};
+
+function buildDeepgramUrl(config: DeepgramSTTConfig): string {
+  const params = new URLSearchParams({
+    model: config.model,
+    smart_format: String(config.smart_format),
+    interim_results: "true",
+    vad_events: "true",
+    utterance_end_ms: String(config.utterance_end_ms),
+    encoding: "linear16",
+    sample_rate: "16000",
+  });
+  return `wss://api.deepgram.com/v1/listen?${params}`;
+}
 
 export interface UseDeepgramSTTReturn {
   isListening: boolean;
@@ -19,7 +38,7 @@ export interface UseDeepgramSTTReturn {
   stopListening: () => void;
 }
 
-export function useDeepgramSTT(): UseDeepgramSTTReturn {
+export function useDeepgramSTT(config?: DeepgramSTTConfig): UseDeepgramSTTReturn {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -29,6 +48,13 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const resumeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectCountRef = useRef(0);
+  // Track whether a close was intentional (config change) vs unexpected
+  const intentionalCloseRef = useRef(false);
+
+  const activeConfig = config ?? DEFAULT_CONFIG;
+  // Store config in a ref so connectWebSocket always sees the latest values
+  const configRef = useRef(activeConfig);
+  configRef.current = activeConfig;
 
   const cleanup = useCallback(() => {
     if (resumeIntervalRef.current) {
@@ -57,7 +83,9 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
         return;
       }
 
-      const ws = new WebSocket(DEEPGRAM_WS_URL, ["token", DEEPGRAM_API_KEY]);
+      const url = buildDeepgramUrl(configRef.current);
+      console.log("[DeepgramSTT] Connecting with URL:", url);
+      const ws = new WebSocket(url, ["token", DEEPGRAM_API_KEY]);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -133,6 +161,13 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
 
       ws.onclose = (event) => {
         console.warn("[MirrorV2:STT] Disconnected:", event.reason || `code=${event.code}`);
+
+        // If this was an intentional close (config change), don't auto-reconnect
+        if (intentionalCloseRef.current) {
+          intentionalCloseRef.current = false;
+          return;
+        }
+
         // Exponential backoff reconnect (max 3 attempts)
         if (reconnectCountRef.current < MAX_RECONNECTS && streamRef.current) {
           reconnectCountRef.current += 1;
@@ -157,6 +192,25 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
     },
     [cleanup],
   );
+
+  // Reconnect WebSocket when config changes (while already listening)
+  useEffect(() => {
+    if (!wsRef.current || !streamRef.current) return;
+
+    console.log("[DeepgramSTT] Config changed, reconnecting...");
+    intentionalCloseRef.current = true;
+    reconnectCountRef.current = 0;
+
+    // Close existing WebSocket — intentionalCloseRef prevents auto-reconnect in onclose
+    if (wsRef.current.readyState <= WebSocket.OPEN) {
+      wsRef.current.close();
+    }
+    wsRef.current = null;
+
+    // Reconnect with existing mic stream (no re-prompt)
+    connectWebSocket(streamRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConfig.utterance_end_ms, activeConfig.model, activeConfig.smart_format]);
 
   const startListening = useCallback(async () => {
     if (wsRef.current) return;

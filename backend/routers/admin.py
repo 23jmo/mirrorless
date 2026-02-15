@@ -1,10 +1,56 @@
 """Admin endpoints: queue management, session info, booth stats."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from models.database import NeonHTTPClient
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+# ── In-memory STT config (ephemeral, not DB-persisted) ──
+
+VALID_MODELS = {"nova-2", "nova-2-general", "nova-2-phonecall", "nova-2-meeting"}
+
+_stt_config: dict = {
+    "utterance_end_ms": 1500,
+    "model": "nova-2",
+    "smart_format": True,
+}
+
+
+class STTConfigUpdate(BaseModel):
+    utterance_end_ms: Optional[int] = Field(None, ge=500, le=3000)
+    model: Optional[str] = None
+    smart_format: Optional[bool] = None
+
+
+@router.get("/stt-config")
+async def get_stt_config():
+    """Return current STT configuration."""
+    return _stt_config
+
+
+@router.post("/stt-config")
+async def update_stt_config(body: STTConfigUpdate, request: Request):
+    """Update STT config and broadcast to mirror room."""
+    if body.model is not None and body.model not in VALID_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid model. Must be one of: {', '.join(sorted(VALID_MODELS))}",
+        )
+
+    if body.utterance_end_ms is not None:
+        _stt_config["utterance_end_ms"] = body.utterance_end_ms
+    if body.model is not None:
+        _stt_config["model"] = body.model
+    if body.smart_format is not None:
+        _stt_config["smart_format"] = body.smart_format
+
+    sio = request.app.state.sio
+    await sio.emit("stt_config_updated", _stt_config, room="mirror")
+
+    return _stt_config
 
 
 @router.get("/queue")
