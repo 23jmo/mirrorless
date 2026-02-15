@@ -1,0 +1,288 @@
+Implement the following plan:
+
+# Plan: Admin Dashboard — Deepgram Sensitivity + Scrape Job Status
+
+## Context
+
+Two admin dashboard features: (1) expose Deepgram's `endpointing` parameter as a "sensitivity" slider — controls ms of silence before speech is finalized at the phrase level, complementing the existing `utterance_end_ms` which operates at the full-utterance level; (2) show email scraping job status with phase, purchase count, and errors — currently scrape jobs are fire-and-forget with zero admin visibility.
+
+## Feature 1: Deepgram Sensitivity (endpointing slider)
+
+The existing STT config pipeline (`_stt_config` dict → POST `/admin/stt-config` → `stt_config_updated` socket → hook hot-reload) already handles 3 params. We add a 4th: `endpointing` (10–500ms, default 10ms). Lower = more sensitive/faster finalization, higher = waits longer for continued speech.
+
+### Changes
+
+**`backend/routers/admin.py`**
+- Add `"endpointing": 10` to `_stt_config` dict (line 15)
+- Add `endpointing: Optional[int] = Field(None, ge=10, le=500)` to `STTConfigUpdate` (line 22)
+- Add `if body.endpointing is not None:` update block in `update_stt_config()` (line 43)
+
+**`frontend/src/hooks/useDeepgramSTT.ts`**
+- Add `endpointing: number` to `DeepgramSTTConfig` interface (line 8)
+- Add `endpointing: 10` to `DEFAULT_CONFIG` (line 14)
+- Add `endpointing: String(config.endpointing)` to `buildDeepgramUrl()` params (line 21)
+- Add `activeConfig.endpointing` to hot-reload `useEffect` dependency array (line 213)
+
+**`frontend/src/lib/api.ts`**
+- Add `endpointing: number` to `STTConfig` interface (line 222)
+
+**`frontend/src/app/admin/page.tsx`**
+- Add `localEndpointing` state in `STTSettings` (same pattern as existing `localUtterance`)
+- Add slider: min=10, max=500, step=10, save on mouseUp
+- Label: "Sensitivity (Endpointing): {value}ms"
+- Helper text: "10ms (fast/sensitive)" ↔ "500ms (slow/patient)"
+- Place between Utterance End and Model dropdown
+
+## Feature 2: Scrape Job Status
+
+In-memory `OrderedDict` tracking (max 50 jobs, evict oldest completed). No DB table — scrape jobs are transient, server-restart loss is fine for admin monitoring.
+
+### Changes
+
+**`backend/scraper/routes.py`** — Add job tracking module-level:
+- `_scrape_jobs: OrderedDict[str, dict]` with helper functions:
+  - `_update_scrape_job(user_id, **updates)` — update phase/purchases
+  - `_complete_scrape_job(user_id, status, error=None)` — mark done/failed
+  - `get_scrape_jobs()` — return list (newest first) for admin endpoint
+- In `start_scrape()`: look up user name from DB, create job entry before `create_task()`
+- In `_background_scrape()`: call `_update_scrape_job()` at each phase transition (searching → parsing → profiling → complete), increment `purchases_found` in `on_email` callback, call `_complete_scrape_job()` on success/failure
+
+**`backend/routers/admin.py`**
+- Add `GET /admin/scrape-jobs` endpoint that imports and calls `scraper.routes.get_scrape_jobs()`
+
+**`frontend/src/lib/api.ts`**
+- Add `ScrapeJob` interface: `{ user_id, user_name, status, phase, purchases_found, started_at, completed_at, error }`
+- Add `getScrapeJobs()` function calling `GET /admin/scrape-jobs`
+
+**`frontend/src/app/admin/page.tsx`**
+- Add `scrapeJobs` state, fetch in `refresh()` via `Promise.all`
+- Add "Scrape Jobs" section after STT Settings
+- `ScrapeJobRow` component: user name, status badge (running=blue, completed=green, failed=red), phase label, purchase count, elapsed time, error text
+- Show most recent 10 jobs
+
+## Files to Modify
+
+| File | Feature |
+|------|---------|
+| `backend/routers/admin.py` | Both — endpointing config + scrape-jobs endpoint |
+| `backend/scraper/routes.py` | Scrape — job tracking + phase updates |
+| `frontend/src/hooks/useDeepgramSTT.ts` | STT — endpointing param |
+| `frontend/src/lib/api.ts` | Both — STTConfig + ScrapeJob types |
+| `frontend/src/app/admin/page.tsx` | Both — endpointing slider + scrape jobs section |
+
+## Verification
+
+1. Open admin → endpointing slider shows at 10ms default
+2. Move slider to 200ms → verify mirror STT reconnects with new value
+3. Trigger scrape from phone → job appears in admin as "running" / "searching"
+4. Watch phase progress through searching → parsing → profiling → complete
+5. Verify purchase count increments during parsing phase
+6. Verify completed jobs show elapsed duration
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+## Error Type
+Console TypeError
+
+## Error Message
+Failed to fetch
+
+
+    at request (src/lib/api.ts:8:21)
+    at getAdminQueue (src/lib/api.ts:202:10)
+    at AdminPage.useCallback[refresh] (src/app/admin/page.tsx:36:22)
+    at AdminPage.useEffect (src/app/admin/page.tsx:55:5)
+
+## Code Frame
+   6 |
+   7 | async function request<T>(path: string, options?: RequestInit): Promise<T> {
+>  8 |   const res = await fetch(`${API_URL}${path}`, {
+     |                     ^
+   9 |     headers: { "Content-Type": "application/json" },
+  10 |     ...options,
+  11 |   });
+
+Next.js version: 15.5.12 (Webpack)
+. I don't see the deepgram sensitivity..
+
+---
+
+also add deepgram condfidence threshold toggle
+
+---
+
+Can you deploy this repository on Vercel?
+
+---
+
+<task-notification>
+<task-id>af0d381</task-id>
+<status>completed</status>
+<summary>Agent "Deploy to Vercel production" completed</summary>
+<result>The deployment completed successfully. Here are the URLs:
+
+- **Production URL**: https://mirrorless.vercel.app
+- **Deployment URL**: https://mirrorless-h3j9tiih8-johnathans-projects-b2a37f0a.vercel.app
+- **Inspect**: https://vercel.REDACTED</result>
+<usage>total_tokens: 11008
+tool_uses: 1
+duration_ms: 36239</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/af0d381.output
+
+---
+
+are you sure vercel is deployed?
+
+---
+
+[Image: source: REDACTED 2026-02-15 07.12.11.png]
+
+---
+
+<task-notification>
+<task-id>a0b3f75</task-id>
+<status>completed</status>
+<summary>Agent "Redeploy from frontend directory" completed</summary>
+<result>The deployment completed successfully. Here is the summary:
+
+**Deployment URL:** https://frontend-nofewhdzy-johnathans-projects-b2a37f0a.vercel.app  
+**Alias:** https://frontend-sigma-hazel-29.vercel.app  
+**Inspect:** https://vercel.REDACTED
+
+**Build details:**
+- Next.js 15.5.12, compiled successfully in 8.9s
+- 13 static pages generated
+- Total build time: ~50 seconds
+- 7 ESLint warnings (non-blocking): mostly `<img>` vs `<Image />` suggestions and a couple of React Hook dependency warnings
+- No errors</result>
+<usage>total_tokens: 12433
+tool_uses: 1
+duration_ms: 74334</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a0b3f75.output
+
+---
+
+B
+
+---
+
+<task-notification>
+<task-id>ad70b3e</task-id>
+<status>completed</status>
+<summary>Agent "Deploy frontend to mirrorless project" completed</summary>
+<result>The deployment completed successfully. Here is the summary:
+
+**Production URL:** https://mirrorless.vercel.app
+**Deployment URL:** https://mirrorless-134i2i2wb-johnathans-projects-b2a37f0a.vercel.app
+**Inspect:** https://vercel.REDACTED
+
+**Build details:**
+- Build time: 48 seconds (total deploy: 58 seconds)
+- Build region: Washington, D.C., USA (East) - iad1
+- Next.js 15.5.12 compiled successfully in 8.9 seconds
+- 13 static pages generated
+- 7 ESLint warnings (non-blocking): mostly `<img>` vs `<Image />` suggestions and a couple of React hook dependency warnings
+- No errors
+
+**Route sizes (First Load JS):**
+- `/mirror` — 179 kB (largest page)
+- `/mirror/test` — 151 kB
+- `/finger` — 144 kB
+- `/phone` — 121 kB
+- `/chat` — 118 kB
+- Other pages — 103-106 kB</result>
+<usage>total_tokens: 12388
+tool_uses: 1
+duration_ms: 69761</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ad70b3e.output
+
+---
+
+nah im still getting 404 not found
+
+---
+
+<task-notification>
+<task-id>add5b7c</task-id>
+<status>completed</status>
+<summary>Agent "Redeploy mirrorless to Vercel" completed</summary>
+<result>The deployment completed successfully. Here is the summary:
+
+**Production URL:** https://mirrorless.vercel.app
+**Deployment URL:** https:REDACTED.vercel.app
+**Inspect:** https://vercel.REDACTED
+
+**Build details:**
+- Next.js 15.5.12, compiled successfully in 9.1s
+- 13 static pages generated
+- Total build time: 51 seconds (plus ~1 minute for deploy/alias)
+- 841 npm packages installed
+- Build region: Washington, D.C. (iad1)
+
+**Warnings (non-blocking):**
+- 5 instances of `<img>` usage where `next/image` `<Image />` is recommended
+- 1 missing dependency in a `useEffect` hook (`currentPose` in `mirror/page.tsx`)
+- 1 unnecessary dependency in a `useCallback` hook (`cleanup` in `useDeepgramSTT.ts`)
+
+No errors occurred during the build.</result>
+<usage>total_tokens: 12548
+tool_uses: 1
+duration_ms: 93383</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/add5b7c.output
+
+---
+
+can we connect our vercel to our backend
+
+---
+
+i get this console log error: Unchecked runtime.lastError: Cannot create item with duplicate id Copy phone number - 8663546901968289965 http://localhost:3000/phone
+
+---
+
+what do i need to add in my google cloud console for this redirect uri?
+
+---
+
+it sayas: 
+Google Client ID not configured
+
+---
+
+[Request interrupted by user]
+
+---
+
+<task-notification>
+<task-id>a3f4ec4</task-id>
+<status>killed</status>
+<summary>Agent "Redeploy with environment variables" was stopped</summary>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/a3f4ec4.output
+
+---
+
+nvm i solved it
+
+---
+
+You can't sign in to this app because it doesn't comply with Google's OAuth 2.0 policy.
+
+If you're the app developer, register the JavaScript origin in the Google Cloud Console.
+Request details: origin=https://mirrorless.vercel.app flowName=GeneralOAuthFlow
+Related developer documentation
+
+---
+
+i swear i already added that ...
+
+---
+
+[Image: source: REDACTED 2026-02-15 07.34.37.png]
