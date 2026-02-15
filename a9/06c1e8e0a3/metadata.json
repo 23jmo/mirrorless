@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "a906c1e8e0a3",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/agent/tools.py",
+    "backend/main.py",
+    "backend/tests/test_error_recovery.py",
+    "backend/tests/test_unified_pipeline.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a9/06c1e8e0a3/0/metadata.json",
+      "transcript": "/a9/06c1e8e0a3/0/full.jsonl",
+      "context": "/a9/06c1e8e0a3/0/context.md",
+      "content_hash": "/a9/06c1e8e0a3/0/content_hash.txt",
+      "prompt": "/a9/06c1e8e0a3/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10,
+    "cache_creation_tokens": 26087,
+    "cache_read_tokens": 572722,
+    "output_tokens": 2063,
+    "api_call_count": 6
+  }
+}

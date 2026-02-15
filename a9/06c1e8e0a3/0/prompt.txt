@@ -1,0 +1,170 @@
+Implement the following plan:
+
+# Plan: Revert `take_photo` + Fix Error Recovery + Cleanup Dead Code + Tests
+
+## Context
+
+The `take_photo` tool was committed on the `orb` branch and merged into `main`, but its frontend listener was reverted — leaving a half-broken backend that causes cascading 400 errors. Claude eagerly calls `take_photo`, it times out (no frontend listener), and the error recovery bug in `_call_claude` permanently corrupts the session's conversation history by leaving orphaned `tool_use` blocks.
+
+**Goals:**
+1. Remove all `take_photo` dead code (3 backend files)
+2. Fix the error recovery bug (prevents permanent session corruption from ANY tool failure)
+3. Remove other obvious dead code found during review
+4. Write tests for the error recovery fix
+
+**Scope:** Conservative — only remove dead code, fix bugs, keep all active tools (`display_product`, `send_voice_to_client`, etc.)
+
+---
+
+## Files to Modify
+
+### 1. `backend/agent/tools.py`
+
+**A. Remove `take_photo` tool definition** — delete from `TOOL_DEFINITIONS` (lines 307-326, the entire dict + its trailing comma)
+
+**B. Remove `take_photo` fallback dispatch** in `execute_tool()` — delete lines 439-440:
+```python
+elif tool_name == "take_photo":
+    return {"error": "take_photo must be handled by the orchestrator"}
+```
+
+**C. Remove duplicate `GIVE_RECOMMENDATION_TOOL`** — delete lines 329-363 (standalone dict that duplicates what's already in `TOOL_DEFINITIONS`)
+
+---
+
+### 2. `backend/agent/orchestrator.py`
+
+**A. Remove `PHOTO_TIMEOUT_SECONDS = 5`** — line 43
+
+**B. Remove `self._pending_photos`** from `__init__` — line 85
+
+**C. Remove image routing in `_select_model()`** — lines 262-269 (the 8-line block checking for image-type content). This only existed for `take_photo`. After removal, `_select_model` becomes:
+```python
+def _select_model(self, session):
+    if session.conversation_history:
+        last_msg = session.conversation_history[-1]
+        if last_msg.get("role") == "user" and isinstance(last_msg.get("content"), list):
+            if any(isinstance(block, dict) and block.get("type") == "tool_result"
+                   for block in last_msg["content"]):
+                return HAIKU_MODEL, 2048
+    return SONNET_MODEL, 400
+```
+
+**D. Remove `take_photo` interception** in `_handle_tool_calls()` — delete lines 358-384 (the entire `if tool_use.name == "take_photo":` block)
+
+**E. Remove `_take_photo()` method** — delete lines 441-462
+
+**F. Remove `resolve_photo()` method** — delete lines 464-470
+
+**G. Remove `voice_messages` write-only tracking** — delete lines 410-415 in `_handle_tool_calls()`:
+```python
+# Cache voice messages for session history
+if tool_use.name == "send_voice_to_client" and result.get("text"):
+    session.voice_messages.append({...})
+```
+And remove `voice_messages: list = field(default_factory=list)` from `SessionState` (line 70).
+
+**H. Fix error recovery in `_call_claude()`** — lines 321-330. After popping the user message, also pop any orphaned assistant message with `tool_use` blocks:
+
+```python
+except Exception as e:
+    print(f"[mira] Claude API call failed for {session.user_id}: {e}")
+    # Pop the last user message to keep conversation history consistent
+    if session.conversation_history and session.conversation_history[-1]["role"] == "user":
+        session.conversation_history.pop()
+    # Also pop any orphaned assistant message with tool_use blocks
+    # (prevents permanent 400 errors from unmatched tool_use/tool_result pairs)
+    if (
+        session.conversation_history
+        and session.conversation_history[-1].get("role") == "assistant"
+    ):
+        last_content = session.conversation_history[-1].get("content", [])
+        has_tool_use = any(
+            getattr(block, "type", None) == "tool_use"
+            or (isinstance(block, dict) and block.get("type") == "tool_use")
+            for block in (last_content if isinstance(last_content, list) else [])
+        )
+        if has_tool_use:
+            session.conversation_history.pop()
+    # Emit a fallback message so the frontend user gets verbal feedback
+    fallback = "Hmm, my brain glitched for a second. What were we talking about?"
+    await self._stream_text(session.user_id, fallback)
+    await self._stream_text(session.user_id, "", end_of_message=True)
+    return
+```
+
+Note: `content` can be Anthropic SDK objects (`.type` attribute) or dicts (`block.get("type")`) — hence the dual check.
+
+---
+
+### 3. `backend/main.py`
+
+**A. Remove `photo_response` Socket.io handler** — delete lines 219-228 (the `@sio.event async def photo_response` function)
+
+**B. Remove `resolve_photo` import** — line 10 imports from orchestrator. `resolve_photo` is accessed as `mira.resolve_photo()` (not a direct import), so just verify nothing on line 10 references it. No change expected.
+
+---
+
+### 4. `frontend/src/app/mirror/page.tsx`
+
+**Already reverted** — unstaged changes correctly removed the `request_photo` listener and restored the flat snapshot format. No further edits needed. These unstaged changes will be included in the commit.
+
+---
+
+### 5. New file: `backend/tests/test_error_recovery.py`
+
+Tests for the `_call_claude` error recovery fix. Pattern: same as `test_unified_pipeline.py` (pytest + AsyncMock).
+
+```python
+"""Tests for _call_claude error recovery — orphaned tool_use cleanup."""
+```
+
+**Test 1: `test_api_failure_pops_user_message`**
+- History: `[user_msg]`
+- Mock `client.messages.stream` to raise
+- Assert user_msg was popped, history is empty
+
+**Test 2: `test_api_failure_pops_orphaned_tool_use_assistant`**
+- History: `[user_msg, assistant_msg_with_tool_use, user_tool_results]`
+- Mock stream to raise
+- Assert both `user_tool_results` AND `assistant_msg_with_tool_use` were popped
+- Assert `user_msg` remains
+
+**Test 3: `test_api_failure_preserves_text_only_assistant`**
+- History: `[user_msg, assistant_text_only, user_msg2]`
+- Mock stream to raise
+- Assert `user_msg2` popped, `assistant_text_only` preserved (no tool_use blocks)
+
+**Test 4: `test_fallback_message_streamed_on_failure`**
+- Mock stream to raise, mock `_stream_text`
+- Assert fallback text was streamed + end_of_message=True
+
+**Test 5: `test_session_recovers_after_tool_failure`**
+- Simulate: first call succeeds (adds assistant tool_use + user tool_results), recursive call fails
+- Verify history is clean after recovery (no orphaned blocks)
+- Verify a subsequent _call_claude would have valid history
+
+---
+
+## Verification
+
+1. `cd backend && pytest tests/test_error_recovery.py -v` — all 5 new tests pass
+2. `cd backend && pytest` — all existing tests pass (no regressions)
+3. `grep -rn "take_photo\|_pending_photos\|resolve_photo\|PHOTO_TIMEOUT\|request_photo" backend/` — zero results
+4. `grep -rn "GIVE_RECOMMENDATION_TOOL" backend/` — zero results (duplicate removed)
+5. Manual: start a session, verify Mira doesn't try to call `take_photo`, normal conversation + tool calls work
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+please commit and push everything - note that this is a semi working version of elevenlabs tts
+
+---
+
+also add a log out / leave queue button in the queue
+
+---
+
+[Request interrupted by user for tool use]
