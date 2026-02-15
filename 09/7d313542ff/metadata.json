@@ -3,7 +3,7 @@
   "checkpoint_id": "097d313542ff",
   "strategy": "manual-commit",
   "branch": "AGENT",
-  "checkpoints_count": 9,
+  "checkpoints_count": 10,
   "files_touched": [
     ".claude/commands/poke.md",
     "backend/agent/memory.py",
@@ -23,6 +23,7 @@
     "backend/mcp_server/tests/test_search_clothing.py",
     "backend/mcp_server/tests/test_send_to_mirror.py",
     "backend/mcp_server/tests/test_sessions.py",
+    "backend/routers/heygen.py",
     "backend/scrape_debug.py",
     "backend/scraper/brand_scanner.py",
     "backend/scraper/db.py",
@@ -36,6 +37,7 @@
     "backend/tests/test_brand_scanner.py",
     "backend/tests/test_gmail_auth.py",
     "backend/tests/test_gmail_fetch.py",
+    "backend/tests/test_heygen_routes.py",
     "backend/tests/test_mira.py",
     "backend/tests/test_mira_live.py",
     "backend/tests/test_pipeline.py",
@@ -44,9 +46,18 @@
     "backend/tests/test_scraper_db.py",
     "backend/tests/test_scraper_routes.py",
     "backend/tests/test_socket_events.py",
+    "backend/tests/test_users.py",
+    "frontend/src/__tests__/product-carousel.test.tsx",
+    "frontend/src/__tests__/sentence-buffer.test.ts",
+    "frontend/src/__tests__/voice-indicator.test.tsx",
     "frontend/src/app/mirror/page.tsx",
+    "frontend/src/components/mirror/AvatarPiP.tsx",
+    "frontend/src/components/mirror/ProductCarousel.tsx",
+    "frontend/src/components/mirror/VoiceIndicator.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
-    "frontend/src/hooks/useHeyGenAvatar.ts"
+    "frontend/src/hooks/useHeyGenAvatar.ts",
+    "frontend/src/lib/sentence-buffer.ts",
+    "frontend/vitest.config.ts"
   ],
   "sessions": [
     {
@@ -62,13 +73,20 @@
       "context": "/09/7d313542ff/1/context.md",
       "content_hash": "/09/7d313542ff/1/content_hash.txt",
       "prompt": "/09/7d313542ff/1/prompt.txt"
+    },
+    {
+      "metadata": "/09/7d313542ff/2/metadata.json",
+      "transcript": "/09/7d313542ff/2/full.jsonl",
+      "context": "/09/7d313542ff/2/context.md",
+      "content_hash": "/09/7d313542ff/2/content_hash.txt",
+      "prompt": "/09/7d313542ff/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 539,
-    "cache_creation_tokens": 194254,
-    "cache_read_tokens": 7111521,
-    "output_tokens": 11598,
-    "api_call_count": 102
+    "input_tokens": 630,
+    "cache_creation_tokens": 393093,
+    "cache_read_tokens": 15166386,
+    "output_tokens": 23837,
+    "api_call_count": 183
   }
 }

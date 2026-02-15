@@ -1,0 +1,564 @@
+Implement the following plan:
+
+# Mirror Experience Wiring — Implementation Plan
+
+## Context
+
+The Mira agent, gesture detection, and Socket.io architecture are all working. But the mirror page is currently just a webcam feed with gesture indicators — there's no voice input, no avatar output, and no product display. This plan wires everything together: HeyGen avatar for Mira's visual/voice output, Deepgram STT for user voice input, a product carousel for clothing recommendations, and real gesture interaction with the carousel.
+
+Full spec: `docs/plans/2026-02-14-mirror-wiring-spec.md`
+
+## Key Design Decisions (from interview)
+
+- **HeyGen**: Streaming Avatar SDK, `TaskType.REPEAT` mode (we send text, it speaks). NOT `startVoiceChat` (that uses GPT-4o, bypasses Claude/Mira).
+- **Deepgram**: Browser-direct WebSocket (no backend proxy). Key as `NEXT_PUBLIC_DEEPGRAM_API_KEY`.
+- **Speech buffering**: Sentence-boundary buffering (accumulate chunks until `.` `!` `?`) before calling `avatar.speak()`.
+- **Mic policy**: Always-on with VAD, but transcripts **queued** while Mira is speaking (no interruption, no lost input).
+- **Avatar position**: Top-right PiP corner.
+- **Product display**: Bottom carousel, Tinder-style swipe animations.
+- **Gesture routing**: Dual — frontend animates cards immediately, backend gets gesture async.
+- **Avatar lifecycle**: Created on `start_session`, destroyed on session end (clean reset).
+- **HeyGen auth**: Backend endpoint generates session token (key stays server-side).
+
+---
+
+## Implementation Steps
+
+### Step 1: Backend — HeyGen token endpoint
+
+**Create `backend/routers/heygen.py`**
+
+```python
+import os
+import httpx
+from fastapi import APIRouter, HTTPException
+
+router = APIRouter(prefix="/api/heygen", tags=["heygen"])
+
+@router.get("/token")
+async def get_heygen_token():
+    api_key = os.environ.get("HEYGEN_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="HEYGEN_API_KEY not configured")
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.heygen.com/v1/streaming.create_token",
+            headers={"x-api-key": api_key},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"HeyGen API error: {resp.text}")
+    return {"token": resp.json()["data"]["token"]}
+```
+
+**Modify `backend/main.py`** — Add `from routers import heygen` and `app.include_router(heygen.router)`.
+
+### Step 2: Backend — Add speech-end signal to orchestrator
+
+**Modify `backend/agent/orchestrator.py`**
+
+Currently `_stream_text` emits `mira_speech` with `is_chunk: True` for every chunk, but never signals "done". The sentence buffer needs a flush signal.
+
+After the streaming loop in `_call_claude` (line ~287, after the `async for event in stream:` block), emit one final event:
+
+```python
+# After streaming complete, signal end so frontend flushes sentence buffer
+await self._stream_text_end(session.user_id)
+```
+
+Add method:
+```python
+async def _stream_text_end(self, user_id: str) -> None:
+    if self.sio:
+        await self.sio.emit(
+            "mira_speech",
+            {"text": "", "is_chunk": False},
+            room=user_id,
+        )
+```
+
+This uses the existing `mira_speech` event with `is_chunk: False` to signal the end — no new event type needed.
+
+### Step 3: Frontend — Install dependencies
+
+```bash
+cd frontend && npm install @heygen/streaming-avatar livekit-client
+```
+
+### Step 4: Frontend — Sentence buffer utility
+
+**Create `frontend/src/lib/sentence-buffer.ts`**
+
+Pure utility class, no React dependencies. Accumulates text chunks and flushes on sentence boundaries (`.` `!` `?` followed by space or end-of-input).
+
+Edge cases to handle:
+- Decimal numbers (`$29.99`) — don't split on the decimal point
+- Ellipsis (`...`) — don't split on each dot
+- Empty chunks — ignore gracefully
+- `flush()` — force-send remaining buffer (called on `is_chunk: false`)
+
+### Step 5: Frontend — HeyGen avatar hook
+
+**Create `frontend/src/hooks/useHeyGenAvatar.ts`**
+
+```typescript
+interface UseHeyGenAvatarReturn {
+  isReady: boolean;
+  isSpeaking: boolean;
+  startAvatar: () => Promise<void>;
+  stopAvatar: () => Promise<void>;
+  speak: (text: string) => Promise<void>;
+  interrupt: () => Promise<void>;
+  videoRef: RefObject<HTMLVideoElement>;
+}
+```
+
+Lifecycle:
+1. `startAvatar()` → fetch token from `GET /api/heygen/token` → create `StreamingAvatar` → `createStartAvatar()`
+2. Listen for `STREAM_READY` → attach MediaStream to videoRef → set `isReady = true`
+3. Listen for `AVATAR_START_TALKING` / `AVATAR_STOP_TALKING` → update `isSpeaking`
+4. `speak(text)` → `avatar.speak({ text, task_type: TaskType.REPEAT })`
+5. `stopAvatar()` → `avatar.stopAvatar()` → cleanup
+
+Config: `avatarName` from `NEXT_PUBLIC_HEYGEN_AVATAR_ID` or HeyGen default. Quality: Medium. `activityIdleTimeout: 3600`.
+
+### Step 6: Frontend — Avatar PiP component
+
+**Create `frontend/src/components/mirror/AvatarPiP.tsx`**
+
+Simple container for the HeyGen video element:
+- Position: absolute, top-right corner
+- Size: ~200x200px (or 15vw), rounded corners
+- Subtle border glow
+- z-index 10 (above webcam, below gesture indicator at z-20)
+- Shows loading spinner while avatar initializes
+- Accepts `videoRef` from useHeyGenAvatar
+
+### Step 7: Frontend — Deepgram STT hook
+
+**Create `frontend/src/hooks/useDeepgramSTT.ts`**
+
+```typescript
+interface UseDeepgramSTTReturn {
+  isListening: boolean;
+  transcript: string;
+  interimTranscript: string;
+  startListening: () => void;
+  stopListening: () => void;
+}
+```
+
+Implementation:
+1. `startListening()` → `getUserMedia({ audio: true })` (separate from camera stream)
+2. Open WebSocket to `wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&interim_results=true&vad_events=true&utterance_end_ms=1500&encoding=linear16&sample_rate=16000`
+3. Auth: `token` param with `NEXT_PUBLIC_DEEPGRAM_API_KEY`
+4. Use `AudioContext` + `ScriptProcessorNode` (or `MediaStreamAudioSourceNode` + `AudioWorkletNode`) to capture PCM16 audio frames → send as binary WebSocket messages
+5. Parse incoming JSON messages for `transcript` (final) and `speech_final` events
+6. On `utterance_end` or final transcript → update `transcript` state
+7. On interim results → update `interimTranscript`
+8. `stopListening()` → close WebSocket, stop audio stream
+
+Reconnect: one attempt on disconnect. If fails, set `isListening: false`.
+
+### Step 8: Frontend — Voice indicator component
+
+**Create `frontend/src/components/mirror/VoiceIndicator.tsx`**
+
+- Position: absolute, bottom-left corner
+- Shows when `isListening && interimTranscript`
+- Displays interim transcript text in italics (fades after 1.5s of no speech)
+- Small mic icon when listening but no speech
+- `data-testid="voice-indicator"` for tests
+
+### Step 9: Frontend — Product carousel component
+
+**Create `frontend/src/components/mirror/ProductCarousel.tsx`**
+
+Props:
+```typescript
+interface ProductCarouselProps {
+  items: ProductCard[];
+  activeIndex: number;
+  onGesture: (gesture: GestureType, item: ProductCard) => void;
+}
+```
+
+Layout:
+- Bottom 20% of screen, horizontal strip
+- Semi-transparent dark gradient background
+- Cards: ~150x200px, product image + title (1 line) + price + source label
+- Slides up from bottom on mount, slides down on unmount
+
+Gesture animations (CSS transitions/keyframes):
+- `swipe_right`: card flies right + heart overlay
+- `swipe_left`: card flies left + X overlay
+- `thumbs_up`: card pulses + heart animation
+- `thumbs_down`: card shakes + fades out
+
+Exposes `handleGesture(type)` method that the parent calls when a gesture is detected while carousel is visible.
+
+### Step 10: Frontend — Wire mirror page
+
+**Modify `frontend/src/app/mirror/page.tsx`**
+
+This is the main integration step. Add the new hooks and components:
+
+```
+New imports:
+  useHeyGenAvatar, useDeepgramSTT, SentenceBuffer
+  AvatarPiP, ProductCarousel, VoiceIndicator
+
+New state:
+  sessionActive (boolean) — set true on start_session, false on session_ended
+  products (ProductCard[]) — from tool_result events
+  activeProductIndex (number) — tracks which card is "current"
+  isMiraSpeaking (boolean) — from avatar's isSpeaking state
+  pendingTranscripts (string[]) — queued while Mira speaks
+
+Socket listeners to add:
+  "mira_speech" → feed chunks to SentenceBuffer
+    - when is_chunk=false → buffer.flush()
+  "tool_result" → if type === "clothing_results", set products
+  "session_ended" → cleanup (stopAvatar, stopListening, clear products)
+
+SentenceBuffer wiring:
+  - onSentence callback → avatar.speak(sentence)
+  - flush on is_chunk=false
+
+Deepgram transcript flow:
+  - When new final transcript arrives:
+    - If avatar.isSpeaking → push to pendingTranscripts queue
+    - If not speaking → emit mirror_event {type: "voice", transcript}
+  - When avatar stops speaking → flush pendingTranscripts as single mirror_event
+
+Gesture dual routing:
+  - In handleGesture callback:
+    - If products.length > 0: animate carousel card + advance activeProductIndex
+    - Always: emit gesture_detected to backend (existing code)
+
+Session lifecycle:
+  - Listen for custom "session_active" signal or detect via start_session
+  - On start_session → avatar.startAvatar(), deepgram.startListening()
+  - On session_ended → avatar.stopAvatar(), deepgram.stopListening(), setProducts([]), setSessionActive(false)
+```
+
+### Step 11: Tests
+
+**Backend tests:**
+- `backend/tests/test_heygen_routes.py` — token endpoint (success, missing key, HeyGen error)
+- `backend/tests/test_users.py` — DELETE endpoint (success, 404, DB cleanup)
+- Add to `backend/tests/test_socket_events.py` — emit_scrape_phase tests
+- Add to `backend/tests/test_pipeline.py` — on_phase callback tests
+
+**Frontend tests:**
+- `frontend/src/__tests__/sentence-buffer.test.ts` — 9 edge cases (boundaries, numbers, ellipsis, flush, empty)
+- `frontend/src/__tests__/product-carousel.test.tsx` — render, empty state, gestures, item replacement
+- `frontend/src/__tests__/voice-indicator.test.tsx` — visibility, transcript display
+
+---
+
+## Files to Create (7)
+
+| File | Purpose |
+|------|---------|
+| `backend/routers/heygen.py` | GET /api/heygen/token |
+| `frontend/src/lib/sentence-buffer.ts` | Chunk → sentence buffering |
+| `frontend/src/hooks/useHeyGenAvatar.ts` | HeyGen avatar lifecycle |
+| `frontend/src/hooks/useDeepgramSTT.ts` | Deepgram streaming STT |
+| `frontend/src/components/mirror/AvatarPiP.tsx` | Avatar PiP container |
+| `frontend/src/components/mirror/VoiceIndicator.tsx` | Mic + transcript indicator |
+| `frontend/src/components/mirror/ProductCarousel.tsx` | Product cards with swipe animations |
+
+## Files to Modify (2)
+
+| File | Change |
+|------|--------|
+| `backend/main.py` | Register heygen router |
+| `backend/agent/orchestrator.py` | Add `_stream_text_end()`, call after streaming loop |
+| `frontend/src/app/mirror/page.tsx` | Wire all hooks + components + socket listeners |
+
+## Test Files to Create (5)
+
+| File | Tests |
+|------|-------|
+| `backend/tests/test_heygen_routes.py` | 3 |
+| `backend/tests/test_users.py` | 3 |
+| `frontend/src/__tests__/sentence-buffer.test.ts` | 9 |
+| `frontend/src/__tests__/product-carousel.test.tsx` | 6 |
+| `frontend/src/__tests__/voice-indicator.test.tsx` | 4 |
+
+## Existing Test Files to Update (2)
+
+| File | New Tests |
+|------|-----------|
+| `backend/tests/test_socket_events.py` | +2 (emit_scrape_phase) |
+| `backend/tests/test_pipeline.py` | +2 (on_phase callback) |
+
+---
+
+## Execution Order
+
+1. **Backend first** (unblocks frontend): heygen.py + main.py + orchestrator speech-end signal
+2. **npm install** HeyGen SDK
+3. **Pure utilities** (no deps): sentence-buffer.ts + tests
+4. **Hooks** (independent): useHeyGenAvatar.ts, useDeepgramSTT.ts (can be parallel)
+5. **Components** (independent): AvatarPiP, VoiceIndicator, ProductCarousel + tests (can be parallel)
+6. **Mirror page wiring** (depends on everything above)
+7. **Backend tests** (test_heygen_routes, test_users, updates to socket/pipeline tests)
+
+Steps 4 and 5 can be parallelized with subagents.
+
+## Verification
+
+1. Start backend (`uvicorn main:app --reload`)
+2. Start frontend (`npm run dev`)
+3. Open `/mirror?user_id=<UUID>` in Chrome
+4. Verify webcam + gesture detection still works (existing)
+5. Trigger `start_session` from another client (or the chat page)
+6. Verify HeyGen avatar appears in PiP corner, speaks Mira's opener
+7. Speak into mic → verify transcript appears as interim text → Mira responds → avatar speaks
+8. Mira calls `present_items` → verify carousel slides up from bottom
+9. Swipe gesture → verify card animates + Mira reacts
+10. End session → verify clean reset (avatar gone, carousel gone, back to pure mirror)
+11. Run `cd backend && pytest` and `cd frontend && npm run test`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+wait give me a more in detail guide on how to tes tthis
+
+---
+
+Okay, I ran the end-to-end real test. The issue is that Mira does not ever shut up, there's no pauses to ever wait for the user. We gotta implement some pausing.
+
+Also, I'm pretty sure we need to implement pausing and wait for users to talk. Also, it doesn't really listen to user input, and sometimes it speaks straight gibberish
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me go through the conversation chronologically:
+
+1. **Initial request**: User asked to implement a detailed plan for "Mirror Experience Wiring" - connecting HeyGen avatar, Deepgram STT, product carousel, and gesture interaction to the mirror page.
+
+2. **Implementation phase**: I read existing files (main.py, orchestrator.py, mirror/page.tsx, api.ts, socket.ts, gestures.ts, GestureIndicator.tsx, test files, pipeline.py, socket_events.py, package.json, tsconfig.json) then implemented:
+   - Backend: heygen.py router, main.py registration, orchestrator speech-end signal
+   - Frontend: npm install @heygen/streaming-avatar livekit-client, sentence-buffer.ts, useHeyGenAvatar.ts, useDeepgramSTT.ts, AvatarPiP.tsx, VoiceIndicator.tsx, ProductCarousel.tsx
+   - Mirror page wiring with all hooks and components
+   - Test files for backend and frontend
+
+3. **Test fixing phase**: Multiple rounds of test fixes:
+   - JSX tests failed with "React is not defined" → installed @vitejs/plugin-react, added it to vitest.config.ts
+   - Cleanup between tests not working → added `globals: true` to vitest config
+   - Backend tests failed with `AsyncClient(app=app)` deprecated → switched to `ASGITransport(app=app)` pattern
+   - `test_delete_user_closes_db` failed because exception propagated → used `raise_app_exceptions=False`
+   - TypeScript errors: `window as Record<string, unknown>` → cast through `unknown` first; `avatarName` undefined → provided default value
+
+4. **User asked for detailed testing guide** - I provided comprehensive E2E testing instructions.
+
+5. **User reported real E2E issues**: "Mira does not ever shut up, there's no pauses to ever wait for the user. Also doesn't really listen to user input, and sometimes speaks straight gibberish"
+
+6. **Plan mode investigation**: I launched two Explore agents to investigate:
+   - Agent 1 found: silence timer race condition, no pause instruction in prompts, silence message too aggressive
+   - Agent 2 found: claimed is_final field wrong (INCORRECT - I verified it's at root level), claimed subprotocol auth wrong (INCORRECT - verified it's valid), identified speech queue issue
+
+7. **I verified findings**: Confirmed `data.is_final` IS correct (root level per Deepgram docs), subprotocol auth IS correct. Real bugs: silence timer timing, speech queue, prompt issues.
+
+8. **Initial plan proposed echo as primary cause** → User rejected: "i dont think the audio is echoing back - idt thats the issue"
+
+9. **Clarification questions revealed**:
+   - New content each time (not echo/repetitive)
+   - Voice indicator "worked once but then stopped"
+   - Using headphones (confirms no echo)
+
+10. **I was in the middle of re-analyzing** the orchestrator's _call_claude method when the summary was requested. I was reading lines 255-314 to understand the recursive tool call flow and how _stream_text_end fires multiple times during tool recursion.
+
+The plan file was written but needs updating to remove the echo hypothesis and refocus on:
+- Silence timer starting too early (before response completes)
+- Speech queue for HeyGen (prevent overlapping speak() calls causing gibberish)
+- Prompt turn-taking instructions
+- Deepgram connection resilience (voice indicator stopped working)
+
+Key insight: `_stream_text_end` fires after EACH recursive `_call_claude` call (not just the final one), meaning the sentence buffer gets flushed multiple times during a tool-call chain, sending multiple rapid `speak()` calls to HeyGen → garbled speech.
+
+Summary:
+1. Primary Request and Intent:
+   - **Phase 1 (Completed)**: User asked to implement a comprehensive "Mirror Experience Wiring" plan that connects HeyGen avatar (Mira's visual/voice output), Deepgram STT (user voice input), product carousel (clothing recommendations), and gesture interaction to the existing mirror page. The full spec was at `docs/plans/2026-02-14-mirror-wiring-spec.md`.
+   - **Phase 2 (In Progress)**: After real E2E testing, user reported three critical bugs: (1) Mira never pauses/shuts up — talks nonstop with new content each time, (2) voice input worked once then stopped, (3) sometimes speaks gibberish. User is in plan mode for fixing these issues. User explicitly rejected the echo feedback loop hypothesis ("i dont think the audio is echoing back - idt thats the issue") and confirmed they use headphones.
+
+2. Key Technical Concepts:
+   - **HeyGen Streaming Avatar SDK**: `TaskType.REPEAT` mode for text-to-speech, `StreamingEvents.STREAM_READY/AVATAR_START_TALKING/AVATAR_STOP_TALKING` events, `avatar.speak()` behavior with multiple rapid calls is undefined/undocumented
+   - **Deepgram Browser-Direct WebSocket STT**: Subprotocol auth `["token", apiKey]` (confirmed valid), `is_final` at root level of response (confirmed correct), PCM16 audio via ScriptProcessorNode, `utterance_end_ms=1500`
+   - **Sentence buffering**: Regex `(?<!\d)(?<!\.)([.!?])\s` for sentence boundary detection, avoiding splits on decimals and ellipsis
+   - **Silence timer architecture**: 5-second asyncio.sleep timer in orchestrator, `is_processing` flag to prevent firing during response generation, silence events explicitly excluded from timer restart (line 192)
+   - **Recursive tool calls**: `_call_claude` calls itself recursively up to depth 3, and `_stream_text_end` fires after EACH recursive call, not just the final one
+   - **Dual gesture routing**: Frontend animates cards immediately, backend gets gesture async via `mirror_event`
+   - **Transcript queueing**: Voice transcripts queued in `pendingTranscriptsRef` while `avatar.isSpeaking`, flushed when avatar stops
+
+3. Files and Code Sections:
+
+   - **`backend/routers/heygen.py`** (CREATED)
+     - New endpoint `GET /api/heygen/token` that proxies HeyGen API key server-side
+     ```python
+     import os
+     import httpx
+     from fastapi import APIRouter, HTTPException
+     
+     router = APIRouter(prefix="/api/heygen", tags=["heygen"])
+     
+     @router.get("/token")
+     async def get_heygen_token():
+         api_key = os.environ.get("HEYGEN_API_KEY")
+         if not api_key:
+             raise HTTPException(status_code=500, detail="HEYGEN_API_KEY not configured")
+         async with httpx.AsyncClient() as client:
+             resp = await client.post(
+                 "https://api.heygen.com/v1/streaming.create_token",
+                 headers={"x-api-key": api_key},
+             )
+         if resp.status_code != 200:
+             raise HTTPException(status_code=502, detail=f"HeyGen API error: {resp.text}")
+         return {"token": resp.json()["data"]["token"]}
+     ```
+
+   - **`backend/main.py`** (MODIFIED)
+     - Added `from routers import auth, queue, users, heygen` and `app.include_router(heygen.router)`
+
+   - **`backend/agent/orchestrator.py`** (MODIFIED — critical for bug analysis)
+     - Added `_stream_text_end` method and call after streaming in `_call_claude`
+     - **Key bug location**: Silence timer starts at line 194 (TOP of `handle_event`) before Mira generates response. Timer is 5 seconds (`SILENCE_TIMEOUT_SECONDS = 5`). If response takes 3 seconds, only 2 seconds of real silence before timer fires.
+     - **Key bug location**: `_stream_text_end` fires after EACH recursive `_call_claude` (line 294-296), causing multiple rapid flushes during tool chains
+     ```python
+     # Line 192-194 — timer starts BEFORE response
+     if event.get("type") != "silence":
+         session.last_input_time = time.time()
+         self._start_silence_timer(user_id)
+     
+     # Line 234-235 — is_processing cleared AFTER response
+     finally:
+         session.is_processing = False
+     
+     # Line 294-296 — stream_text_end fires per recursive call
+     if collected_text:
+         await self._stream_text_end(session.user_id)
+     
+     # Line 490-492 — aggressive silence message
+     elif event_type == "silence":
+         duration = event.get("duration_seconds", SILENCE_TIMEOUT_SECONDS)
+         return f"The user has been silent for {duration} seconds. Say something to keep the conversation going."
+     
+     # Line 517-530 — silence timer callback
+     def _start_silence_timer(self, user_id: str) -> None:
+         self._cancel_silence_timer(user_id)
+         async def _silence_callback():
+             await asyncio.sleep(SILENCE_TIMEOUT_SECONDS)
+             session = self.sessions.get(user_id)
+             if session and session.is_active and not session.is_processing:
+                 await self.handle_event(user_id, {
+                     "type": "silence",
+                     "duration_seconds": SILENCE_TIMEOUT_SECONDS,
+                 })
+         self._silence_tasks[user_id] = asyncio.create_task(_silence_callback())
+     ```
+
+   - **`backend/agent/prompts.py`** (READ — critical for bug analysis)
+     - Line 11: "You DRIVE the conversation — never ask open-ended questions or wait passively."
+     - Line 29: "Keep responses SHORT for voice output. 1-3 sentences max per turn."
+     - Line 57: "Keep momentum — after every reaction, transition into the next search or pick. Never stall."
+     - No turn-taking instruction exists — Mira is never told to pause and listen
+
+   - **`frontend/src/lib/sentence-buffer.ts`** (CREATED)
+     - Accumulates streaming text chunks, flushes on sentence boundaries using regex `(?<!\d)(?<!\.)([.!?])\s`
+     - `feed(chunk)` appends and drains sentences, `flush()` force-sends remaining buffer
+
+   - **`frontend/src/hooks/useHeyGenAvatar.ts`** (CREATED)
+     - Manages HeyGen avatar lifecycle: token fetch, create, speak, stop
+     - `speak()` calls `avatar.speak({ text, taskType: TaskType.REPEAT })` directly — NO queuing
+     - `isSpeaking` state updated by `AVATAR_START_TALKING`/`AVATAR_STOP_TALKING` events
+     - Avatar ID defaults to `"default"` if `NEXT_PUBLIC_HEYGEN_AVATAR_ID` not set
+
+   - **`frontend/src/hooks/useDeepgramSTT.ts`** (CREATED)
+     - Browser-direct WebSocket to Deepgram with subprotocol auth `["token", DEEPGRAM_API_KEY]`
+     - Audio capture via AudioContext (16kHz) → ScriptProcessorNode → Float32-to-Int16 conversion → WebSocket binary send
+     - `is_final` checked at `data.is_final` (root level — confirmed correct)
+     - Single reconnect attempt on disconnect
+     - **No mute/unmute capability currently**
+
+   - **`frontend/src/components/mirror/AvatarPiP.tsx`** (CREATED)
+     - Top-right PiP container for HeyGen video, 15vw size, loading state
+
+   - **`frontend/src/components/mirror/VoiceIndicator.tsx`** (CREATED)
+     - Bottom-left mic indicator with green dot for active speech, interim transcript display
+
+   - **`frontend/src/components/mirror/ProductCarousel.tsx`** (CREATED)
+     - Bottom carousel with Tinder-style swipe animations (fly-right, fly-left, pulse, shake)
+     - Exposes gesture handler via `window.__carouselGesture`
+
+   - **`frontend/src/app/mirror/page.tsx`** (REWRITTEN)
+     - Integrates all hooks: useCamera, useGestureRecognizer, useHeyGenAvatar, useDeepgramSTT
+     - SentenceBuffer wired: `mira_speech` chunks → buffer.feed() → avatar.speak() per sentence
+     - `is_chunk: false` → buffer.flush()
+     - Session detection: listens for `session_active` event OR falls back to first `mira_speech`
+     - Transcript queueing: queued in `pendingTranscriptsRef` while `avatar.isSpeaking`, flushed when avatar stops
+     - Dual gesture routing: frontend carousel animation + backend mirror_event
+     - Session cleanup on `session_ended`: stopAvatar, stopListening, clear products
+
+   - **`frontend/vitest.config.ts`** (MODIFIED)
+     - Added `@vitejs/plugin-react` plugin and `globals: true` for component test support
+
+   - **Test files created**: `test_heygen_routes.py` (3 tests), `test_users.py` (3 tests), `sentence-buffer.test.ts` (10 tests), `product-carousel.test.tsx` (6 tests), `voice-indicator.test.tsx` (4 tests)
+   - **Test files updated**: `test_socket_events.py` (+2 emit_scrape_phase tests), `test_pipeline.py` (+2 on_phase tests)
+
+4. Errors and Fixes:
+   - **"React is not defined" in JSX test files**: Vitest didn't have JSX transform configured. Fixed by installing `@vitejs/plugin-react` and adding `plugins: [react()]` to vitest.config.ts.
+   - **Test cleanup not working between tests**: Testing Library's automatic cleanup requires Vitest globals. Fixed by adding `globals: true` to vitest config.
+   - **`AsyncClient(app=app)` TypeError**: Newer httpx removed the `app` parameter. Fixed by using `ASGITransport(app=app)` + `AsyncClient(transport=transport)` pattern (matching existing test_scraper_routes.py).
+   - **`test_delete_user_closes_db` exception propagation**: Unhandled exception from mocked DB error propagated through ASGI. Fixed by using `ASGITransport(app=app, raise_app_exceptions=False)` and asserting `response.status_code == 500`.
+   - **TypeScript `window as Record<string, unknown>` error**: Strict mode rejects direct cast. Fixed by casting through `unknown`: `(window as unknown as Record<string, unknown>)`.
+   - **TypeScript `avatarName: string | undefined` error**: HeyGen SDK requires `avatarName: string`. Fixed by defaulting to `"default"` instead of `undefined`.
+   - **Explorer agent incorrectly claimed `data.is_final` was wrong**: Verified via Deepgram docs that `is_final` IS at root level — code is correct.
+   - **Explorer agent incorrectly claimed subprotocol auth was broken**: Verified `["token", apiKey]` is Deepgram's recommended browser auth pattern — code is correct.
+   - **User rejected echo hypothesis**: User said "i dont think the audio is echoing back" and confirmed using headphones. Plan needs to remove echo as primary cause.
+
+5. Problem Solving:
+   - **Completed**: Full mirror experience wiring (HeyGen avatar, Deepgram STT, product carousel, gesture interaction, session lifecycle)
+   - **Completed**: All 45 tests passing (31 frontend, 14 backend), clean TypeScript build
+   - **In Progress**: Diagnosing and fixing three bugs from real E2E testing:
+     - (a) Mira talks nonstop — confirmed caused by silence timer starting too early + aggressive prompts
+     - (b) Voice input stops working — Deepgram WebSocket likely disconnects, needs investigation
+     - (c) Gibberish speech — caused by multiple rapid `avatar.speak()` calls from `_stream_text_end` firing per recursive `_call_claude`
+
+6. All User Messages:
+   - "Implement the following plan: # Mirror Experience Wiring — Implementation Plan [full plan with 11 steps, file lists, test specs]"
+   - "wait give me a more in detail guide on how to test this"
+   - "Okay, I ran the end-to-end real test. The issue is that Mira does not ever shut up, there's no pauses to ever wait for the user. We gotta implement some pausing. Also, I'm pretty sure we need to implement pausing and wait for users to talk. Also, it doesn't really listen to user input, and sometimes it speaks straight gibberish"
+   - (Rejected ExitPlanMode): "i dont think the audio is echoing back - idt thats the issue"
+   - (Answered questions): Speech pattern = "New content each time", Voice input = "worked once but then stopped", Audio setup = "Headphones"
+
+7. Pending Tasks:
+   - Fix the silence timer to start AFTER Mira's response completes (not before), increase timeout from 5s to ~12s
+   - Add speech queue to useHeyGenAvatar (one sentence at a time, wait for AVATAR_STOP_TALKING before next)
+   - Add turn-taking instruction to Mira's personality prompt + soften silence event message
+   - Investigate why Deepgram STT stops working mid-session (voice indicator "worked once but then stopped")
+   - Optionally add mute/unmute to Deepgram hook (good practice even without echo)
+   - Update plan file to remove echo hypothesis, finalize, and get user approval via ExitPlanMode
+
+8. Current Work:
+   I am in **plan mode** investigating why Mira never stops talking. I had just read `orchestrator.py` lines 255-314 to trace the recursive `_call_claude` flow and understand how `_stream_text_end` fires multiple times during tool chains. I was re-analyzing the root causes after the user rejected the echo hypothesis and provided clarifying answers:
+   - "New content each time" (not repetitive)
+   - "Voice indicator worked once but then stopped"  
+   - "Headphones" (no echo possible)
+   
+   The plan file at `/Users/johnathanmo/.claude/plans/snuggly-gathering-creek.md` was written with the echo hypothesis as Bug 1 — it needs to be rewritten to remove echo and refocus on the confirmed bugs (silence timer, speech queue, prompts, Deepgram resilience).
+
+9. Optional Next Step:
+   Update the plan file to remove the echo feedback loop hypothesis (Bug 1) and replace it with Deepgram connection resilience as a bug, keeping the other three fixes (silence timer timing, speech queue, prompt turn-taking). Then call ExitPlanMode for user approval. The user is waiting in plan mode for a corrected plan. Direct quote from user's rejection: "i dont think the audio is echoing back - idt thats the issue"
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+[Request interrupted by user for tool use]

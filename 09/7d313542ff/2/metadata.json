@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "097d313542ff",
+  "session_id": "72258863-c198-4669-a3b1-f5b6574cb823",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T03:56:09.995484Z",
+  "branch": "AGENT",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/main.py",
+    "backend/routers/heygen.py",
+    "backend/tests/test_heygen_routes.py",
+    "backend/tests/test_pipeline.py",
+    "backend/tests/test_socket_events.py",
+    "backend/tests/test_users.py",
+    "frontend/src/__tests__/product-carousel.test.tsx",
+    "frontend/src/__tests__/sentence-buffer.test.ts",
+    "frontend/src/__tests__/voice-indicator.test.tsx",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/components/mirror/AvatarPiP.tsx",
+    "frontend/src/components/mirror/ProductCarousel.tsx",
+    "frontend/src/components/mirror/VoiceIndicator.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
+    "frontend/src/hooks/useHeyGenAvatar.ts",
+    "frontend/src/lib/sentence-buffer.ts",
+    "frontend/vitest.config.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 91,
+    "cache_creation_tokens": 198839,
+    "cache_read_tokens": 8054865,
+    "output_tokens": 12239,
+    "api_call_count": 81
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T03:56:09.83279Z",
+    "agent_lines": 582,
+    "human_added": 0,
+    "human_modified": 909,
+    "human_removed": 107,
+    "total_committed": 1491,
+    "agent_percentage": 39.03420523138833
+  }
+}
