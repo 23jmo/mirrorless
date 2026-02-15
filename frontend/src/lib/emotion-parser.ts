@@ -1,4 +1,4 @@
-import type { MiraEmotion } from "@/components/ui/mira-video-avatar";
+import type { MiraEmotion } from "@/hooks/useOrbAvatar";
 
 const VALID_EMOTIONS: MiraEmotion[] = [
   "idle",

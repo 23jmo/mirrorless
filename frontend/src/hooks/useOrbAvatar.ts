@@ -5,14 +5,54 @@ import { StreamingTTS } from "@/lib/streaming-tts";
 import type { AgentState } from "@/components/ui/orb";
 
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
-export type MiraEmotion = "idle" | "neutral" | "proud" | "teasing";
 
-const EMOTION_COLORS: Record<MiraEmotion, [string, string]> = {
+// Extended emotions for Mira video avatar (13 total)
+export type MiraEmotion =
+  | "idle"
+  | "thinking"
+  | "talking"
+  | "happy"
+  | "excited"
+  | "concerned"
+  | "sassy"
+  | "disappointed"
+  | "surprised"
+  | "proud"
+  | "flirty"
+  | "judgy"
+  | "sympathetic"
+  // Legacy aliases
+  | "neutral"
+  | "teasing";
+
+// For Mira video avatar state
+export type MiraAvatarState = "idle" | "speaking";
+
+// Map emotions to orb colors (for backward compatibility)
+const EMOTION_COLORS: Record<string, [string, string]> = {
   idle: ["#F0F0F5", "#E8E8EE"],
   neutral: ["#F5E6A0", "#E8D680"],
+  thinking: ["#B8C4D4", "#9AABBD"],
+  talking: ["#F5E6A0", "#E8D680"],
+  happy: ["#FFE066", "#FFD633"],
+  excited: ["#FF9F43", "#FF7F00"],
+  concerned: ["#A8D5BA", "#8CC49F"],
+  sassy: ["#FF6B9D", "#FF4081"],
+  disappointed: ["#9DB4C0", "#7A9AAD"],
+  surprised: ["#FFB6C1", "#FF91A4"],
   proud: ["#4A6FA5", "#3A5C8C"],
+  flirty: ["#FFB7D5", "#FF8FC4"],
+  judgy: ["#C9B8D4", "#A896BB"],
+  sympathetic: ["#B5D8E8", "#8FC4D8"],
   teasing: ["#FFF3B0", "#FFE580"],
 };
+
+// Map legacy emotion names to new ones
+function normalizeEmotion(emotion: MiraEmotion): MiraEmotion {
+  if (emotion === "neutral") return "idle";
+  if (emotion === "teasing") return "sassy";
+  return emotion;
+}
 
 /** Map OrbState to the Orb component's agentState prop. */
 function toAgentState(state: OrbState): AgentState {
@@ -29,6 +69,7 @@ function toAgentState(state: OrbState): AgentState {
 }
 
 export interface UseOrbAvatarReturn {
+  // Original orb interface
   orbState: OrbState;
   agentState: AgentState;
   colors: [string, string];
@@ -41,6 +82,11 @@ export interface UseOrbAvatarReturn {
   isSpeaking: boolean;
   startSession: () => void;
   stopSession: () => void;
+  
+  // NEW: Mira video avatar interface
+  miraEmotion: MiraEmotion;
+  miraState: MiraAvatarState;
+  setMiraEmotion: (emotion: MiraEmotion) => void;
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -49,6 +95,10 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
   const [orbState, setOrbStateInternal] = useState<OrbState>("idle");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [colors, setColors] = useState<[string, string]>(EMOTION_COLORS.idle);
+  
+  // NEW: Mira video avatar state
+  const [miraEmotion, setMiraEmotionInternal] = useState<MiraEmotion>("idle");
+  const [miraState, setMiraState] = useState<MiraAvatarState>("idle");
 
   const colorsRef = useRef<[string, string]>(EMOTION_COLORS.idle);
   const outputVolumeRef = useRef<number>(0);
@@ -72,23 +122,40 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
 
   const setOrbState = useCallback((state: OrbState) => {
     setOrbStateInternal(state);
+    // Sync mira state
+    if (state === "thinking") {
+      setMiraEmotionInternal("thinking");
+      setMiraState("idle");
+    }
+  }, []);
+
+  const setMiraEmotion = useCallback((emotion: MiraEmotion) => {
+    setMiraEmotionInternal(normalizeEmotion(emotion));
   }, []);
 
   const updateColors = useCallback((emotion: MiraEmotion) => {
-    const c = EMOTION_COLORS[emotion] ?? EMOTION_COLORS.neutral;
+    const normalized = normalizeEmotion(emotion);
+    const c = EMOTION_COLORS[normalized] ?? EMOTION_COLORS.idle;
     colorsRef.current = c;
     setColors(c);
+    // Also update mira emotion
+    setMiraEmotionInternal(normalized);
   }, []);
 
   const speak = useCallback(
-    (text: string, emotion: MiraEmotion = "neutral") => {
+    (text: string, emotion: MiraEmotion = "idle") => {
       if (!text.trim() || !ttsRef.current) return;
 
-      updateColors(emotion);
+      const normalized = normalizeEmotion(emotion);
+      updateColors(normalized);
       setIsSpeaking(true);
       setOrbStateInternal("speaking");
+      
+      // NEW: Set mira to speaking state with emotion
+      setMiraEmotionInternal(normalized);
+      setMiraState("speaking");
 
-      console.log(`[OrbAvatar] Speaking (emotion=${emotion}):`, text.slice(0, 80));
+      console.log(`[OrbAvatar] Speaking (emotion=${normalized}):`, text.slice(0, 80));
 
       ttsRef.current
         .speak(
@@ -103,12 +170,18 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
             setIsSpeaking(false);
             setOrbStateInternal("idle");
             updateColors("idle");
+            
+            // NEW: Return mira to idle
+            setMiraState("idle");
+            setTimeout(() => setMiraEmotionInternal("idle"), 500);
           },
         )
         .catch(() => {
           setIsSpeaking(false);
           setOrbStateInternal("idle");
           updateColors("idle");
+          setMiraState("idle");
+          setMiraEmotionInternal("idle");
         });
     },
     [updateColors],
@@ -119,6 +192,8 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
     setIsSpeaking(false);
     setOrbStateInternal("idle");
     updateColors("idle");
+    setMiraState("idle");
+    setMiraEmotionInternal("idle");
   }, [updateColors]);
 
   const startSession = useCallback(() => {
@@ -136,6 +211,8 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
     setIsSpeaking(false);
     setOrbStateInternal("idle");
     updateColors("idle");
+    setMiraState("idle");
+    setMiraEmotionInternal("idle");
     console.log("[OrbAvatar] Session stopped");
   }, [stopVolumeLoop, updateColors]);
 
@@ -153,6 +230,7 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
   }, []);
 
   return {
+    // Original orb interface
     orbState,
     agentState: toAgentState(orbState),
     colors,
@@ -165,5 +243,10 @@ export function useOrbAvatar(): UseOrbAvatarReturn {
     isSpeaking,
     startSession,
     stopSession,
+    
+    // NEW: Mira video avatar interface
+    miraEmotion,
+    miraState,
+    setMiraEmotion,
   };
 }

@@ -1,23 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-export type MiraEmotion =
-  | "idle"
-  | "thinking"
-  | "talking"
-  | "happy"
-  | "excited"
-  | "concerned"
-  | "sassy"
-  | "disappointed"
-  | "surprised"
-  | "proud"
-  | "flirty"
-  | "judgy"
-  | "sympathetic";
-
-export type MiraAvatarState = "idle" | "speaking";
+import type { MiraEmotion, MiraAvatarState } from "@/hooks/useOrbAvatar";
 
 interface MiraVideoAvatarProps {
   emotion?: MiraEmotion;
@@ -34,12 +18,17 @@ interface MiraVideoAvatarProps {
 function getVideoPath(emotion: MiraEmotion, state: MiraAvatarState): string {
   const basePath = "/avatar/loops/seamless";
   
+  // Normalize legacy emotion names
+  let normalizedEmotion = emotion;
+  if (emotion === "neutral") normalizedEmotion = "idle";
+  if (emotion === "teasing") normalizedEmotion = "sassy";
+  
   if (state === "speaking") {
     // Use talking version with lip movement
-    return `${basePath}/talking/${emotion}_talking.mp4`;
+    return `${basePath}/talking/${normalizedEmotion}_talking.mp4`;
   } else {
     // Use emotion loop (no lip movement)
-    return `${basePath}/${emotion}_loop.mp4`;
+    return `${basePath}/${normalizedEmotion}_loop.mp4`;
   }
 }
 
