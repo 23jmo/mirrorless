@@ -1,0 +1,870 @@
+Implement the following plan:
+
+# Plan: Fix Broken Queue System
+
+## Context
+
+The queue system has critical bugs causing: (1) admin "Force End" doesn't actually clean up the queue — it only emits socket events and relies on the mirror relaying them back, so if the mirror is disconnected or refreshed, the active user gets stuck forever; (2) positions increment forever because `MAX(position)` scans all historical entries including completed ones; (3) users wait with "0 people ahead" indefinitely because the stuck active user blocks promotion. There's also no admin escape hatch to reset a broken queue.
+
+## Changes (in order)
+
+### 1. Deduplicate `_auto_advance_queue` in main.py
+
+**File:** `backend/main.py` (lines 470-523)
+
+The 53-line `_auto_advance_queue()` duplicates logic from `queue.py`. Replace with a ~12-line version that imports and calls the shared functions:
+
+```python
+async def _auto_advance_queue(user_id: str):
+    from routers.queue import _try_advance_next, get_queue_snapshot
+    from models.database import NeonHTTPClient
+    db = NeonHTTPClient()
+    try:
+        await db.execute(
+            "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
+            [user_id],
+        )
+        await _try_advance_next(db)
+        snapshot = await get_queue_snapshot(db)
+        await sio.emit("queue_updated", snapshot, room="mirror")
+    finally:
+        await db.close()
+```
+
+Also **remove the dead `session_force_end` socket handler** (lines 456-467) — it's never triggered because the mirror relays force-end as `end_session`, not `session_force_end`.
+
+### 2. Fix force-end to clean up queue server-side (CRITICAL)
+
+**File:** `backend/routers/admin.py` — rewrite `force_end_session()`
+
+Instead of just emitting socket events, do the actual cleanup:
+
+1. Find active queue user (existing code)
+2. Call `mira.end_session(user_id)` via `request.app.state.mira` (wrap in try/except — proceed even if it fails)
+3. Mark queue entry as `completed` in DB
+4. Call `_try_advance_next(db)` (import from `queue.py`)
+5. Emit `session_force_end` to mirror + user rooms (UI cleanup)
+6. Emit `session_ended` with recap data to user room (phone transition)
+7. Emit `queue_updated` snapshot to mirror room (next-user display)
+
+Import `_try_advance_next` and `get_queue_snapshot` from `routers.queue`.
+
+### 3. Fix position calculation
+
+**File:** `backend/routers/queue.py` line 103
+
+```python
+# Before:
+"SELECT COALESCE(MAX(position), 0) FROM queue"
+
+# After:
+"SELECT COALESCE(MAX(position), 0) FROM queue WHERE status IN ('waiting', 'active')"
+```
+
+This restarts positions from 1 when the queue empties, instead of growing forever.
+
+### 4. Add admin "Clear Queue" endpoint + UI
+
+**Backend:** `backend/routers/admin.py` — add `POST /admin/clear-queue`
+- End any active Mira sessions (try/except each)
+- `UPDATE queue SET status = 'completed' WHERE status IN ('waiting', 'active')`
+- Emit empty `queue_updated` snapshot to mirror room
+- Return `{"status": "cleared"}`
+
+**Frontend API:** `frontend/src/lib/api.ts` — add `clearQueue()` function
+
+**Frontend UI:** `frontend/src/app/admin/page.tsx` — add "Clear Queue" button (confirmation before action)
+
+### 5. Fix mirror recap dismiss to re-fetch queue state
+
+**File:** `frontend/src/app/mirror-v2/page.tsx`
+
+Replace the fragile `pendingQueueRef` pattern in `handleRecapDismiss` with a fresh queue snapshot request:
+
+```typescript
+const handleRecapDismiss = useCallback(() => {
+    mira.stopSession();
+    setRecapData(null);
+    setActiveUser(null);
+    setKioskState("attract");
+    socket.emit("join_mirror_room"); // triggers queue_updated with fresh state
+}, []);
+```
+
+Remove `pendingQueueRef` and its usage in the `queue_updated` handler (the recap state branch). The `queue_updated` handler will automatically transition to `waiting` if there's an active user.
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `backend/main.py` | Replace `_auto_advance_queue` with shared imports; remove dead `session_force_end` handler |
+| `backend/routers/admin.py` | Rewrite `force_end_session()` with DB cleanup; add `clear_queue()` endpoint |
+| `backend/routers/queue.py` | Scope `MAX(position)` to active entries only |
+| `frontend/src/lib/api.ts` | Add `clearQueue()` API function |
+| `frontend/src/app/admin/page.tsx` | Add "Clear Queue" button |
+| `frontend/src/app/mirror-v2/page.tsx` | Replace `pendingQueueRef` with `join_mirror_room` re-emit on recap dismiss |
+
+## What We're NOT Doing (and why)
+
+- **Socket disconnect cleanup**: Mirror disconnect maps to `"mirror"` string (not a user UUID), so it can't identify which user to clean up. Phone disconnect shouldn't end the mirror session. The robust force-end (Fix 2) + clear queue (Fix 4) are the proper escape hatches.
+- **Async locking / transactions**: The subquery `UPDATE WHERE id = (SELECT ... LIMIT 1)` is already atomic in Postgres. The NeonHTTPClient uses HTTP API so full multi-statement transactions aren't straightforward. The current approach is sufficient for a single-mirror kiosk.
+- **Partial unique index migration**: The ON CONFLICT fallback already handles duplicates. Low priority.
+
+## Verification
+
+1. Start backend + frontend dev servers
+2. Join queue from phone → verify position starts at 1 (not some high number)
+3. Start session from mirror → verify active on admin dashboard
+4. Click "Force End" on admin → verify session ends, queue advances to next user (or returns to attract if empty)
+5. Join 2 users → force-end first → second user should become active automatically
+6. Click "Clear Queue" → verify all entries cleared, mirror goes to attract
+7. Let session end normally (recap) → dismiss recap → verify mirror correctly picks up next user or returns to attract
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+did u run tests
+
+---
+
+Commit and push the queue changes then
+
+---
+
+## Context
+
+- Current git status: On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   ../backend/main.py
+	modified:   ../backend/mcp_server/server.py
+	modified:   ../backend/routers/admin.py
+	modified:   ../backend/routers/queue.py
+	modified:   src/app/admin/page.tsx
+	modified:   src/app/phone/page.tsx
+	modified:   src/components/mirror/SessionRecap.tsx
+	modified:   src/lib/api.ts
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): diff --git a/backend/main.py b/backend/main.py
+index eab58a9..52f984e 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -453,22 +453,9 @@ async def end_session(sid, data):
+     await _auto_advance_queue(user_id)
+ 
+ 
+-@sio.event
+-async def session_force_end(sid, data):
+-    """Force-end session triggered by admin."""
+-    user_id = data.get("user_id")
+-    if not user_id:
+-        return
+-    print(f"[mira] Force-ending session for user {user_id}")
+-    result = await mira.end_session(user_id)
+-    if result:
+-        await sio.emit("session_recap", result, room=user_id)
+-        await sio.emit("session_ended", result, room=user_id)
+-    await _auto_advance_queue(user_id)
+-
+-
+ async def _auto_advance_queue(user_id: str):
+     """Complete the active queue user and advance the next one."""
++    from routers.queue import _try_advance_next, get_queue_snapshot
+     from models.database import NeonHTTPClient
+     db = NeonHTTPClient()
+     try:
+@@ -476,49 +463,10 @@ async def _auto_advance_queue(user_id: str):
+             "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
+             [user_id],
+         )
+-        # Advance next waiting user
+-        next_rows = await db.execute(
+-            """
+-            UPDATE queue SET status = 'active'
+-            WHERE id = (
+-                SELECT id FROM queue WHERE status = 'waiting'
+-                ORDER BY position ASC LIMIT 1
+-            )
+-            RETURNING user_id
+-            """,
+-        )
+-        # Build and emit queue snapshot
+-        active_rows = await db.execute(
+-            """
+-            SELECT q.user_id, u.name FROM queue q
+-            JOIN users u ON u.id = q.user_id
+-            WHERE q.status = 'active' LIMIT 1
+-            """,
+-        )
+-        active_user = None
+-        if active_rows:
+-            active_user = {"id": str(active_rows[0]["user_id"]), "name": active_rows[0]["name"]}
+-
+-        queue_rows = await db.execute(
+-            """
+-            SELECT q.id, q.user_id, u.name, q.position, q.status
+-            FROM queue q JOIN users u ON u.id = q.user_id
+-            WHERE q.status IN ('waiting', 'active')
+-            ORDER BY q.position
+-            """,
+-        )
+-        queue_list = [
+-            {
+-                "id": str(r["id"]),
+-                "user_id": str(r["user_id"]),
+-                "name": r["name"],
+-                "position": r["position"],
+-                "status": r["status"],
+-            }
+-            for r in (queue_rows or [])
+-        ]
+-        await sio.emit("queue_updated", {"active_user": active_user, "queue": queue_list}, room="mirror")
+-        print(f"[queue] Advanced queue. Active: {active_user}")
++        await _try_advance_next(db)
++        snapshot = await get_queue_snapshot(db)
++        await sio.emit("queue_updated", snapshot, room="mirror")
++        print(f"[queue] Advanced queue. Active: {snapshot.get('active_user')}")
+     finally:
+         await db.close()
+ 
+diff --git a/backend/mcp_server/server.py b/backend/mcp_server/server.py
+index 1273432..48758f6 100644
+--- a/backend/mcp_server/server.py
++++ b/backend/mcp_server/server.py
+@@ -39,12 +39,18 @@ async def _get_pool() -> asyncpg.Pool:
+     """Return (or create) the asyncpg connection pool."""
+     global _pool
+     if _pool is None:
+-        _pool = await asyncpg.create_pool(
+-            DATABASE_URL,
+-            min_size=1,
+-            max_size=5,
+-            ssl="require",
+-        )
++        log.info("Creating asyncpg connection pool...")
++        try:
++            _pool = await asyncpg.create_pool(
++                DATABASE_URL,
++                min_size=1,
++                max_size=5,
++                ssl="require",
++            )
++            log.info("Database pool created successfully")
++        except Exception as e:
++            log.error("Failed to create database pool: %s", e)
++            raise
+     return _pool
+ 
+ 
+@@ -55,128 +61,156 @@ async def _get_pool() -> asyncpg.Pool:
+ 
+ async def _get_past_sessions(pool, phone: str, limit: int = 10) -> dict:
+     """Look up a user by phone and return their past sessions with outfits."""
+-    async with pool.acquire() as conn:
+-        # Find user by phone
+-        user = await conn.fetchrow(
+-            "SELECT id, phone FROM users WHERE phone = $1", phone
+-        )
+-        if user is None:
+-            return {"ok": False, "error": f"User with phone {phone} not found"}
+-
+-        user_id = user["id"]
+-
+-        # Fetch sessions ordered by most recent
+-        sessions = await conn.fetch(
+-            "SELECT id, started_at, ended_at, status "
+-            "FROM sessions WHERE user_id = $1 "
+-            "ORDER BY started_at DESC LIMIT $2",
+-            user_id,
+-            limit,
+-        )
+-
+-        if not sessions:
+-            return {"ok": True, "sessions": []}
+-
+-        result_sessions = []
+-        for session in sessions:
+-            session_id = session["id"]
+-
+-            # Fetch outfits for this session (liked + summary only)
+-            outfits = await conn.fetch(
+-                "SELECT id, reaction, outfit_data, clothing_items "
+-                "FROM session_outfits WHERE session_id = $1 "
+-                "AND reaction IN ('liked', 'summary')",
+-                session_id,
++    try:
++        async with pool.acquire() as conn:
++            # Find user by phone
++            log.info("Looking up user by phone=%s", phone)
++            user = await conn.fetchrow(
++                "SELECT id, phone FROM users WHERE phone = $1", phone
++            )
++            if user is None:
++                log.warning("User not found for phone=%s", phone)
++                return {"ok": False, "error": f"User with phone {phone} not found"}
++
++            user_id = user["id"]
++            log.info("Found user_id=%s for phone=%s", user_id, phone)
++
++            # Fetch sessions ordered by most recent
++            sessions = await conn.fetch(
++                "SELECT id, started_at, ended_at, status "
++                "FROM sessions WHERE user_id = $1 "
++                "ORDER BY started_at DESC LIMIT $2",
++                user_id,
++                limit,
+             )
+ 
+-            liked_items = []
+-            summary = None
+-
+-            for o in outfits:
+-                if o["reaction"] == "liked":
+-                    # Resolve clothing_items UUIDs to full product details
+-                    item_ids = o["clothing_items"] or []
+-                    if item_ids:
+-                        rows = await conn.fetch(
+-                            "SELECT id, name, brand, price, image_url, buy_url, category "
+-                            "FROM clothing_items WHERE id = ANY($1::uuid[])",
+-                            item_ids,
+-                        )
+-                        for r in rows:
+-                            liked_items.append(
+-                                {
+-                                    "id": str(r["id"]),
+-                                    "name": r["name"],
+-                                    "brand": r["brand"],
+-                                    "price": float(r["price"]) if r["price"] is not None else None,
+-                                    "image_url": r["image_url"],
+-                                    "buy_url": r["buy_url"],
+-                                    "category": r["category"],
+-                                }
++            log.info("Found %d sessions for user_id=%s", len(sessions), user_id)
++
++            if not sessions:
++                return {"ok": True, "sessions": []}
++
++            result_sessions = []
++            for session in sessions:
++                session_id = session["id"]
++
++                # Fetch outfits for this session (liked + summary only)
++                outfits = await conn.fetch(
++                    "SELECT id, reaction, outfit_data, clothing_items "
++                    "FROM session_outfits WHERE session_id = $1 "
++                    "AND reaction IN ('liked', 'summary')",
++                    session_id,
++                )
++
++                liked_items = []
++                summary = None
++
++                for o in outfits:
++                    if o["reaction"] == "liked":
++                        # Resolve clothing_items UUIDs to full product details
++                        item_ids = o["clothing_items"] or []
++                        if item_ids:
++                            rows = await conn.fetch(
++                                "SELECT id, name, brand, price, image_url, buy_url, category "
++                                "FROM clothing_items WHERE id = ANY($1::uuid[])",
++                                item_ids,
+                             )
++                            for r in rows:
++                                liked_items.append(
++                                    {
++                                        "id": str(r["id"]),
++                                        "name": r["name"],
++                                        "brand": r["brand"],
++                                        "price": float(r["price"]) if r["price"] is not None else None,
++                                        "image_url": r["image_url"],
++                                        "buy_url": r["buy_url"],
++                                        "category": r["category"],
++                                    }
++                                )
++
++                    elif o["reaction"] == "summary":
++                        data = (
++                            o["outfit_data"]
++                            if isinstance(o["outfit_data"], dict)
++                            else json.loads(o["outfit_data"])
++                        )
++                        summary = data.get("summary")
++
++                log.info(
++                    "Session %s: status=%s, %d liked items, summary=%s",
++                    session_id, session["status"], len(liked_items),
++                    "yes" if summary else "no",
++                )
++
++                result_sessions.append(
++                    {
++                        "session_id": str(session_id),
++                        "started_at": str(session["started_at"]),
++                        "ended_at": str(session["ended_at"]) if session["ended_at"] else None,
++                        "status": session["status"],
++                        "liked_items": liked_items,
++                        "summary": summary,
++                    }
++                )
++
++            return {"ok": True, "sessions": result_sessions}
++    except Exception as e:
++        log.error("_get_past_sessions failed: %s", e, exc_info=True)
++        return {"ok": False, "error": str(e)}
+ 
+-                elif o["reaction"] == "summary":
+-                    data = (
+-                        o["outfit_data"]
+-                        if isinstance(o["outfit_data"], dict)
+-                        else json.loads(o["outfit_data"])
+-                    )
+-                    summary = data.get("summary")
+-
+-            result_sessions.append(
+-                {
+-                    "session_id": str(session_id),
+-                    "started_at": str(session["started_at"]),
+-                    "ended_at": str(session["ended_at"]) if session["ended_at"] else None,
+-                    "status": session["status"],
+-                    "liked_items": liked_items,
+-                    "summary": summary,
+-                }
++
++async def _save_session(pool, phone: str, session_id: str, summary: str) -> dict:
++    """Save a summary for a session, verifying ownership."""
++    try:
++        async with pool.acquire() as conn:
++            # Find user by phone
++            log.info("save_session: looking up user by phone=%s", phone)
++            user = await conn.fetchrow(
++                "SELECT id, phone FROM users WHERE phone = $1", phone
+             )
++            if user is None:
++                log.warning("save_session: user not found for phone=%s", phone)
++                return {"ok": False, "error": f"User with phone {phone} not found"}
+ 
+-        return {"ok": True, "sessions": result_sessions}
++            user_id = user["id"]
+ 
++            # Parse and verify session exists
++            try:
++                sid = uuid.UUID(session_id)
++            except ValueError:
++                log.warning("save_session: invalid session_id=%s", session_id)
++                return {"ok": False, "error": f"Invalid session_id: {session_id}"}
+ 
+-async def _save_session(pool, phone: str, session_id: str, summary: str) -> dict:
+-    """Save a summary for a session, verifying ownership."""
+-    async with pool.acquire() as conn:
+-        # Find user by phone
+-        user = await conn.fetchrow(
+-            "SELECT id, phone FROM users WHERE phone = $1", phone
+-        )
+-        if user is None:
+-            return {"ok": False, "error": f"User with phone {phone} not found"}
++            session = await conn.fetchrow(
++                "SELECT id, user_id FROM sessions WHERE id = $1", sid
++            )
++            if session is None:
++                log.warning("save_session: session %s not found", session_id)
++                return {"ok": False, "error": f"Session {session_id} not found"}
++
++            if session["user_id"] != user_id:
++                log.warning(
++                    "save_session: ownership mismatch — session %s belongs to %s, not %s",
++                    session_id, session["user_id"], user_id,
++                )
++                return {
++                    "ok": False,
++                    "error": f"Session {session_id} does not belong to this user",
++                }
+ 
+-        user_id = user["id"]
++            # Insert summary outfit
++            outfit_data = json.dumps({"summary": summary})
++            await conn.execute(
++                "INSERT INTO session_outfits (session_id, outfit_data, reaction) "
++                "VALUES ($1, $2::jsonb, 'summary')",
++                sid,
++                outfit_data,
++            )
+ 
+-        # Parse and verify session exists
+-        try:
+-            sid = uuid.UUID(session_id)
+-        except ValueError:
+-            return {"ok": False, "error": f"Invalid session_id: {session_id}"}
+-
+-        session = await conn.fetchrow(
+-            "SELECT id, user_id FROM sessions WHERE id = $1", sid
+-        )
+-        if session is None:
+-            return {"ok": False, "error": f"Session {session_id} not found"}
+-
+-        if session["user_id"] != user_id:
+-            return {
+-                "ok": False,
+-                "error": f"Session {session_id} does not belong to this user",
+-            }
+-
+-        # Insert summary outfit
+-        outfit_data = json.dumps({"summary": summary})
+-        await conn.execute(
+-            "INSERT INTO session_outfits (session_id, outfit_data, reaction) "
+-            "VALUES ($1, $2::jsonb, 'summary')",
+-            sid,
+-            outfit_data,
+-        )
+-
+-        return {"ok": True, "session_id": session_id}
++            log.info("save_session: saved summary for session %s", session_id)
++            return {"ok": True, "session_id": session_id}
++    except Exception as e:
++        log.error("_save_session failed: %s", e, exc_info=True)
++        return {"ok": False, "error": str(e)}
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -246,5 +280,15 @@ def _create_mcp_server():
+ # ---------------------------------------------------------------------------
+ 
+ if __name__ == "__main__":
++    import sys
++
++    # Remove cwd from sys.path to prevent the local backend/mcp/ directory
++    # from shadowing the PyPI `mcp` package that fastmcp depends on.
++    cwd = os.getcwd()
++    sys.path = [p for p in sys.path if os.path.abspath(p) != os.path.abspath(cwd)]
++
++    log.info("Starting Mirrorless Poke MCP server...")
++    log.info("DATABASE_URL: %s", DATABASE_URL[:30] + "..." if DATABASE_URL else "(not set)")
+     mcp = _create_mcp_server()
++    log.info("MCP server created with tools: get_past_sessions, save_session")
+     mcp.run()
+diff --git a/backend/routers/admin.py b/backend/routers/admin.py
+index fd4830e..8f5c85a 100644
+--- a/backend/routers/admin.py
++++ b/backend/routers/admin.py
+@@ -196,8 +196,11 @@ async def get_booth_stats():
+ 
+ @router.post("/force-end")
+ async def force_end_session(request: Request):
+-    """Force-end the current active session."""
++    """Force-end the current active session with full server-side cleanup."""
++    from routers.queue import _try_advance_next, get_queue_snapshot
++
+     sio = request.app.state.sio
++    mira = request.app.state.mira
+     db = NeonHTTPClient()
+     try:
+         active_rows = await db.execute(
+@@ -210,9 +213,72 @@ async def force_end_session(request: Request):
+             return {"status": "no_active_session"}
+ 
+         user_id = str(active_rows[0]["user_id"])
++
++        # End Mira orchestrator session (may fail if no session running — that's OK)
++        recap_data = None
++        try:
++            recap_data = await mira.end_session(user_id)
++        except Exception as e:
++            print(f"[admin] mira.end_session failed for {user_id}: {e}")
++
++        # Mark queue entry as completed
++        await db.execute(
++            "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
++            [user_id],
++        )
++
++        # Advance queue to next waiting user
++        await _try_advance_next(db)
++
++        # Emit force-end to mirror + user for UI cleanup
+         await sio.emit("session_force_end", {"user_id": user_id}, room="mirror")
+         await sio.emit("session_force_end", {"user_id": user_id}, room=user_id)
+ 
++        # Emit session_ended with recap data so the phone transitions
++        await sio.emit("session_ended", recap_data or {}, room=user_id)
++
++        # Broadcast updated queue snapshot to mirror
++        snapshot = await get_queue_snapshot(db)
++        await sio.emit("queue_updated", snapshot, room="mirror")
++
+         return {"status": "force_ended", "user_id": user_id}
+     finally:
+         await db.close()
++
++
++@router.post("/clear-queue")
++async def clear_queue(request: Request):
++    """Clear all active and waiting queue entries. Emergency reset."""
++    from routers.queue import get_queue_snapshot
++
++    sio = request.app.state.sio
++    mira = request.app.state.mira
++    db = NeonHTTPClient()
++    try:
++        # Find all active users to end their Mira sessions
++        active_rows = await db.execute(
++            "SELECT user_id FROM queue WHERE status = 'active'",
++        )
++        for row in (active_rows or []):
++            uid = str(row["user_id"])
++            try:
++                await mira.end_session(uid)
++            except Exception as e:
++                print(f"[admin] clear-queue: mira.end_session failed for {uid}: {e}")
++            # Notify the user's phone
++            await sio.emit("session_force_end", {"user_id": uid}, room=uid)
++            await sio.emit("session_ended", {}, room=uid)
++
++        # Mark all waiting/active entries as completed
++        await db.execute(
++            "UPDATE queue SET status = 'completed' WHERE status IN ('waiting', 'active')",
++        )
++
++        # Broadcast empty queue snapshot to mirror
++        snapshot = await get_queue_snapshot(db)
++        await sio.emit("queue_updated", snapshot, room="mirror")
++        await sio.emit("session_force_end", {}, room="mirror")
++
++        return {"status": "cleared"}
++    finally:
++        await db.close()
+diff --git a/backend/routers/queue.py b/backend/routers/queue.py
+index 33c862a..8c9d17d 100644
+--- a/backend/routers/queue.py
++++ b/backend/routers/queue.py
+@@ -100,7 +100,7 @@ async def join_queue(body: QueueJoinRequest, request: Request):
+ 
+         # Calculate next position
+         max_pos = await db.fetchval(
+-            "SELECT COALESCE(MAX(position), 0) FROM queue"
++            "SELECT COALESCE(MAX(position), 0) FROM queue WHERE status IN ('waiting', 'active')"
+         )
+         next_position = int(max_pos) + 1
+ 
+diff --git a/frontend/src/app/admin/page.tsx b/frontend/src/app/admin/page.tsx
+index 9553597..45083c8 100644
+--- a/frontend/src/app/admin/page.tsx
++++ b/frontend/src/app/admin/page.tsx
+@@ -9,6 +9,7 @@ import {
+   updateSTTConfig,
+   skipQueueUser,
+   forceEndSession,
++  clearQueue,
+   startMirrorSession,
+   advanceQueue,
+   type AdminQueueEntry,
+@@ -77,6 +78,12 @@ export default function AdminPage() {
+     refresh();
+   }, [refresh]);
+ 
++  const handleClearQueue = useCallback(async () => {
++    if (!confirm("Clear entire queue? This will end all active sessions.")) return;
++    await clearQueue();
++    refresh();
++  }, [refresh]);
++
+   if (loading) {
+     return (
+       <main className="min-h-screen bg-zinc-50 flex items-center justify-center">
+@@ -93,12 +100,20 @@ export default function AdminPage() {
+       <div className="max-w-4xl mx-auto">
+         <div className="flex items-center justify-between mb-8">
+           <h1 className="text-2xl font-bold">Mirrorless Admin</h1>
+-          <button
+-            onClick={refresh}
+-            className="text-sm text-zinc-500 hover:text-zinc-900 underline"
+-          >
+-            Refresh
+-          </button>
++          <div className="flex items-center gap-3">
++            <button
++              onClick={handleClearQueue}
++              className="text-sm bg-red-100 text-red-700 px-3 py-1.5 rounded-lg font-medium hover:bg-red-200"
++            >
++              Clear Queue
++            </button>
++            <button
++              onClick={refresh}
++              className="text-sm text-zinc-500 hover:text-zinc-900 underline"
++            >
++              Refresh
++            </button>
++          </div>
+         </div>
+ 
+         {/* Booth Stats */}
+diff --git a/frontend/src/app/phone/page.tsx b/frontend/src/app/phone/page.tsx
+index 454796a..ba90cc0 100644
+--- a/frontend/src/app/phone/page.tsx
++++ b/frontend/src/app/phone/page.tsx
+@@ -453,14 +453,30 @@ function RecapView({
+         )}
+       </div>
+ 
+-      <a
+-        href="#"
+-        target="_blank"
+-        rel="noopener noreferrer"
+-        className="text-blue-600 underline text-sm"
+-      >
+-        View on Poke
+-      </a>
++      {process.env.NEXT_PUBLIC_POKE_RECIPE_URL && (
++        <a
++          href={process.env.NEXT_PUBLIC_POKE_RECIPE_URL}
++          target="_blank"
++          rel="noopener noreferrer"
++          style={{
++            display: "block",
++            width: "100%",
++            maxWidth: "24rem",
++            padding: "14px 24px",
++            fontSize: 16,
++            fontWeight: 600,
++            color: "#fff",
++            background: "#5B4FE9",
++            border: "none",
++            borderRadius: 12,
++            textAlign: "center",
++            textDecoration: "none",
++            boxSizing: "border-box",
++          }}
++        >
++          Continue on Poke
++        </a>
++      )}
+ 
+       <button
+         onClick={onDone}
+diff --git a/frontend/src/components/mirror/SessionRecap.tsx b/frontend/src/components/mirror/SessionRecap.tsx
+index d41b766..7978b3f 100644
+--- a/frontend/src/components/mirror/SessionRecap.tsx
++++ b/frontend/src/components/mirror/SessionRecap.tsx
+@@ -1,6 +1,9 @@
+ "use client";
+ 
+ import { useEffect, useState } from "react";
++import { QRCodeSVG } from "qrcode.react";
++
++const POKE_RECIPE_URL = process.env.NEXT_PUBLIC_POKE_RECIPE_URL;
+ 
+ interface SessionRecapProps {
+   summary?: string;
+@@ -206,16 +209,58 @@ export default function SessionRecap({
+         </div>
+       )}
+ 
+-      {/* Footer text */}
+-      <p
+-        style={{
+-          color: "rgba(255, 255, 255, 0.4)",
+-          fontSize: "0.9rem",
+-          marginBottom: 24,
+-        }}
+-      >
+-        Your picks have been saved. Check your phone for links.
+-      </p>
++      {/* Poke QR code */}
++      {POKE_RECIPE_URL && (
++        <div style={{ textAlign: "center", marginBottom: 24 }}>
++          <p
++            style={{
++              color: "rgba(255, 255, 255, 0.5)",
++              fontSize: "0.85rem",
++              textTransform: "uppercase",
++              letterSpacing: "0.1em",
++              marginBottom: 12,
++            }}
++          >
++            Continue on Poke
++          </p>
++          <div
++            style={{
++              background: "#fff",
++              borderRadius: 12,
++              padding: 12,
++              display: "inline-block",
++            }}
++          >
++            <QRCodeSVG
++              value={POKE_RECIPE_URL}
++              size={120}
++              level="M"
++              includeMargin={false}
++            />
++          </div>
++          <p
++            style={{
++              color: "rgba(255, 255, 255, 0.35)",
++              fontSize: "0.75rem",
++              marginTop: 8,
++            }}
++          >
++            Scan to keep shopping with your AI stylist
++          </p>
++        </div>
++      )}
++
++      {!POKE_RECIPE_URL && (
++        <p
++          style={{
++            color: "rgba(255, 255, 255, 0.4)",
++            fontSize: "0.9rem",
++            marginBottom: 24,
++          }}
++        >
++          Your picks have been saved. Check your phone for links.
++        </p>
++      )}
+ 
+       {/* Progress bar */}
+       <div
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index bf6ac23..b2d740a 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -216,6 +216,12 @@ export function forceEndSession() {
+   });
+ }
+ 
++export function clearQueue() {
++  return request<{ status: string }>("/admin/clear-queue", {
++    method: "POST",
++  });
++}
++
+ // --- STT Config APIs ---
+ 
+ export interface STTConfig {
+- Current branch: main
+
+## Your task
+
+Based on the above changes:
+
+1. Create a new branch if on main
+2. Create a single commit with an appropriate message
+3. Push the branch to origin
+4. Create a pull request using `gh pr create`
+5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
+
+---
+
+okay can we go back to main pls
+
+---
+
+Can you add, like, the Deepgram sensitivity, some sort of sensitivity controller for the Deepgram stuff on the admin dashboard? Can you also show the status of all email scraping jobs on the admin dashboard?
+
+---
+
+[Request interrupted by user for tool use]
