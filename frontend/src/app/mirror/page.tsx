@@ -4,15 +4,10 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
-import { useHeyGenAvatar } from "@/hooks/useHeyGenAvatar";
-import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
-import AvatarPiP from "@/components/mirror/AvatarPiP";
-import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import ProductCarousel, {
   type ProductCard,
 } from "@/components/mirror/ProductCarousel";
-import { SentenceBuffer } from "@/lib/sentence-buffer";
 import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 
@@ -26,56 +21,39 @@ export default function MirrorPageWrapper() {
 
 function MirrorPage() {
   const searchParams = useSearchParams();
-  const userId = searchParams.get("user_id");
-  const mirrorId = searchParams.get("mirror_id") ?? process.env.NEXT_PUBLIC_MIRROR_ID ?? "MIRROR-A1";
+  const mirrorId =
+    searchParams.get("mirror_id") ??
+    process.env.NEXT_PUBLIC_MIRROR_ID ??
+    "MIRROR-A1";
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
 
-  // Gesture state (existing)
+  // Gesture state
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
   const gestureKeyRef = useRef(0);
   const [gestureKey, setGestureKey] = useState(0);
 
-  // Session state
-  const [sessionActive, setSessionActive] = useState(false);
-  const [isStarting, setIsStarting] = useState(false);
+  // Product carousel
   const [products, setProducts] = useState<ProductCard[]>([]);
 
   // Mirror text overlay from Poke (via send_to_mirror)
   const [mirrorText, setMirrorText] = useState<string | null>(null);
-  const mirrorTextTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Hooks for avatar + voice
-  const avatar = useHeyGenAvatar();
-  const stt = useDeepgramSTT();
-
-  // Pending transcripts queue (held while Mira is speaking)
-  const pendingTranscriptsRef = useRef<string[]>([]);
-
-  // Sentence buffer: accumulates mira_speech chunks → calls avatar.speak per sentence
-  const sentenceBufferRef = useRef<SentenceBuffer | null>(null);
-  useEffect(() => {
-    sentenceBufferRef.current = new SentenceBuffer((sentence) => {
-      avatar.speak(sentence);
-    });
-  }, [avatar.speak]);
+  const mirrorTextTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
 
   // --------------- Socket connection ---------------
 
   useEffect(() => {
     socket.connect();
 
-    // Join mirror room (for Poke-driven events via MCP bridge)
-    socket.emit("join_room", {
-      mirror_id: mirrorId,
-      ...(userId ? { user_id: userId } : {}),
-    });
+    socket.emit("join_room", { mirror_id: mirrorId });
 
     return () => {
       socket.disconnect();
     };
-  }, [userId, mirrorId]);
+  }, [mirrorId]);
 
-  // --------------- Snapshot handler (existing) ---------------
+  // --------------- Snapshot handler ---------------
 
   useEffect(() => {
     const handleSnapshotRequest = () => {
@@ -95,7 +73,7 @@ function MirrorPage() {
       socket.emit("mirror_event", {
         type: "snapshot",
         image_base64: base64,
-        user_id: userId,
+        mirror_id: mirrorId,
       });
     };
 
@@ -103,25 +81,7 @@ function MirrorPage() {
     return () => {
       socket.off("request_snapshot", handleSnapshotRequest);
     };
-  }, [videoRef, userId]);
-
-  // --------------- Mira speech streaming ---------------
-
-  useEffect(() => {
-    const handleMiraSpeech = (data: { text: string; is_chunk: boolean }) => {
-      if (data.is_chunk) {
-        sentenceBufferRef.current?.feed(data.text);
-      } else {
-        // End of stream — flush any remaining buffered text
-        sentenceBufferRef.current?.flush();
-      }
-    };
-
-    socket.on("mira_speech", handleMiraSpeech);
-    return () => {
-      socket.off("mira_speech", handleMiraSpeech);
-    };
-  }, []);
+  }, [videoRef, mirrorId]);
 
   // --------------- Tool results (product carousel) ---------------
 
@@ -148,15 +108,10 @@ function MirrorPage() {
       if (mirrorTextTimeoutRef.current) {
         clearTimeout(mirrorTextTimeoutRef.current);
       }
-      mirrorTextTimeoutRef.current = setTimeout(() => setMirrorText(null), 15000);
-
-      // Speak via TTS (uses the existing avatar or browser speech synthesis)
-      if (avatar.isReady) {
-        avatar.speak(data.text);
-      } else if ("speechSynthesis" in window) {
-        const utterance = new SpeechSynthesisUtterance(data.text);
-        speechSynthesis.speak(utterance);
-      }
+      mirrorTextTimeoutRef.current = setTimeout(
+        () => setMirrorText(null),
+        15000
+      );
     };
 
     socket.on("mirror_text", handleMirrorText);
@@ -166,131 +121,31 @@ function MirrorPage() {
         clearTimeout(mirrorTextTimeoutRef.current);
       }
     };
-  }, [avatar.isReady, avatar.speak]);
+  }, []);
 
-  // --------------- Session lifecycle ---------------
-
-  useEffect(() => {
-    const handleSessionStarted = () => {
-      setSessionActive(true);
-      setIsStarting(false);
-      avatar.startAvatar();
-      stt.startListening();
-    };
-
-    const handleSessionEnded = () => {
-      setSessionActive(false);
-      setIsStarting(false);
-      setProducts([]);
-      avatar.clearQueue();
-      avatar.stopAvatar();
-      stt.stopListening();
-    };
-
-    const handleSessionError = () => {
-      setIsStarting(false);
-    };
-
-    socket.on("session_active", handleSessionStarted);
-    socket.on("session_ended", handleSessionEnded);
-    socket.on("session_error", handleSessionError);
-
-    return () => {
-      socket.off("session_active", handleSessionStarted);
-      socket.off("session_ended", handleSessionEnded);
-      socket.off("session_error", handleSessionError);
-    };
-  }, [avatar.startAvatar, avatar.stopAvatar, avatar.clearQueue, stt.startListening, stt.stopListening]);
-
-  // Fallback: auto-detect session start from first mira_speech if session_active isn't emitted
-  const sessionStartedViaFallback = useRef(false);
-  useEffect(() => {
-    const handleFirstSpeech = () => {
-      if (!sessionActive && !sessionStartedViaFallback.current) {
-        sessionStartedViaFallback.current = true;
-        setSessionActive(true);
-        setIsStarting(false);
-        avatar.startAvatar();
-        stt.startListening();
-      }
-    };
-
-    socket.on("mira_speech", handleFirstSpeech);
-    return () => {
-      socket.off("mira_speech", handleFirstSpeech);
-      sessionStartedViaFallback.current = false;
-    };
-  }, [sessionActive, avatar.startAvatar, stt.startListening]);
-
-  // --------------- Voice transcript → backend ---------------
-
-  // When a final transcript arrives from Deepgram, either queue or send
-  const lastTranscriptRef = useRef("");
-  useEffect(() => {
-    if (!stt.transcript || stt.transcript === lastTranscriptRef.current) return;
-    lastTranscriptRef.current = stt.transcript;
-
-    if (avatar.isSpeaking) {
-      // Queue while Mira is speaking
-      pendingTranscriptsRef.current.push(stt.transcript);
-    } else {
-      // Send immediately
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: { type: "voice", transcript: stt.transcript },
-      });
-    }
-  }, [stt.transcript, avatar.isSpeaking, userId]);
-
-  // Flush pending transcripts when avatar stops speaking
-  useEffect(() => {
-    if (!avatar.isSpeaking && pendingTranscriptsRef.current.length > 0) {
-      const combined = pendingTranscriptsRef.current.join(" ");
-      pendingTranscriptsRef.current = [];
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: { type: "voice", transcript: combined },
-      });
-    }
-  }, [avatar.isSpeaking, userId]);
-
-  // --------------- Start session from mirror ---------------
-
-  const startSession = useCallback(() => {
-    if (!userId || isStarting || sessionActive) return;
-    setIsStarting(true);
-    socket.emit("start_session", { user_id: userId });
-  }, [userId, isStarting, sessionActive]);
-
-  // --------------- Gesture handling (dual routing) ---------------
+  // --------------- Gesture handling (local carousel only) ---------------
 
   const handleGesture = useCallback(
     (gesture: DetectedGesture) => {
-      console.log("[Mirror] Gesture detected:", gesture.type, gesture.confidence);
+      console.log(
+        "[Mirror] Gesture detected:",
+        gesture.type,
+        gesture.confidence
+      );
 
       setLastGesture(gesture.type);
       gestureKeyRef.current += 1;
       setGestureKey(gestureKeyRef.current);
 
-      // Frontend: animate carousel card immediately
+      // Animate carousel card locally
       if (products.length > 0) {
         const carouselGesture = (
           window as unknown as Record<string, unknown>
         ).__carouselGesture as ((g: GestureType) => void) | undefined;
         carouselGesture?.(gesture.type);
       }
-
-      // Backend: emit gesture event (async, Mira reacts verbally)
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: {
-          type: "gesture",
-          gesture: gesture.type,
-          confidence: gesture.confidence,
-        },
-      });
     },
-    [userId, products.length],
+    [products.length]
   );
 
   const { isLoading: isModelLoading, error: modelError } =
@@ -327,68 +182,6 @@ function MirrorPage() {
         }}
       />
 
-      {/* Start Session button (pre-session) */}
-      {!sessionActive && (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 35,
-            pointerEvents: "none",
-          }}
-        >
-          {userId ? (
-            <button
-              onClick={startSession}
-              disabled={isStarting}
-              style={{
-                pointerEvents: "auto",
-                padding: "16px 40px",
-                fontSize: "1.25rem",
-                fontWeight: 600,
-                color: "#fff",
-                background: isStarting
-                  ? "rgba(255, 255, 255, 0.1)"
-                  : "rgba(255, 255, 255, 0.2)",
-                border: "1px solid rgba(255, 255, 255, 0.3)",
-                borderRadius: 12,
-                cursor: isStarting ? "default" : "pointer",
-                backdropFilter: "blur(8px)",
-                transition: "background 0.2s",
-              }}
-            >
-              {isStarting ? "Starting\u2026" : "Start Session"}
-            </button>
-          ) : (
-            <div
-              style={{
-                pointerEvents: "auto",
-                padding: "16px 24px",
-                color: "rgba(255, 255, 255, 0.7)",
-                background: "rgba(0, 0, 0, 0.5)",
-                borderRadius: 12,
-                fontSize: "1rem",
-                textAlign: "center",
-                backdropFilter: "blur(8px)",
-              }}
-            >
-              No user — scan QR or add <code>?user_id=</code> to URL
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* HeyGen Avatar PiP (top-right) */}
-      {sessionActive && (
-        <AvatarPiP videoRef={avatar.videoRef} isReady={avatar.isReady} />
-      )}
-
       {/* Gesture visual feedback */}
       <GestureIndicator key={gestureKey} gesture={lastGesture} />
 
@@ -399,14 +192,6 @@ function MirrorPage() {
           console.log("[Mirror] Carousel gesture:", gesture, item.title);
         }}
       />
-
-      {/* Voice indicator (bottom-left) */}
-      {sessionActive && (
-        <VoiceIndicator
-          isListening={stt.isListening}
-          interimTranscript={stt.interimTranscript}
-        />
-      )}
 
       {/* Status indicators */}
       {(cameraError || modelError) && (

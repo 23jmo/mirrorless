@@ -1,5 +1,3 @@
-from uuid import UUID
-
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 import socketio
@@ -64,31 +62,6 @@ async def join_room(sid, data):
 @sio.event
 async def disconnect(sid):
     print(f"[socket] Client disconnected: {sid}")
-
-
-def _is_valid_uuid(value: str) -> bool:
-    try:
-        UUID(value)
-        return True
-    except (ValueError, AttributeError):
-        return False
-
-
-@sio.event
-async def start_session(sid, data):
-    """Activate a Mira session for a user on the mirror."""
-    user_id = data.get("user_id")
-    if not user_id:
-        return
-
-    if not _is_valid_uuid(user_id):
-        print(f"[socket] Invalid UUID from {sid}: {user_id}")
-        await sio.emit("session_error", {"error": "Invalid user ID"}, to=sid)
-        return
-
-    print(f"[socket] Starting session for user {user_id}")
-    await sio.emit("session_active", {"user_id": user_id}, room=user_id)
-    await sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
 
 
 # Wrap FastAPI with Socket.io — no outer CORS wrapper needed

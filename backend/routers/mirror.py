@@ -4,12 +4,17 @@ The MCP server calls these endpoints to push data to physical mirror displays.
 Each mirror joins a Socket.io room named "mirror:<mirror_id>" at startup.
 """
 
+import os
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from models.database import NeonHTTPClient
+
+POKE_WEBHOOK_URL = "https://poke.com/api/v1/inbound-sms/webhook"
+POKE_API_KEY = os.getenv("POKE_API_KEY", "")
 
 router = APIRouter(prefix="/api/mirror", tags=["mirror"])
 
@@ -34,6 +39,11 @@ class PresentItemsRequest(BaseModel):
 
 
 class MirrorTextRequest(BaseModel):
+    mirror_id: str
+    text: str = Field(..., min_length=1)
+
+
+class ChatRequest(BaseModel):
     mirror_id: str
     text: str = Field(..., min_length=1)
 
@@ -79,6 +89,27 @@ async def mirror_text(req: MirrorTextRequest, request: Request):
     room = f"mirror:{req.mirror_id}"
 
     await sio.emit("mirror_text", {"text": req.text}, room=room)
+
+    return {"ok": True, "mirror_id": req.mirror_id}
+
+
+@router.post("/chat")
+async def chat(req: ChatRequest, request: Request):
+    """Relay a user message to Poke via its inbound webhook, then confirm to mirror."""
+    sio = request.app.state.sio
+    room = f"mirror:{req.mirror_id}"
+
+    # Forward to Poke
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            POKE_WEBHOOK_URL,
+            json={"message": req.text},
+            headers={"Authorization": f"Bearer {POKE_API_KEY}"},
+        )
+        resp.raise_for_status()
+
+    # Confirm to mirror that the message was sent
+    await sio.emit("chat_sent", {"text": req.text}, room=room)
 
     return {"ok": True, "mirror_id": req.mirror_id}
 
