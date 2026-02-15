@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "e2b9efcf7cff",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/hooks/useLiveAvatar.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e2/b9efcf7cff/0/metadata.json",
+      "transcript": "/e2/b9efcf7cff/0/full.jsonl",
+      "context": "/e2/b9efcf7cff/0/context.md",
+      "content_hash": "/e2/b9efcf7cff/0/content_hash.txt",
+      "prompt": "/e2/b9efcf7cff/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 63,
+    "cache_creation_tokens": 156398,
+    "cache_read_tokens": 4175409,
+    "output_tokens": 4840,
+    "api_call_count": 55
+  }
+}

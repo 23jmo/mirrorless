@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "e2b9efcf7cff",
+  "session_id": "3e8331f8-8466-4907-ae1e-3d6dd8c1cd5e",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T04:52:29.569376Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/hooks/useLiveAvatar.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 63,
+    "cache_creation_tokens": 156398,
+    "cache_read_tokens": 4175409,
+    "output_tokens": 4840,
+    "api_call_count": 55
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T04:52:29.525466Z",
+    "agent_lines": 0,
+    "human_added": 13853,
+    "human_modified": 240,
+    "human_removed": 0,
+    "total_committed": 13862,
+    "agent_percentage": 0
+  }
+}
