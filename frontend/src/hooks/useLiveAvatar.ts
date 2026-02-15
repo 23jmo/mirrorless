@@ -144,7 +144,6 @@ export function useLiveAvatar(): UseLiveAvatarReturn {
     // SDK v0.0.10 bug: WebSocket handler drops AVATAR_SPEAK_TEXT commands
     // (logs "Unsupported command event type:" and does nothing).
     // Route text commands through LiveKit data channel instead.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sess = session as any;
     if (typeof sess.sendCommandEvent === "function") {
       const origSend = sess.sendCommandEvent.bind(sess);
