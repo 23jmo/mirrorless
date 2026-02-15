@@ -98,9 +98,16 @@ export class StreamingTTS {
 
   /**
    * Set a callback that fires when the queue fully drains (all sentences done).
+   * If the queue already drained before this is called, fires immediately.
    */
   onAllDone(callback: () => void): void {
-    this.onQueueDrain = callback;
+    if (this.queue.length === 0 && !this.queueProcessing) {
+      // Queue already drained — fire immediately
+      this.speaking = false;
+      callback();
+    } else {
+      this.onQueueDrain = callback;
+    }
   }
 
   private async processQueue(): Promise<void> {
