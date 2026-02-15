@@ -1,0 +1,113 @@
+Implement the following plan:
+
+# Plan: Fix first ~3 TTS messages getting cut off at session start
+
+## Context
+
+At the beginning of each mirror session, the first ~3 Mira TTS responses get cut off (audio barely plays before being interrupted). After that, TTS works fine. There is no explicit "3-attempt limit" — the behavior is caused by **rapid-fire messages at session start overwhelming the barge-in mechanism**.
+
+### Root Cause
+
+The `StreamingTTS.speak()` method uses a **generation counter** for barge-in: each call to `speak()` increments the counter, and any in-flight audio with a stale generation aborts immediately (`streaming-tts.ts:33-46`).
+
+At session start, 3 Claude responses fire in quick succession:
+
+1. **Greeting** (immediate) — `session_start` event → Claude responds → `mira.speak(greeting)` starts TTS fetch
+2. **Snapshot response** (~1-2s later) — `request_snapshot` is emitted right after greeting (`orchestrator.py:183`), mirror captures frame → backend sends to Claude → Claude responds → `mira.speak()` increments generation → **greeting audio aborts**
+3. **Silence nudge** (5s later) — silence timer fires → Claude responds → `mira.speak()` increments generation → **snapshot response audio aborts**
+
+After this initial burst, user input drives the pace (one response at a time), so the barge-in mechanism never triggers incorrectly.
+
+### Why there's no queue
+
+`useMiraVideoAvatar.speak()` (`useMiraVideoAvatar.ts:60-99`) calls `ttsRef.current.speak()` as fire-and-forget (`.catch()` only). It doesn't await the previous message finishing. So when a new message arrives, it immediately starts a new `speak()`, killing the previous one via the generation counter.
+
+## Fix: Delay the snapshot request at session start
+
+The snapshot request fires at `orchestrator.py:183` immediately after the greeting `handle_event` returns. This causes the snapshot response to overlap with the greeting TTS. By delaying the snapshot, the greeting plays uninterrupted, and the silence timer (5s) has time to fire naturally without also competing with a snapshot response.
+
+### Changes
+
+#### `backend/agent/orchestrator.py` — line ~182-184
+
+Replace the immediate snapshot emission:
+```python
+# Request a snapshot from the mirror so Mira can see the user
+if self.sio:
+    await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+```
+
+With a delayed background task:
+```python
+# Request a snapshot after a delay so it doesn't overlap with the greeting TTS
+async def _delayed_snapshot():
+    await asyncio.sleep(10)
+    if user_id in self.sessions and self.sessions[user_id].is_active:
+        await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+
+if self.sio:
+    asyncio.create_task(_delayed_snapshot())
+```
+
+The 10s delay gives the greeting ~8-10s to stream from Claude + play via TTS. The snapshot then arrives as a natural second interaction rather than a rapid-fire overlap.
+
+## Verification
+
+1. Start a session at the mirror
+2. First 3 messages (greeting, snapshot response, silence nudge) should all play fully in sequence — no cutoffs
+3. During playback, speak to the mirror (STT barge-in) — Mira should stop mid-sentence (verifies `stop()` still clears queue)
+4. Normal conversation should work as before
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+INFO:     127.0.0.1:62774 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[tts] TTS stream request: Yes, I can hear you perfectly! I'm Mira, your personal stylist. Now let me see what you're wearing s
+INFO:     127.0.0.1:62765 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[mira] USER SAID: Hello?
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #5)...
+[mira] AGENT SAID: [emotion:teasing] Johnathan! So I've been looking through your receipts, and you spent 85 dollars on COS back in November, but you also have 12 purchases from Mail averaging like 6 bucks each. I have SO many questions. I'm Mira, your personal stylist, and we need to talk about your shopping habits. Now let me see what you're actually wearing today so I can help you look less confused.
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Tool call: send_voice_to_client({"text": "Johnathan! So I've been looking through your receipts, and you spent 85 dollars on COS back in November, but you also have 12 purchases from Mail averaging like 6 bucks each. I have SO many ...)
+[mira-tools] send_voice_to_client: 369 chars, emotion=playful
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #6)...
+[tts] TTS stream request: Johnathan! So I've been looking through your receipts, and you spent 85 dollars on COS back in Novem
+INFO:     127.0.0.1:62774 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[tts] TTS stream request: Johnathan! So I've been looking through your receipts, and you spent 85 dollars on COS back in Novem
+INFO:     127.0.0.1:62765 - "POST /api/tts/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63090 - "GET /queue/status/a3e88c32-c832-4a44-99b8-0e3b278b6acf HTTP/1.1" 200 OK
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #7)...
+[mira] AGENT SAID: [emotion:teasing] Hey Johnathan! So, I've been looking at your purchase history, and you dropped 85 dollars on COS back in November, but you've also got 12 Mail purchases at like 6 bucks each. That's not a style, that's an identity crisis. I'm Mira, your personal stylist, and I'm here to fix this. Let me see what you're working with today.
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Tool call: send_voice_to_client({"text": "Hey Johnathan! So, I've been looking at your purchase history, and you dropped 85 dollars on COS back in November, but you've also got 12 Mail purchases at like 6 bucks each. That's not a st...)
+[mira-tools] send_voice_to_client: 323 chars, emotion=playful
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #8)...
+[tts] TTS stream request: Hey Johnathan! So, I've been looking at your purchase history, and you dropped 85 dollars on COS bac
+INFO:     127.0.0.1:62774 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[tts] TTS stream request: Hey Johnathan! So, I've been looking at your purchase history, and you dropped 85 dollars on COS bac
+INFO:     127.0.0.1:62765 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[mira] USER SAID: You're new.
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #9)...
+[mira] AGENT SAID: [emotion:neutral] Yep, I'm Mira, your new AI stylist. I live in this mirror now, and I've already done my homework on you. I know every single thing you've bought, what you paid for it, and honestly some of your choices are... interesting. But that's why I'm here. Now stop stalling and let me see your outfit so we can get to work.
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Tool call: send_voice_to_client({"text": "Yep, I'm Mira, your new AI stylist. I live in this mirror now, and I've already done my homework on you. I know every single thing you've bought, what you paid for it, and honestly some of y...)
+[mira-tools] send_voice_to_client: 314 chars, emotion=playful
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #10)...
+[tts] TTS stream request: Yep, I'm Mira, your new AI stylist. I live in this mirror now, and I've already done my homework on
+INFO:     127.0.0.1:62765 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[tts] TTS stream request: Yep, I'm Mira, your new AI stylist. I live in this mirror now, and I've already done my homework on
+INFO:     127.0.0.1:62774 - "POST /api/tts/stream HTTP/1.1" 200 OK
+
+tts still gets cutoff a lot in the beginning still, not exaclty sure why
+
+---
+
+[Request interrupted by user for tool use]
