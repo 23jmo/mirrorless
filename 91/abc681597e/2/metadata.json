@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "91abc681597e",
+  "session_id": "4b8be692-c610-48fc-aaf1-6baa55a3f1a1",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T17:31:13.608493Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/main.py",
+    "backend/mcp_server/server.py",
+    "backend/migrations/010_phone_constraints.sql",
+    "backend/requirements.txt",
+    "backend/routers/auth.py",
+    "backend/routers/sessions.py",
+    "backend/tests/test_auth.py",
+    "backend/tests/test_sessions.py",
+    "frontend/src/__tests__/phone-validation.test.ts",
+    "frontend/src/app/phone/page.tsx",
+    "frontend/src/components/phone/PhoneInput.tsx"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 346,
+    "cache_creation_tokens": 76679,
+    "cache_read_tokens": 2863942,
+    "output_tokens": 6753,
+    "api_call_count": 42
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T17:31:13.550974Z",
+    "agent_lines": 0,
+    "human_added": 0,
+    "human_modified": 37,
+    "human_removed": 531,
+    "total_committed": 37,
+    "agent_percentage": 0
+  }
+}

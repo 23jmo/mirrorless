@@ -1,0 +1,421 @@
+Implement the following plan:
+
+# Plan: Phone Number Authentication for Poke MCP Integration
+
+## Context
+
+Poke's MCP tools (`get_past_sessions` and `save_session`) use phone numbers as the primary user identifier to look up session history. Currently, Mirrorless has a critical gap:
+
+**The Problem:**
+1. Phone numbers are not collected during onboarding (no UI field exists)
+2. The `users.phone` column exists but is NULL for all users
+3. Sessions are created with `user_id` (UUID), but Poke needs `phone` to query them
+4. No bridge exists between `session_id` → `phone` for Poke's `save_session` calls
+
+**Why This Matters:**
+- Without phone collection, Poke cannot look up past sessions
+- Without a session-to-phone bridge, Poke cannot save session summaries
+- Users cannot get personalized recommendations based on their Mirrorless history
+
+---
+
+## Solution Approach
+
+### 1. Collect Phone Numbers During Onboarding
+
+Add phone input field to `SignInView` (alongside name field) with real-time E.164 validation.
+
+**Why SignInView?**
+- Collects phone early, ensuring it's available before session creation
+- Follows existing pattern (name collection happens in SignInView)
+- Phone becomes available immediately after OAuth for Poke's needs
+
+### 2. Create Session-Phone Bridge for Poke
+
+Add new endpoint `GET /api/sessions/{session_id}/info` that returns user's phone from session context.
+
+**Data Flow:**
+```
+Poke receives session_id from mirror event
+  → Calls GET /api/sessions/{session_id}/info
+  → Backend: SELECT users.phone FROM sessions JOIN users...
+  → Returns {session_id, user_id, phone, name, status}
+  → Poke uses phone to call save_session(phone, session_id, summary)
+```
+
+### 3. Validate Phone Numbers (E.164 Format)
+
+- **Frontend**: `libphonenumber-js` for real-time validation as user types
+- **Backend**: `phonenumbers` library to validate on profile update
+- **Format**: E.164 standard (`+15551234567`)
+
+---
+
+## Implementation Steps
+
+### Phase 1: Frontend Phone Collection
+
+**1.1 Install Phone Validation Library**
+```bash
+cd frontend
+npm install libphonenumber-js
+```
+
+**1.2 Create PhoneInput Component**
+
+File: `frontend/src/components/phone/PhoneInput.tsx` (new)
+
+Features:
+- Real-time E.164 validation
+- Auto-format with country code (default +1 for US)
+- Visual feedback (green check / red error)
+- Error messages: "Invalid phone number", "Phone number required"
+
+**1.3 Update SignInView**
+
+File: `frontend/src/app/phone/page.tsx`
+
+Changes:
+- Import `PhoneInput` component
+- Add phone state: `const [phone, setPhone] = useState("")`
+- Add `<PhoneInput>` field after name input, before Google OAuth button
+- Update `handleSignInComplete` callback signature to accept phone parameter
+- Pass phone to `updateProfile(profile.id, displayName, phone)`
+
+Current callback (lines 81-96):
+```typescript
+const handleSignInComplete = useCallback(
+  (profile: UserProfile, selfieBase64: string | null, displayName: string) => {
+    // ...
+    updateProfile(profile.id, displayName).catch(() => {});
+  },
+  []
+);
+```
+
+Update to:
+```typescript
+const handleSignInComplete = useCallback(
+  (profile: UserProfile, selfieBase64: string | null, displayName: string, phone: string) => {
+    // ...
+    updateProfile(profile.id, displayName, phone).catch(() => {});
+  },
+  []
+);
+```
+
+**1.4 Update SignInView Component**
+
+Within `SignInView` function (starts at line 155), update to:
+- Accept phone via props or manage internal state
+- Pass phone to `onComplete(profile, selfieBase64, name, phone)` callback
+- Validate phone is not empty before allowing submission
+
+### Phase 2: Backend Validation
+
+**2.1 Install Phone Validation Library**
+```bash
+cd backend
+pip install phonenumbers
+```
+Update `requirements.txt` with new dependency.
+
+**2.2 Update Profile Endpoint**
+
+File: `backend/routers/auth.py`
+
+Add validation to `update_profile` function (lines 48-75):
+
+```python
+import phonenumbers
+from phonenumbers import NumberParseException
+
+@router.post("/profile")
+async def update_profile(body: ProfileUpdateRequest):
+    """Update user name and optionally phone number."""
+    db = NeonHTTPClient()
+    try:
+        # Validate phone if provided
+        if body.phone is not None:
+            if not body.phone.strip():
+                raise HTTPException(status_code=400, detail="Phone number cannot be empty")
+
+            try:
+                parsed = phonenumbers.parse(body.phone, "US")
+                if not phonenumbers.is_valid_number(parsed):
+                    raise HTTPException(status_code=400, detail="Invalid phone number")
+
+                # Normalize to E.164 format
+                e164_phone = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+            except NumberParseException:
+                raise HTTPException(status_code=400, detail="Invalid phone number format")
+
+            rows = await db.execute(
+                """UPDATE users SET name = $1, phone = $2
+                   WHERE id = $3::uuid
+                   RETURNING id, name, email, phone, poke_id""",
+                [body.name, e164_phone, body.user_id],
+            )
+        else:
+            # Existing logic for name-only update
+            rows = await db.execute(...)
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="User not found")
+        return rows[0]
+    finally:
+        await db.close()
+```
+
+### Phase 3: Session-Phone Bridge for Poke
+
+**3.1 Create Sessions Router**
+
+File: `backend/routers/sessions.py` (new)
+
+```python
+from fastapi import APIRouter, HTTPException
+from models.database import NeonHTTPClient
+import uuid
+
+router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+@router.get("/{session_id}/info")
+async def get_session_info(session_id: str):
+    """Get session info including user's phone number.
+
+    Used by Poke to map session_id → phone for save_session calls.
+    """
+    db = NeonHTTPClient()
+    try:
+        # Validate session_id is valid UUID
+        try:
+            uuid.UUID(session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid session ID format")
+
+        # Join sessions with users to get phone
+        rows = await db.execute(
+            """
+            SELECT
+                s.id as session_id,
+                s.user_id,
+                u.phone,
+                u.name,
+                s.started_at,
+                s.ended_at,
+                s.status
+            FROM sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.id = $1::uuid
+            """,
+            [session_id]
+        )
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return rows[0]
+    finally:
+        await db.close()
+```
+
+**3.2 Register Sessions Router**
+
+File: `backend/main.py`
+
+Add import:
+```python
+from routers import sessions
+```
+
+Register router (after existing routers):
+```python
+app.include_router(sessions.router)
+```
+
+**3.3 Update MCP Server Documentation**
+
+File: `backend/mcp_server/server.py` (lines 258-273)
+
+Update `save_session` docstring to document the phone lookup flow:
+
+```python
+@server.tool()
+async def save_session(phone: str, session_id: str, summary: str) -> dict:
+    """Save a summary for a completed mirror session.
+
+    Before calling this tool, Poke should:
+    1. Receive session_id from mirror session context
+    2. Call GET /api/sessions/{session_id}/info to get user's phone
+    3. Use the phone number when calling save_session(phone, session_id, summary)
+
+    Verifies the session belongs to the user identified by phone number,
+    then stores the summary text.
+
+    Args:
+        phone: The user's phone number (e.g. "+15551234567")
+        session_id: UUID of the session to save the summary for
+        summary: The session summary text
+    """
+```
+
+### Phase 4: Optional Enhancements
+
+**4.1 Add Phone to Session Events**
+
+File: `backend/agent/orchestrator.py`
+
+In `start_session` method (around line 174), emit phone with session events:
+
+```python
+async def start_session(self, user_id: str) -> SessionState:
+    session = SessionState(user_id=user_id)
+    # ... existing session creation logic ...
+
+    # Fetch user profile to get phone
+    profile_rows = await db.execute(
+        "SELECT phone FROM users WHERE id = $1::uuid",
+        [user_id]
+    )
+    phone = profile_rows[0]["phone"] if profile_rows else None
+
+    # Emit session start event with phone
+    await sio.emit("session_active", {
+        "user_id": user_id,
+        "session_id": session.session_id,
+        "phone": phone
+    }, room=user_id)
+
+    return session
+```
+
+This provides Poke with phone context immediately when sessions start.
+
+**4.2 Database Migration (Optional)**
+
+File: `backend/migrations/010_phone_constraints.sql` (new)
+
+```sql
+-- Add index for phone lookups (MCP server performance)
+CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone) WHERE phone IS NOT NULL;
+
+-- Optional: Add unique constraint (only after confirming no duplicate test data)
+-- ALTER TABLE users ADD CONSTRAINT uq_users_phone UNIQUE (phone);
+```
+
+Run with:
+```bash
+psql $DATABASE_URL -f backend/migrations/010_phone_constraints.sql
+```
+
+---
+
+## Critical Files for Implementation
+
+### Files to Create:
+1. `frontend/src/components/phone/PhoneInput.tsx` — Phone input component with E.164 validation
+2. `backend/routers/sessions.py` — New router with session info endpoint
+3. `backend/migrations/010_phone_constraints.sql` — Database index for phone lookups
+
+### Files to Modify:
+1. `frontend/src/app/phone/page.tsx` — Add phone to SignInView, update callbacks
+2. `frontend/package.json` — Add `libphonenumber-js` dependency
+3. `backend/routers/auth.py` — Add phone validation to update_profile
+4. `backend/requirements.txt` — Add `phonenumbers` dependency
+5. `backend/main.py` — Register sessions router
+6. `backend/mcp_server/server.py` — Update save_session docstring
+7. `backend/agent/orchestrator.py` — (Optional) Emit phone in session events
+
+---
+
+## Verification
+
+### Manual Testing Checklist:
+
+**Frontend:**
+- [ ] Phone input field appears in SignInView
+- [ ] Real-time validation shows errors for invalid formats
+- [ ] Valid phone formats ("+1 555 123 4567", "555-123-4567") are accepted
+- [ ] International numbers ("+44...", "+33...") validate correctly
+- [ ] Empty phone prevents form submission
+- [ ] Phone saves to backend after Google OAuth
+
+**Backend:**
+- [ ] POST /api/auth/profile with phone stores E.164 format in database
+- [ ] Invalid phone returns 400 Bad Request with clear error message
+- [ ] GET /api/sessions/{session_id}/info returns correct phone
+- [ ] Invalid session_id returns 404
+- [ ] Session info includes: session_id, user_id, phone, name, status
+
+**Poke Integration:**
+- [ ] Poke can call GET /api/sessions/{id}/info to get phone
+- [ ] Poke can call save_session(phone, session_id, summary) successfully
+- [ ] get_past_sessions(phone) retrieves sessions for users with phone
+- [ ] Users without phone (NULL) return error from MCP tools
+
+**Database:**
+- [ ] users.phone column stores E.164 format: `+15551234567`
+- [ ] Phone index exists for fast lookups
+- [ ] Sessions can be queried by phone via JOIN
+
+### Unit Tests to Add:
+
+**Frontend:** `frontend/src/__tests__/phone-validation.test.ts`
+- Test valid US phone numbers
+- Test invalid formats
+- Test international numbers
+- Test E.164 normalization
+
+**Backend:** `backend/tests/test_auth.py`
+- Test update_profile with valid phone
+- Test update_profile with invalid phone (400 error)
+- Test phone normalization to E.164
+
+**Backend:** `backend/tests/test_sessions.py`
+- Test GET /api/sessions/{id}/info returns phone
+- Test 404 for non-existent session
+- Test 400 for invalid UUID format
+
+**MCP Integration:** `backend/mcp_server/tests/test_phone_integration.py`
+- Test save_session with phone
+- Test get_past_sessions by phone
+- Test phone lookup from session_id
+
+---
+
+## Edge Cases Handled
+
+1. **Missing phone (existing users)**: Allow NULL phone, MCP tools return error
+2. **Invalid phone format**: Frontend + backend validation prevents storage
+3. **Duplicate phone numbers**: No unique constraint initially (can add later)
+4. **International numbers**: `libphonenumber-js` supports all country codes
+5. **Session created before phone added**: Session info endpoint returns `phone: null`
+6. **Phone format changes**: Sessions reference `user_id` FK (immutable), phone is just a lookup key
+
+---
+
+## Dependencies
+
+**Frontend:**
+- `libphonenumber-js` — Phone number validation and formatting
+
+**Backend:**
+- `phonenumbers` — Python phone number parsing and validation
+
+Both libraries are well-maintained, lightweight, and support international phone numbers with E.164 formatting.
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+you gotta do that for me
+
+---
+
+[Request interrupted by user]
+
+---
+
+do that for me using neon mcp

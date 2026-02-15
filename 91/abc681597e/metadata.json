@@ -3,13 +3,23 @@
   "checkpoint_id": "91abc681597e",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/agent/tools.py",
+    "backend/main.py",
+    "backend/mcp_server/server.py",
     "backend/migrations/010_phone_constraints.sql",
+    "backend/requirements.txt",
+    "backend/routers/auth.py",
+    "backend/routers/sessions.py",
+    "backend/tests/test_auth.py",
+    "backend/tests/test_sessions.py",
+    "frontend/src/__tests__/phone-validation.test.ts",
     "frontend/src/app/mirror/page.tsx",
+    "frontend/src/app/phone/page.tsx",
     "frontend/src/components/mirror/SessionRecap.tsx",
+    "frontend/src/components/phone/PhoneInput.tsx",
     "test_format_size.py"
   ],
   "sessions": [
@@ -26,13 +36,20 @@
       "context": "/91/abc681597e/1/context.md",
       "content_hash": "/91/abc681597e/1/content_hash.txt",
       "prompt": "/91/abc681597e/1/prompt.txt"
+    },
+    {
+      "metadata": "/91/abc681597e/2/metadata.json",
+      "transcript": "/91/abc681597e/2/full.jsonl",
+      "context": "/91/abc681597e/2/context.md",
+      "content_hash": "/91/abc681597e/2/content_hash.txt",
+      "prompt": "/91/abc681597e/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 164,
-    "cache_creation_tokens": 95251,
-    "cache_read_tokens": 1287985,
-    "output_tokens": 2558,
-    "api_call_count": 19
+    "input_tokens": 510,
+    "cache_creation_tokens": 171930,
+    "cache_read_tokens": 4151927,
+    "output_tokens": 9311,
+    "api_call_count": 61
   }
 }
