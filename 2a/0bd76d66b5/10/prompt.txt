@@ -1,0 +1,102 @@
+Implement the following plan:
+
+# Plan: Fix Empty Text Block Crash on Interrupt
+
+## Context
+
+After implementing the `take_photo` tool, sessions crash with:
+```
+messages: text content blocks must be non-empty
+```
+The error repeats on every subsequent turn (turns 5, 6, ...) because the corrupted history entry persists.
+
+**Root cause:** The interrupt handler in `_call_claude()` (orchestrator.py:418-430) always appends an assistant stub to maintain history alternation — but when the interrupt fires before Claude has streamed any text (e.g., user speaks right as the recursive `_call_claude(tool_depth=1)` starts after `take_photo` completes), the stub is `{"type": "text", "text": ""}`. The Claude API rejects empty text blocks.
+
+**Exact code (line 422):**
+```python
+stub = collected_text.strip() or ""   # ← "" when no text streamed yet
+session.conversation_history.append({
+    "role": "assistant",
+    "content": [{"type": "text", "text": stub}],  # ← EMPTY = 400 error
+})
+```
+
+**Why turn 5-6:** Turn 1 = greeting. Turns 2-4 = take_photo tool chain (assistant→tool_result→assistant). Turn 5 = recursive `_call_claude(tool_depth=1)` to process tool results. If the user interrupts here (before any text streams), `collected_text` is empty → empty stub → permanent corruption.
+
+## Changes
+
+### 1. Fix the interrupt stub (PRIMARY FIX)
+**File:** `backend/agent/orchestrator.py` — the `if interrupted:` block (~line 418)
+
+When `collected_text` is empty at interrupt time, **pop the last user message instead of appending an empty stub**. This keeps history alternation valid without introducing an invalid content block:
+
+```python
+if interrupted:
+    stub = collected_text.strip()
+    if stub:
+        # Partial response — keep it as assistant message
+        session.conversation_history.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": stub}],
+        })
+    else:
+        # No text streamed yet — remove the user message that triggered
+        # this call so history stays alternating. The user's actual
+        # transcript was already forwarded via the interrupt event.
+        if session.conversation_history and session.conversation_history[-1]["role"] == "user":
+            session.conversation_history.pop()
+    await self._stream_text(session.user_id, "", end_of_message=True)
+    session._interrupted = False
+    print(f"[mira] Interrupted stream for {session.user_id}, stub len={len(stub)}")
+    return
+```
+
+**Why pop instead of placeholder text?** A placeholder like `"[interrupted]"` would work for history alternation, but Claude would see it and might react ("I was interrupted..."). Popping the user message is cleaner — it's as if the turn never happened, and the user's next voice transcript starts fresh.
+
+### 2. Add empty-block detection to `_validate_history` (DEFENSE-IN-DEPTH)
+**File:** `backend/agent/orchestrator.py` — `_validate_history()` method (~line 284)
+
+Add a check for empty text content blocks in assistant messages, after the existing role-alternation checks:
+
+```python
+# Inside the while loop, after the tool_use/tool_result check:
+if role == "assistant" and isinstance(content, list):
+    has_empty_text = any(
+        isinstance(block, dict)
+        and block.get("type") == "text"
+        and not block.get("text", "").strip()
+        for block in content
+    )
+    if has_empty_text:
+        print(f"[mira] History validation: empty text block at index {i} — truncating")
+        break
+```
+
+This catches any future regressions where empty text blocks sneak into history from other code paths.
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| `backend/agent/orchestrator.py` | Fix interrupt stub (line ~418-430), add empty-block check to `_validate_history` (line ~327) |
+
+## Verification
+
+1. `pytest` from `backend/` — existing tests pass
+2. Start session, let Mira greet + call take_photo
+3. Interrupt Mira mid-speech (speak while she's talking) — session should continue without 400 errors
+4. Interrupt immediately after take_photo completes (before Phase 2 text starts) — this is the exact crash scenario
+5. Check backend logs: should see `[mira] Interrupted stream for ..., stub len=0` with no subsequent 400 errors
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+<task-notification>
+<task-id>b60675c</task-id>
+<output-file>/private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/b60675c.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full backend test suite" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/b60675c.output
