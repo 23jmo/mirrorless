@@ -52,3 +52,21 @@ Yo that worked. Is the join queue button on the /phone directory also working wi
 
 move it to vercel api route too and then commit push and deploy
 
+### Prompt 7
+
+<task-notification>
+<task-id>ac0a28e</task-id>
+<status>completed</status>
+<summary>Agent "Deploy to Vercel production" completed</summary>
+<result>The Vercel production deployment completed successfully. Here is the summary:
+
+- **Production URL**: https:REDACTED.vercel.app
+- **Alias**: https://mirrorless.vercel.app
+- **Inspect**: https://vercel.REDACTED
+- **Build time**: ~2 minutes
+- **Stat...
+
+### Prompt 8
+
+We're looking at redoing the UI. Can you shrink everything more vertically so it fits in a vertical display-ish sort of thing? Right now we're running it on a pretty much vertical 16:9 or 9:16 display so we kind of want it to fit that, a little bit wider but about that
+

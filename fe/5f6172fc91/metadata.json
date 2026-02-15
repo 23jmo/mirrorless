@@ -23,6 +23,9 @@
     "frontend/src/app/api/users/[userId]/onboarding/route.ts",
     "frontend/src/app/api/users/[userId]/route.ts",
     "frontend/src/app/mirror/page.tsx",
+    "frontend/src/app/phone/page.tsx",
+    "frontend/src/components/phone/QueueStatus.tsx",
+    "frontend/src/components/phone/SelfieCapture.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/lib/api.ts",
     "frontend/src/lib/db.ts",
@@ -73,10 +76,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 316,
-    "cache_creation_tokens": 331788,
-    "cache_read_tokens": 7906348,
-    "output_tokens": 13944,
-    "api_call_count": 87
+    "input_tokens": 308,
+    "cache_creation_tokens": 327073,
+    "cache_read_tokens": 7950559,
+    "output_tokens": 19390,
+    "api_call_count": 83
   }
 }
