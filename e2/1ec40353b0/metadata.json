@@ -3,7 +3,7 @@
   "checkpoint_id": "e21ec40353b0",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "CLAUDE.md",
     "backend/agent/orchestrator.py",
@@ -36,13 +36,20 @@
       "context": "/e2/1ec40353b0/1/context.md",
       "content_hash": "/e2/1ec40353b0/1/content_hash.txt",
       "prompt": "/e2/1ec40353b0/1/prompt.txt"
+    },
+    {
+      "metadata": "/e2/1ec40353b0/2/metadata.json",
+      "transcript": "/e2/1ec40353b0/2/full.jsonl",
+      "context": "/e2/1ec40353b0/2/context.md",
+      "content_hash": "/e2/1ec40353b0/2/content_hash.txt",
+      "prompt": "/e2/1ec40353b0/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 93,
-    "cache_creation_tokens": 307760,
-    "cache_read_tokens": 5818641,
-    "output_tokens": 14319,
-    "api_call_count": 71
+    "input_tokens": 104,
+    "cache_creation_tokens": 337773,
+    "cache_read_tokens": 6191567,
+    "output_tokens": 17248,
+    "api_call_count": 80
   }
 }

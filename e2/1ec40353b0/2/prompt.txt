@@ -1,0 +1,79 @@
+Implement the following plan:
+
+# Update Mira Session Flow Prompt
+
+## Context
+
+The Orb Avatar + Streaming TTS pipeline is complete (merged in PR #11). Now the user wants to enforce a specific session flow for Mira that follows a natural styling consultation arc:
+
+1. **Open by roasting** the user's purchase history AND current outfit
+2. **Collaboratively suggest fits**, referencing all known data (purchases, calendar, past sessions)
+3. **Display options on the mirror** using existing tools (`search_clothing` -> `present_items`)
+4. **User swipes through options**, Mira reacts to likes/dislikes
+5. **Close with summary** sent to phone via Poke (placeholder for now — the delivery mechanism will be implemented later)
+
+The orchestrator already handles the mechanics: gesture tracking (likes/dislikes in `SessionState`), auto-snapshot at session start, session summary generation via Claude Haiku at `end_session`, and `session_ended` Socket.io event with `liked_items` + `summary`. The change is **prompt-only** — rewriting the "Session Flow" section of `MIRA_PERSONALITY` in `backend/agent/prompts.py`.
+
+## What Changes
+
+### File: `backend/agent/prompts.py` (lines 34-63)
+
+Replace the current "Session Flow" section (`## Session Flow — Scripted Opener, Then Freeform`) with a new 5-phase flow:
+
+#### Phase 1: THE ROAST (Turn 1 — mandatory)
+- **Same as current Turn 1** but explicitly tell Mira to set up the outfit check
+- Name a specific purchase (brand, price, date) — the "wow she knows me" moment
+- Introduce yourself, weave in calendar events if available
+- End by saying you're going to check what they're wearing — transitions into snapshot
+
+#### Phase 2: THE OUTFIT CHECK (Turn 2 — after snapshot)
+- **Same as current Turn 2** — react to what they're wearing, compare to purchase history
+- Transition assertively into recommendations: "I already know what you need"
+- Do NOT ask what they want — Mira decides
+
+#### Phase 3: THE STYLING SESSION (Turn 3+ — collaborative)
+- This is the key change from the current prompt. Currently it says "Freeform" — now it should emphasize a **collaborative back-and-forth**:
+  - Use `search_clothing` with detailed queries based on what Mira sees + knows
+  - Curate 2-4 picks and use `present_items` to show them on the mirror
+  - Narrate each pick with one sentence connecting it to the user's data
+  - **React to gestures**: thumbs up/swipe right = liked, thumbs down/swipe left = disliked
+  - When they like something: brief acknowledge, build on it ("Okay so you're feeling the streetwear vibe, let me find more like that")
+  - When they dislike something: callback to their history ("You said no to this but you own THAT?"), then pivot and search again
+  - Keep iterating — search, present, react, refine. This is a conversation, not a one-shot recommendation dump
+  - Reference calendar events to tie outfits to upcoming occasions
+
+#### Phase 4: THE WRAP-UP (When approaching session limit or natural end)
+- Recap the user's favorites from the session
+- Give a genuine confidence boost with a specific callback
+- Tell them you're sending the summary + links to their phone
+- Example: "I'm sending everything to your phone — your top picks, the links, all of it. Your closet went from a 6 to an 8 today."
+- Note: The actual phone delivery will be implemented via Poke later. For now, Mira says it and the summary is saved to DB + emitted via `session_ended` event.
+
+### Also update: Session Close section (line 61-62)
+- Replace the current generic close with the Poke-aware close language
+
+## Files Summary
+
+| File | Action | Description |
+|---|---|---|
+| `backend/agent/prompts.py` | Modify lines 34-63 | Rewrite Session Flow to 4-phase collaborative arc with Poke close |
+
+No other files need changes — the orchestrator, tools, and frontend already support this flow.
+
+## Existing Infrastructure (no changes needed)
+
+- **Gesture tracking**: `orchestrator.py` lines 212-218 — already increments `session.likes`/`session.dislikes` and tracks `session.liked_items`
+- **Session summary**: `orchestrator.py` lines 528-541 — already generates summary via Claude Haiku at `end_session`
+- **Session state in prompt**: `build_system_prompt()` injects `items_shown`, `likes`, `dislikes` + API call limit warning at 18 calls
+- **`session_ended` event**: Already emits `summary`, `liked_items`, `stats` to frontend
+- **Snapshot flow**: Auto-requested at session start, `take_photo` tool available mid-session
+
+## Verification
+
+1. `cd backend && python -c "from agent.prompts import MIRA_PERSONALITY; print(MIRA_PERSONALITY[:200])"` — confirm new prompt loads
+2. `cd backend && pytest` — existing tests still pass (prompt is a string constant, no logic changes)
+3. Manual review: Read through the new Session Flow section and verify it matches the 5-point flow the user described
+4. Session test: Start a mirror session and verify Mira follows the arc: roast -> outfit check -> collaborative styling -> wrap-up with phone mention
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
