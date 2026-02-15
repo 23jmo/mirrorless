@@ -37,3 +37,48 @@ Failed to fetch
 
 also add deepgram condfidence threshold toggle
 
+### Prompt 4
+
+Can you deploy this repository on Vercel?
+
+### Prompt 5
+
+<task-notification>
+<task-id>af0d381</task-id>
+<status>completed</status>
+<summary>Agent "Deploy to Vercel production" completed</summary>
+<result>The deployment completed successfully. Here are the URLs:
+
+- **Production URL**: https://mirrorless.vercel.app
+- **Deployment URL**: https://mirrorless-h3j9tiih8-johnathans-projects-b2a37f0a.vercel.app
+- **Inspect**: https://vercel.REDACTED</result>
+<usage>total_tokens: 11008
+tool_uses: 1...
+
+### Prompt 6
+
+are you sure vercel is deployed?
+
+### Prompt 7
+
+[Image: source: REDACTED 2026-02-15 07.12.11.png]
+
+### Prompt 8
+
+<task-notification>
+<task-id>a0b3f75</task-id>
+<status>completed</status>
+<summary>Agent "Redeploy from frontend directory" completed</summary>
+<result>The deployment completed successfully. Here is the summary:
+
+**Deployment URL:** https://frontend-nofewhdzy-johnathans-projects-b2a37f0a.vercel.app  
+**Alias:** https://frontend-sigma-hazel-29.vercel.app  
+**Inspect:** https://vercel.REDACTED
+
+**Build details:**
+- Next.js 15.5.12, comp...
+
+### Prompt 9
+
+B
+

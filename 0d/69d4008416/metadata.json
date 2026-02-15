@@ -12,6 +12,8 @@
     "backend/routers/admin.py",
     "backend/routers/queue.py",
     "backend/scraper/routes.py",
+    "frontend/.gitignore",
+    "frontend/.vercel/project.json",
     "frontend/src/app/admin/page.tsx",
     "frontend/src/app/mirror-v2/page.tsx",
     "frontend/src/app/mirror/page.tsx",
@@ -50,10 +52,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 307,
-    "cache_creation_tokens": 629798,
-    "cache_read_tokens": 15712079,
-    "output_tokens": 22727,
-    "api_call_count": 187
+    "input_tokens": 273,
+    "cache_creation_tokens": 565725,
+    "cache_read_tokens": 13490536,
+    "output_tokens": 17165,
+    "api_call_count": 144
   }
 }
