@@ -3,8 +3,9 @@
   "checkpoint_id": "369b9a5329bc",
   "strategy": "manual-commit",
   "branch": "AGENT",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
+    "backend/agent/orchestrator.py",
     "backend/main.py",
     "backend/routers/heygen.py",
     "backend/scraper/calendar_fetch.py",
@@ -19,13 +20,20 @@
       "context": "/36/9b9a5329bc/0/context.md",
       "content_hash": "/36/9b9a5329bc/0/content_hash.txt",
       "prompt": "/36/9b9a5329bc/0/prompt.txt"
+    },
+    {
+      "metadata": "/36/9b9a5329bc/1/metadata.json",
+      "transcript": "/36/9b9a5329bc/1/full.jsonl",
+      "context": "/36/9b9a5329bc/1/context.md",
+      "content_hash": "/36/9b9a5329bc/1/content_hash.txt",
+      "prompt": "/36/9b9a5329bc/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 49,
-    "cache_creation_tokens": 348540,
-    "cache_read_tokens": 3374624,
-    "output_tokens": 8225,
-    "api_call_count": 34
+    "input_tokens": 85,
+    "cache_creation_tokens": 495423,
+    "cache_read_tokens": 6560191,
+    "output_tokens": 16172,
+    "api_call_count": 62
   }
 }

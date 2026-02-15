@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "369b9a5329bc",
+  "session_id": "7b411ee5-fe64-4267-8e77-e350a6553d2f",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T04:41:52.177413Z",
+  "branch": "AGENT",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "frontend/src/hooks/useLiveAvatar.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 36,
+    "cache_creation_tokens": 146883,
+    "cache_read_tokens": 3185567,
+    "output_tokens": 7947,
+    "api_call_count": 28
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T04:41:52.115785Z",
+    "agent_lines": 78,
+    "human_added": 39,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 117,
+    "agent_percentage": 66.66666666666666
+  }
+}

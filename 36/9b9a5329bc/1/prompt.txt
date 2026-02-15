@@ -1,0 +1,131 @@
+Implement the following plan:
+
+# Fix: Avatar doesn't speak Mira's responses
+
+## Context
+
+The LiveAvatar SDK migration is complete (SDK installed, hook created, mirror page wired, backend token endpoint updated). But the avatar **never speaks** — despite Deepgram picking up user speech and Mira (the orchestrator) generating responses via Claude. The pipeline breaks in two places.
+
+## Root Cause Analysis
+
+### Bug 1: Backend never signals end-of-message (CRITICAL)
+
+**File**: `backend/agent/orchestrator.py:495-502`
+
+`_stream_text()` emits every chunk with `is_chunk: True`. After Claude finishes streaming, **no final event** with `is_chunk: false` is ever emitted. The frontend's SentenceBuffer (`frontend/src/lib/sentence-buffer.ts`) drains complete sentences on `.!?` + space boundaries as chunks arrive, but the **last sentence** (no trailing space) stays trapped in the buffer forever.
+
+This means if Claude says `"Hey! I'm Mira, your stylist."`:
+- `"Hey!"` drains when the space after `!` arrives in the next chunk ✅
+- `"I'm Mira, your stylist."` stays in the buffer — no flush ever called ❌
+
+Worse: if Claude's entire response is a single sentence (no intermediate boundaries), **nothing** gets spoken at all.
+
+**Fix**: After the streaming loop in `_call_claude()` completes (line ~292, after `get_final_message()`), emit a final `mira_speech` with `is_chunk: false` and empty text to trigger the frontend's `sentenceBuffer.flush()`.
+
+### Bug 2: Speech queue silently dies on first `repeat()` failure
+
+**File**: `frontend/src/hooks/useLiveAvatar.ts:56-62`
+
+If `session.repeat(text)` throws (SDK not ready, wrong method name, etc.), the catch block resets `isProcessingQueueRef` but does NOT retry or advance the queue. The remaining items stay queued forever because `AVATAR_SPEAK_ENDED` never fires (nothing was spoken).
+
+**Fix**: After catching the error, call `processQueue()` on next tick to try the next item instead of leaving the queue permanently stuck.
+
+### Possible runtime issue: Avatar session never reaches READY
+
+This is a **runtime** issue (can't fully verify from code), but important context:
+- `useLiveAvatar.ts` fetches a token with `is_sandbox: true`
+- If `HEYGEN_API_KEY` contains the old HeyGen key (not a LiveAvatar key), the token request returns 401/502
+- `startSession()` in the hook would throw, but there's no user-visible error — the session just silently fails
+- All speech queued via `speak()` piles up but `processQueue()` returns immediately (`isReadyRef.current` is false)
+- When `SESSION_STREAM_READY` fires it calls `processQueue()` to drain, but if it never fires, nothing plays
+
+**Fix**: Add error handling in `startSession()` to surface failures, and add a `SESSION_ERROR` event listener.
+
+## Files to Modify
+
+| # | File | Change |
+|---|------|--------|
+| 1 | `backend/agent/orchestrator.py` | Emit `is_chunk: false` after Claude streaming completes |
+| 2 | `frontend/src/hooks/useLiveAvatar.ts` | Fix stuck queue on `repeat()` failure; add error handling to `startSession()` |
+
+## Step 1: Add end-of-message signal in orchestrator
+
+**File**: `backend/agent/orchestrator.py`
+
+In `_call_claude()`, after the streaming `async with` block completes and `final_message` is obtained (~line 292), add:
+
+```python
+# Signal end-of-message so frontend flushes the sentence buffer
+if collected_text:
+    await self._stream_text(session.user_id, "", end_of_message=True)
+```
+
+Update `_stream_text()` to accept an optional `end_of_message` flag:
+
+```python
+async def _stream_text(self, user_id: str, text_chunk: str, end_of_message: bool = False) -> None:
+    if self.sio:
+        await self.sio.emit(
+            "mira_speech",
+            {"text": text_chunk, "is_chunk": not end_of_message},
+            room=user_id,
+        )
+```
+
+## Step 2: Fix speech queue resilience + error visibility
+
+**File**: `frontend/src/hooks/useLiveAvatar.ts`
+
+### 2a: Recover from `repeat()` failures
+In `processQueue()`, after catching the error, schedule a retry for the next queued item:
+
+```typescript
+} catch (err) {
+  console.error("[LiveAvatar] repeat() failed:", err);
+  isProcessingQueueRef.current = false;
+  // Try next item on next tick instead of leaving queue stuck
+  setTimeout(() => processQueue(), 0);
+}
+```
+
+### 2b: Surface `startSession()` errors
+Wrap the `session.start()` call in try/catch and log clearly:
+
+```typescript
+try {
+  await session.start();
+} catch (err) {
+  console.error("[LiveAvatar] session.start() failed:", err);
+  sessionRef.current = null;
+  throw err;  // Let caller (mirror page) handle it
+}
+```
+
+### 2c: Listen for SESSION_ERROR
+Add an error event listener after creating the session:
+
+```typescript
+session.on(SessionEvent.SESSION_ERROR, (error) => {
+  console.error("[LiveAvatar] Session error:", error);
+});
+```
+
+## Verification
+
+1. `cd backend && pytest tests/ -v` — existing tests pass
+2. `cd frontend && npm run build` — type-checks
+3. Manual test: Start session → Mira's opening line should play through avatar
+4. Check browser console for `[LiveAvatar]` logs showing queue activity
+5. Check backend logs for `[mira]` streaming activity
+6. Verify end-of-message: last sentence of each Mira response plays (not stuck in buffer)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+I SEE THIS GUYS FACE BUT HE'S JUST STARING AT ME. can you research the liveavatar sdk docs?
+
+---
+
+[Request interrupted by user for tool use]
