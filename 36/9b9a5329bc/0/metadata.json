@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "369b9a5329bc",
+  "session_id": "5640c12b-6b71-40f3-b1d6-b82f80a13a12",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T04:41:51.994033Z",
+  "branch": "AGENT",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/main.py",
+    "backend/routers/heygen.py",
+    "backend/scraper/calendar_fetch.py",
+    "backend/tests/test_heygen_routes.py",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/hooks/useLiveAvatar.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "cd7727f5-f3cf-47f9-9781-6173640c4465",
+  "checkpoint_transcript_start": 294,
+  "transcript_lines_at_start": 294,
+  "token_usage": {
+    "input_tokens": 49,
+    "cache_creation_tokens": 348540,
+    "cache_read_tokens": 3374624,
+    "output_tokens": 8225,
+    "api_call_count": 34
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T04:41:51.84532Z",
+    "agent_lines": 105,
+    "human_added": 0,
+    "human_modified": 42,
+    "human_removed": 24,
+    "total_committed": 147,
+    "agent_percentage": 71.42857142857143
+  }
+}
