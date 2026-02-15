@@ -3,7 +3,17 @@
  *
  * Uses fetch + ReadableStream + MediaSource API for low-latency audio playback.
  * Extracts real-time volume via AudioContext + AnalyserNode for Orb visualization.
+ *
+ * Supports two modes:
+ * - speak(): Cancels any current/queued audio and plays immediately (interruption)
+ * - speakQueued(): Enqueues a sentence for sequential playback (sentence streaming)
  */
+
+interface QueueEntry {
+  text: string;
+  onStart?: () => void;
+  onEnd?: () => void;
+}
 
 export class StreamingTTS {
   private apiUrl: string;
@@ -17,19 +27,31 @@ export class StreamingTTS {
   private frequencyData: Uint8Array<ArrayBuffer> | null = null;
   private pendingResolve: (() => void) | null = null;
 
+  // Sentence queue for sequential playback
+  private queue: QueueEntry[] = [];
+  private queueProcessing = false;
+  private queueGeneration = 0;
+  private onQueueDrain?: () => void;
+
   constructor(apiUrl: string) {
     this.apiUrl = apiUrl;
   }
 
   /**
    * Stream TTS audio for the given text.
-   * Returns a promise that resolves when playback finishes.
+   * CANCELS any current/queued audio and plays immediately.
+   * Use this for interruptions or single-shot speech.
    */
   async speak(
     text: string,
     onStart?: () => void,
     onEnd?: () => void,
   ): Promise<void> {
+    // Clear the queue — this is an interruption
+    this.queue = [];
+    this.queueGeneration++;
+    this.onQueueDrain = undefined;
+
     const gen = ++this.generation;
 
     try {
@@ -58,6 +80,77 @@ export class StreamingTTS {
     }
   }
 
+  /**
+   * Enqueue a sentence for sequential playback.
+   * Sentences play back-to-back without canceling each other.
+   * Call onAllDone() to set a callback when the entire queue drains.
+   */
+  speakQueued(
+    text: string,
+    onStart?: () => void,
+    onEnd?: () => void,
+  ): void {
+    if (!text.trim()) return;
+    this.queue.push({ text, onStart, onEnd });
+    this.speaking = true;
+    this.processQueue();
+  }
+
+  /**
+   * Set a callback that fires when the queue fully drains (all sentences done).
+   */
+  onAllDone(callback: () => void): void {
+    this.onQueueDrain = callback;
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.queueProcessing) return;
+    this.queueProcessing = true;
+
+    const qGen = this.queueGeneration;
+
+    while (this.queue.length > 0) {
+      if (this.queueGeneration !== qGen) break;
+
+      const entry = this.queue.shift()!;
+      const gen = ++this.generation;
+
+      try {
+        console.log(`[StreamingTTS] Queue: playing sentence (${entry.text.length} chars, ${this.queue.length} remaining)`);
+
+        const resp = await fetch(`${this.apiUrl}/api/tts/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: entry.text }),
+        });
+
+        if (this.generation !== gen || this.queueGeneration !== qGen) {
+          entry.onEnd?.();
+          break;
+        }
+
+        if (!resp.ok || !resp.body) {
+          throw new Error(`TTS stream failed: ${resp.status}`);
+        }
+
+        await this.playStream(resp.body, gen, entry.onStart, entry.onEnd);
+      } catch (err) {
+        console.error("[StreamingTTS] Queue entry error:", err);
+        entry.onEnd?.();
+      }
+    }
+
+    this.queueProcessing = false;
+
+    // If queue is empty and we weren't interrupted, fire drain callback
+    if (this.queue.length === 0 && this.queueGeneration === qGen) {
+      this.speaking = false;
+      const cb = this.onQueueDrain;
+      this.onQueueDrain = undefined;
+      cb?.();
+    }
+  }
+
   private async playStream(
     body: ReadableStream<Uint8Array>,
     gen: number,
@@ -82,7 +175,7 @@ export class StreamingTTS {
         if (settled) return;
         settled = true;
         this.pendingResolve = null;
-        this.speaking = false;
+        // Don't set speaking=false here — the queue processor manages that
         if (audio.src) {
           URL.revokeObjectURL(audio.src);
         }
@@ -226,9 +319,12 @@ export class StreamingTTS {
     return Math.min(1.0, Math.pow(raw, 0.5) * 2.5);
   }
 
-  /** Stop current playback and cancel any in-flight stream. */
+  /** Stop current playback, clear queue, and cancel any in-flight stream. */
   stop(): void {
     this.generation++;
+    this.queueGeneration++;
+    this.queue = [];
+    this.onQueueDrain = undefined;
     this.speaking = false;
 
     if (this.audio) {

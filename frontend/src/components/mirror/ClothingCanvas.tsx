@@ -4,13 +4,19 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import type { PoseResult } from '@/types/pose';
 import type { ClothingItem } from '@/types/clothing';
 import { getClothingQuad } from '@/lib/clothing-transform';
+import { detectShoulderSeams, type ShoulderAnchors } from '@/lib/shoulder-seam-detection';
+import { detectWaistband, type WaistbandAnchors } from '@/lib/waistband-detection';
+
+export type FitMethod = 'precise' | 'fallback';
 
 interface ClothingCanvasProps {
   pose: PoseResult | null;
   items: ClothingItem[];
   width: number;
   height: number;
+  opacity?: number;
   onImageError?: (itemId: string, error: string) => void;
+  onFitStatus?: (statuses: Map<string, FitMethod>) => void;
 }
 
 const CATEGORY_Z_ORDER = {
@@ -78,16 +84,26 @@ export function ClothingCanvas({
   items,
   width,
   height,
+  opacity = 1.0,
   onImageError,
+  onFitStatus,
 }: ClothingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const boundsRef = useRef<Map<string, ImageBounds>>(new Map());
+  const shoulderAnchorsRef = useRef<Map<string, ShoulderAnchors>>(new Map());
+  const waistbandAnchorsRef = useRef<Map<string, WaistbandAnchors>>(new Map());
+  const fitStatusRef = useRef<Map<string, FitMethod>>(new Map());
   const [loadedImages, setLoadedImages] = useState<Set<string>>(new Set());
   const lastPoseRef = useRef<PoseResult | null>(null);
 
   // Preload images when items change
   useEffect(() => {
+    // Clear cached anchors to force re-detection with new items
+    shoulderAnchorsRef.current.clear();
+    waistbandAnchorsRef.current.clear();
+    fitStatusRef.current = new Map();
+
     const newImages = new Map<string, HTMLImageElement>();
     const loaded = new Set<string>();
     let mounted = true;
@@ -112,21 +128,47 @@ export function ClothingCanvas({
         }
 
         img.onload = () => {
-          if (mounted) {
-            // Detect and store content bounds (crop transparent padding)
-            try {
-              const bounds = detectImageBounds(img);
-              boundsRef.current.set(item.id, bounds);
-            } catch {
-              // Fallback to full image bounds if canvas is tainted
-              boundsRef.current.set(item.id, {
-                x: 0, y: 0, width: img.width, height: img.height,
-              });
-            }
+          if (!mounted) { resolve(); return; }
 
-            loaded.add(item.id);
-            setLoadedImages(new Set(loaded));
+          // Detect and store content bounds (crop transparent padding)
+          try {
+            const bounds = detectImageBounds(img);
+            boundsRef.current.set(item.id, bounds);
+          } catch {
+            boundsRef.current.set(item.id, {
+              x: 0, y: 0, width: img.width, height: img.height,
+            });
           }
+
+          // Detect anchor points based on category
+          if (item.category === 'tops') {
+            try {
+              const shoulderAnchors = detectShoulderSeams(img);
+              if (shoulderAnchors) {
+                shoulderAnchorsRef.current.set(item.id, shoulderAnchors);
+                fitStatusRef.current.set(item.id, 'precise');
+              } else {
+                fitStatusRef.current.set(item.id, 'fallback');
+              }
+            } catch {
+              fitStatusRef.current.set(item.id, 'fallback');
+            }
+          } else if (item.category === 'bottoms') {
+            try {
+              const waistbandAnchors = detectWaistband(img);
+              if (waistbandAnchors) {
+                waistbandAnchorsRef.current.set(item.id, waistbandAnchors);
+                fitStatusRef.current.set(item.id, 'precise');
+              } else {
+                fitStatusRef.current.set(item.id, 'fallback');
+              }
+            } catch {
+              fitStatusRef.current.set(item.id, 'fallback');
+            }
+          }
+
+          loaded.add(item.id);
+          setLoadedImages(new Set(loaded));
           resolve();
         };
 
@@ -145,13 +187,14 @@ export function ClothingCanvas({
       if (mounted) {
         imagesRef.current = newImages;
         setLoadedImages(new Set(loaded));
+        onFitStatus?.(new Map(fitStatusRef.current));
       }
     });
 
     return () => {
       mounted = false;
     };
-  }, [items, onImageError]);
+  }, [items, onImageError, onFitStatus]);
 
   // Render clothing overlays
   const render = useCallback(() => {
@@ -164,7 +207,6 @@ export function ClothingCanvas({
     // Use current pose or freeze at last known position
     const poseToRender = pose || lastPoseRef.current;
     if (!poseToRender) {
-      // No pose yet - clear canvas
       ctx.clearRect(0, 0, width, height);
       return;
     }
@@ -174,7 +216,6 @@ export function ClothingCanvas({
       lastPoseRef.current = pose;
     }
 
-    // Clear canvas
     ctx.clearRect(0, 0, width, height);
 
     // Sort items by z-order (bottoms first, then tops)
@@ -182,12 +223,13 @@ export function ClothingCanvas({
       return CATEGORY_Z_ORDER[a.category] - CATEGORY_Z_ORDER[b.category];
     });
 
-    // Render each clothing item
     for (const item of sortedItems) {
       const img = imagesRef.current.get(item.id);
       if (!img || !loadedImages.has(item.id)) continue;
 
-      // Get quad points mapping clothing corners to body landmarks
+      const shoulderAnchors = shoulderAnchorsRef.current.get(item.id);
+      const waistbandAnchors = waistbandAnchorsRef.current.get(item.id);
+
       const quad = getClothingQuad(
         poseToRender.landmarks,
         item.category,
@@ -195,61 +237,222 @@ export function ClothingCanvas({
         height
       );
 
-      if (!quad) {
-        // Landmarks not visible for this category - skip rendering
-        continue;
+      if (!quad) continue;
+
+      const isFallback = fitStatusRef.current.get(item.id) === 'fallback';
+
+      // Shoulder seam anchored rendering for tops
+      if (item.category === 'tops' && shoulderAnchors) {
+        const shirtLeftShoulder = {
+          x: shoulderAnchors.leftShoulder.x * img.width,
+          y: shoulderAnchors.leftShoulder.y * img.height,
+        };
+        const shirtRightShoulder = {
+          x: shoulderAnchors.rightShoulder.x * img.width,
+          y: shoulderAnchors.rightShoulder.y * img.height,
+        };
+        const shirtLeftHem = {
+          x: shoulderAnchors.leftHem.x * img.width,
+          y: shoulderAnchors.leftHem.y * img.height,
+        };
+        const shirtRightHem = {
+          x: shoulderAnchors.rightHem.x * img.width,
+          y: shoulderAnchors.rightHem.y * img.height,
+        };
+
+        const bodyLeftShoulder = quad.topLeft;
+        const bodyRightShoulder = quad.topRight;
+        const bodyLeftHip = quad.bottomLeft;
+        const bodyRightHip = quad.bottomRight;
+
+        const shirtShoulderWidth = Math.hypot(
+          shirtRightShoulder.x - shirtLeftShoulder.x,
+          shirtRightShoulder.y - shirtLeftShoulder.y
+        );
+        const shirtTorsoHeight = Math.hypot(
+          shirtLeftHem.x - shirtLeftShoulder.x,
+          shirtLeftHem.y - shirtLeftShoulder.y
+        );
+
+        const bodyShoulderWidth = Math.hypot(
+          bodyRightShoulder.x - bodyLeftShoulder.x,
+          bodyRightShoulder.y - bodyLeftShoulder.y
+        );
+        const bodyTorsoHeight = Math.hypot(
+          bodyLeftHip.x - bodyLeftShoulder.x,
+          bodyLeftHip.y - bodyLeftShoulder.y
+        );
+
+        const scaleX = bodyShoulderWidth / shirtShoulderWidth;
+        const scaleY = bodyTorsoHeight / shirtTorsoHeight;
+        const scale = (scaleX + scaleY) / 2;
+
+        const shirtAnchorCenterX = (shirtLeftShoulder.x + shirtRightShoulder.x + shirtLeftHem.x + shirtRightHem.x) / 4;
+        const shirtAnchorCenterY = (shirtLeftShoulder.y + shirtRightShoulder.y + shirtLeftHem.y + shirtRightHem.y) / 4;
+
+        const bodyCenterX = (bodyLeftShoulder.x + bodyRightShoulder.x + bodyLeftHip.x + bodyRightHip.x) / 4;
+        const bodyCenterY = (bodyLeftShoulder.y + bodyRightShoulder.y + bodyLeftHip.y + bodyRightHip.y) / 4;
+
+        const imgCenterX = img.width / 2;
+        const imgCenterY = img.height / 2;
+
+        const offsetX = (shirtAnchorCenterX - imgCenterX) * scale;
+        const offsetY = (shirtAnchorCenterY - imgCenterY) * scale;
+
+        const finalCenterX = bodyCenterX - offsetX;
+        const finalCenterY = bodyCenterY - offsetY;
+
+        const rotation = Math.atan2(
+          bodyRightShoulder.y - bodyLeftShoulder.y,
+          bodyRightShoulder.x - bodyLeftShoulder.x
+        ) + Math.PI;
+
+        const renderWidth = img.width * scale;
+        const renderHeight = img.height * scale;
+
+        ctx.save();
+        ctx.translate(finalCenterX, finalCenterY);
+        ctx.rotate(rotation);
+        ctx.scale(-1, 1);
+        ctx.globalAlpha = opacity;
+
+        ctx.drawImage(
+          img,
+          0, 0, img.width, img.height,
+          -renderWidth / 2, -renderHeight / 2, renderWidth, renderHeight
+        );
+
+        ctx.restore();
+      } else if (item.category === 'bottoms' && waistbandAnchors && waistbandAnchors.topLeft) {
+        // Waistband anchored rendering for bottoms
+        const imgTopLeft = {
+          x: waistbandAnchors.topLeft.x * img.width,
+          y: waistbandAnchors.topLeft.y * img.height,
+        };
+        const imgTopRight = {
+          x: waistbandAnchors.topRight.x * img.width,
+          y: waistbandAnchors.topRight.y * img.height,
+        };
+        const imgBottomLeft = {
+          x: waistbandAnchors.bottomLeft.x * img.width,
+          y: waistbandAnchors.bottomLeft.y * img.height,
+        };
+        const imgBottomRight = {
+          x: waistbandAnchors.bottomRight.x * img.width,
+          y: waistbandAnchors.bottomRight.y * img.height,
+        };
+
+        const srcX = Math.min(imgTopLeft.x, imgBottomLeft.x);
+        const srcY = Math.min(imgTopLeft.y, imgTopRight.y);
+        const srcWidth = Math.max(imgTopRight.x, imgBottomRight.x) - srcX;
+        const srcHeight = Math.max(imgBottomLeft.y, imgBottomRight.y) - srcY;
+
+        const bodyLeftHip = quad.topLeft;
+        const bodyRightHip = quad.topRight;
+        const bodyLeftAnkle = quad.bottomLeft;
+        const bodyRightAnkle = quad.bottomRight;
+
+        const bodyWidth = Math.hypot(
+          bodyRightHip.x - bodyLeftHip.x,
+          bodyRightHip.y - bodyLeftHip.y
+        );
+        const bodyHeight = Math.hypot(
+          bodyLeftAnkle.x - bodyLeftHip.x,
+          bodyLeftAnkle.y - bodyLeftHip.y
+        );
+
+        const scaleXVal = bodyWidth / srcWidth;
+        const scaleYVal = bodyHeight / srcHeight;
+        const scale = Math.min(scaleXVal, scaleYVal) * 1.1;
+
+        const renderWidth = srcWidth * scale;
+        const renderHeight = srcHeight * scale;
+
+        const bodyCenterX = (bodyLeftHip.x + bodyRightHip.x + bodyLeftAnkle.x + bodyRightAnkle.x) / 4;
+        const bodyCenterY = (bodyLeftHip.y + bodyRightHip.y + bodyLeftAnkle.y + bodyRightAnkle.y) / 4;
+
+        const rotation = Math.atan2(
+          bodyRightHip.y - bodyLeftHip.y,
+          bodyRightHip.x - bodyLeftHip.x
+        ) + Math.PI;
+
+        ctx.save();
+        ctx.translate(bodyCenterX, bodyCenterY);
+        ctx.rotate(rotation);
+        ctx.scale(-1, 1);
+        ctx.globalAlpha = opacity;
+
+        ctx.drawImage(
+          img,
+          srcX, srcY, srcWidth, srcHeight,
+          -renderWidth / 2, -renderHeight / 2, renderWidth, renderHeight
+        );
+
+        ctx.restore();
+      } else {
+        // Fallback: standard quad rendering without anchor points
+        const bounds = boundsRef.current.get(item.id) || {
+          x: 0,
+          y: 0,
+          width: img.width,
+          height: img.height,
+        };
+
+        const topWidth = Math.hypot(
+          quad.topRight.x - quad.topLeft.x,
+          quad.topRight.y - quad.topLeft.y
+        );
+        const bottomWidth = Math.hypot(
+          quad.bottomRight.x - quad.bottomLeft.x,
+          quad.bottomRight.y - quad.bottomLeft.y
+        );
+        const renderWidth = ((topWidth + bottomWidth) / 2) * 1.4;
+
+        const leftHeight = Math.hypot(
+          quad.bottomLeft.x - quad.topLeft.x,
+          quad.bottomLeft.y - quad.topLeft.y
+        );
+        const rightHeight = Math.hypot(
+          quad.bottomRight.x - quad.topRight.x,
+          quad.bottomRight.y - quad.topRight.y
+        );
+        const renderHeight = ((leftHeight + rightHeight) / 2) * 1.4;
+
+        const centerX = (quad.topLeft.x + quad.topRight.x + quad.bottomLeft.x + quad.bottomRight.x) / 4;
+        const centerY = (quad.topLeft.y + quad.topRight.y + quad.bottomLeft.y + quad.bottomRight.y) / 4;
+
+        const rotation = Math.atan2(
+          quad.topRight.y - quad.topLeft.y,
+          quad.topRight.x - quad.topLeft.x
+        ) + Math.PI;
+
+        ctx.save();
+        ctx.translate(centerX, centerY);
+        ctx.rotate(rotation);
+        ctx.globalAlpha = opacity;
+
+        ctx.drawImage(
+          img,
+          bounds.x, bounds.y, bounds.width, bounds.height,
+          -renderWidth / 2, -renderHeight / 2, renderWidth, renderHeight
+        );
+
+        // Subtle dashed border for fallback items
+        if (isFallback) {
+          ctx.strokeStyle = 'rgba(255, 200, 50, 0.3)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(
+            -renderWidth / 2, -renderHeight / 2,
+            renderWidth, renderHeight
+          );
+          ctx.setLineDash([]);
+        }
+
+        ctx.restore();
       }
-
-      // Use standard quad-based rendering
-      const bounds = boundsRef.current.get(item.id) || {
-        x: 0,
-        y: 0,
-        width: img.width,
-        height: img.height,
-      };
-
-      const topWidth = Math.hypot(
-        quad.topRight.x - quad.topLeft.x,
-        quad.topRight.y - quad.topLeft.y
-      );
-      const bottomWidth = Math.hypot(
-        quad.bottomRight.x - quad.bottomLeft.x,
-        quad.bottomRight.y - quad.bottomLeft.y
-      );
-      const renderWidth = ((topWidth + bottomWidth) / 2) * 1.4;
-
-      const leftHeight = Math.hypot(
-        quad.bottomLeft.x - quad.topLeft.x,
-        quad.bottomLeft.y - quad.topLeft.y
-      );
-      const rightHeight = Math.hypot(
-        quad.bottomRight.x - quad.topRight.x,
-        quad.bottomRight.y - quad.topRight.y
-      );
-      const renderHeight = ((leftHeight + rightHeight) / 2) * 1.4;
-
-      const centerX = (quad.topLeft.x + quad.topRight.x + quad.bottomLeft.x + quad.bottomRight.x) / 4;
-      const centerY = (quad.topLeft.y + quad.topRight.y + quad.bottomLeft.y + quad.bottomRight.y) / 4;
-
-      const rotation = Math.atan2(
-        quad.topRight.y - quad.topLeft.y,
-        quad.topRight.x - quad.topLeft.x
-      ) + Math.PI;
-
-      ctx.save();
-      ctx.translate(centerX, centerY);
-      ctx.rotate(rotation);
-      ctx.globalAlpha = 1.0;
-
-      ctx.drawImage(
-        img,
-        bounds.x, bounds.y, bounds.width, bounds.height,
-        -renderWidth / 2, -renderHeight / 2, renderWidth, renderHeight
-      );
-
-      ctx.restore();
     }
-  }, [pose, items, width, height, loadedImages]);
+  }, [pose, items, width, height, loadedImages, opacity]);
 
   // Re-render when dependencies change
   useEffect(() => {

@@ -246,29 +246,6 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "send_voice_to_client",
-        "description": (
-            "Send a voice message to the user. Use this to explain outfit choices, give "
-            "style advice, or comment on the user's look. The text will be spoken aloud "
-            "by Mira's avatar."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "The message to speak to the user",
-                },
-                "emotion": {
-                    "type": "string",
-                    "enum": ["neutral", "excited", "thoughtful", "playful"],
-                    "description": "Tone of voice",
-                },
-            },
-            "required": ["text"],
-        },
-    },
-    {
         "name": "give_recommendation",
         "description": (
             "Search for clothing items from specific brands to build outfit recommendations. "
@@ -372,8 +349,6 @@ async def execute_tool(tool_name: str, tool_input: dict, user_context: dict) -> 
         return await _search_calendar(tool_input, user_context)
     elif tool_name == "display_product":
         return await _display_product(tool_input)
-    elif tool_name == "send_voice_to_client":
-        return await _send_voice_to_client(tool_input)
     elif tool_name == "give_recommendation":
         # Use session_id from user_context for caching; fall back to user_id
         session_id = user_context.get("session_id", user_context.get("user_id", "default"))
@@ -493,28 +468,6 @@ async def _display_product(tool_input: dict) -> dict:
             "type": "display_product",
             "items": items,
             "outfit_name": outfit_name,
-        },
-    }
-
-
-async def _send_voice_to_client(tool_input: dict) -> dict:
-    """Send a voice message to the frontend for TTS playback."""
-    text = tool_input.get("text", "")
-    emotion = tool_input.get("emotion", "neutral")
-
-    if not text:
-        return {"error": "No text provided"}
-
-    print(f"[mira-tools] send_voice_to_client: {len(text)} chars, emotion={emotion}")
-
-    return {
-        "sent": True,
-        "text": text,
-        "emotion": emotion,
-        "frontend_payload": {
-            "type": "voice_message",
-            "text": text,
-            "emotion": emotion,
         },
     }
 
