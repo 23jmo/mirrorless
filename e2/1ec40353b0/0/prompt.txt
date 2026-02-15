@@ -1,0 +1,389 @@
+Implement the following plan:
+
+# Plan: Add `take_photo` Tool for Mira
+
+## Context
+
+Mira currently receives one snapshot automatically at session start (`orchestrator.py:182-184`), but has no way to request another photo mid-conversation. The existing `request_snapshot` → `mirror_event` flow also has a bug where the frontend sends the wrong data format, so snapshots are silently dropped by `main.py`. This plan adds a `take_photo` tool Mira can invoke on demand and fixes the existing snapshot bug.
+
+## Architecture
+
+The core challenge: during tool execution, `is_processing = True` (orchestrator.py:199) blocks `handle_event()` from processing incoming events. So a snapshot response routed through `mirror_event` → `handle_event()` would deadlock. Solution: use a **separate Socket.io event channel** (`request_photo` → `photo_response`) that resolves an `asyncio.Future` directly, bypassing `handle_event` entirely.
+
+```
+Claude calls take_photo
+  → orchestrator creates asyncio.Future, emits "request_photo"
+  → frontend captures frame, emits "photo_response"
+  → main.py handler resolves Future (no handle_event)
+  → tool returns multimodal result with image
+  → Claude sees the photo immediately
+```
+
+## Files to Modify (4 files)
+
+### 1. `backend/agent/tools.py`
+
+**A. Add tool definition** — append to `TOOL_DEFINITIONS` list (after `give_recommendation`, line ~306):
+
+```python
+{
+    "name": "take_photo",
+    "description": (
+        "Take a photo of the user at the mirror right now. Use this to see what "
+        "the user is currently wearing, check if they changed clothes, or evaluate "
+        "how a suggested outfit looks on them. The photo will be returned to you "
+        "as an image you can analyze. Only call this when you genuinely need to "
+        "see the user — you already get a snapshot at session start."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Brief reason for taking the photo, e.g. 'checking current outfit' or 'see if they changed'",
+            },
+        },
+        "required": ["reason"],
+    },
+},
+```
+
+**B. Add fallback dispatch** in `execute_tool()` (before the `else` at line 419):
+
+```python
+elif tool_name == "take_photo":
+    return {"error": "take_photo must be handled by the orchestrator"}
+```
+
+---
+
+### 2. `backend/agent/orchestrator.py`
+
+**A. Add `_pending_photos` dict** to `__init__` (after line 83):
+
+```python
+self._pending_photos: dict[str, asyncio.Future] = {}
+```
+
+**B. Add `PHOTO_TIMEOUT_SECONDS` constant** (after line 43):
+
+```python
+PHOTO_TIMEOUT_SECONDS = 5
+```
+
+**C. Add `_take_photo()` method** on `MiraOrchestrator`:
+
+```python
+async def _take_photo(self, user_id: str, reason: str) -> dict:
+    """Request a photo from the mirror and wait for the response."""
+    if not self.sio:
+        return {"error": "Socket.io not available"}
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+    self._pending_photos[user_id] = future
+
+    await self.sio.emit("request_photo", {"user_id": user_id}, room=user_id)
+
+    try:
+        image_base64 = await asyncio.wait_for(future, timeout=PHOTO_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return {"error": "Photo capture timed out — the mirror camera may not be ready"}
+    finally:
+        self._pending_photos.pop(user_id, None)
+
+    if not image_base64:
+        return {"error": "Photo capture returned empty data"}
+
+    return {"success": True, "reason": reason, "image_base64": image_base64}
+```
+
+**D. Add `resolve_photo()` method** on `MiraOrchestrator` (called from `main.py`):
+
+```python
+def resolve_photo(self, user_id: str, image_base64: str) -> bool:
+    """Resolve a pending photo Future. Returns True if resolved."""
+    future = self._pending_photos.get(user_id)
+    if future and not future.done():
+        future.set_result(image_base64)
+        return True
+    return False
+```
+
+**E. Intercept `take_photo` in `_handle_tool_calls()`** — add a branch at the top of the `for tool_use in tool_uses:` loop (line 341), before the existing `try: result = await execute_tool(...)` block:
+
+```python
+if tool_use.name == "take_photo":
+    try:
+        photo_result = await self._take_photo(
+            session.user_id, tool_use.input.get("reason", "checking outfit")
+        )
+    except Exception as e:
+        photo_result = {"error": f"Photo capture failed: {e}"}
+
+    if "error" in photo_result:
+        tool_result_block = {
+            "type": "tool_result",
+            "tool_use_id": tool_use.id,
+            "content": json.dumps(photo_result),
+            "is_error": True,
+        }
+    else:
+        tool_result_block = {
+            "type": "tool_result",
+            "tool_use_id": tool_use.id,
+            "content": [
+                {"type": "text", "text": f"Photo captured ({photo_result['reason']}). Here is what the user looks like right now:"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": photo_result["image_base64"]}},
+            ],
+        }
+    tool_results.append(tool_result_block)
+    continue  # skip the normal execute_tool path
+```
+
+**F. Update `_select_model()`** — add before the Haiku check (line 259) so image-containing tool results use Sonnet:
+
+```python
+# Use Sonnet for image-containing tool results (take_photo)
+if last_msg.get("role") == "user" and isinstance(last_msg.get("content"), list):
+    for block in last_msg["content"]:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            content = block.get("content")
+            if isinstance(content, list) and any(
+                isinstance(c, dict) and c.get("type") == "image" for c in content
+            ):
+                return SONNET_MODEL, 400
+```
+
+---
+
+### 3. `backend/main.py`
+
+**Add `photo_response` Socket.io handler** (after `mirror_event` handler, line ~217):
+
+```python
+@sio.event
+async def photo_response(sid, data):
+    """Handle photo responses from the mirror (bypasses handle_event to avoid deadlock)."""
+    user_id = data.get("user_id")
+    image_base64 = data.get("image_base64")
+    if not user_id or not image_base64:
+        return
+    resolved = mira.resolve_photo(user_id, image_base64)
+    if not resolved:
+        print(f"[socket] photo_response: no pending request for {user_id}")
+```
+
+---
+
+### 4. `frontend/src/app/mirror/page.tsx`
+
+**A. Add `request_photo` listener** (new `useEffect` after the existing `request_snapshot` one, after line 274):
+
+```typescript
+useEffect(() => {
+  const handlePhotoRequest = () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < video.HAVE_CURRENT_DATA) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+    const base64 = dataUrl.split(",")[1];
+
+    socket.emit("photo_response", {
+      user_id: userId,
+      image_base64: base64,
+    });
+  };
+
+  socket.on("request_photo", handlePhotoRequest);
+  return () => { socket.off("request_photo", handlePhotoRequest); };
+}, [videoRef, userId]);
+```
+
+**B. Fix existing `request_snapshot` handler** (line 263-267) — use correct nested format:
+
+```typescript
+// Change from flat format:
+socket.emit("mirror_event", { type: "snapshot", image_base64: base64, user_id: userId });
+
+// To nested format matching main.py's mirror_event handler:
+socket.emit("mirror_event", {
+  user_id: userId,
+  event: { type: "snapshot", image_base64: base64 },
+});
+```
+
+---
+
+## Edge Cases
+
+- **Timeout** (5s): Tool returns error, Claude can naturally say "camera might not be ready"
+- **Camera not ready**: Frontend returns nothing → Future times out → graceful error
+- **Session ends mid-photo**: Future times out, `finally` block cleans up
+- **No pending request**: `resolve_photo()` returns False, no crash
+- **Image size**: JPEG 0.7 quality ≈ 50-200KB base64, well within Anthropic's 20MB limit
+
+## Verification
+
+1. Start a session, verify the session-start snapshot now works (bug fix)
+2. During conversation, have Mira call `take_photo` — verify the image appears in Claude's tool result
+3. Test timeout: disconnect the mirror frontend, invoke take_photo, verify graceful 5s timeout
+4. Run `pytest` from `backend/` to check no regressions
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+[socket] mirror_event snapshot from a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Calling Claude for a3e88c32-c832-4a44-99b8-0e3b278b6acf (turn #6)...
+[mira] Claude API call failed for a3e88c32-c832-4a44-99b8-0e3b278b6acf: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.3: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_01CZz2c1ZMd9EgzPkfZHWTuR, REDACTED. Each `tool_use` block must have a corresponding `tool_result` block in the next message.'}, 'request_id': 'req_011CY9VyY8w2o1agNVzYZkYK'}
+[mira] Stream end-of-message to a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[tts] TTS stream request: Hmm, my brain glitched for a second. What were we talking about?
+INFO:     127.0.0.1:53438 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[mira] Claude API call failed for a3e88c32-c832-4a44-99b8-0e3b278b6acf: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.3: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_01CZz2c1ZMd9EgzPkfZHWTuR, REDACTED. Each `tool_use` block must have a corresponding `tool_result` block in the next message.'}, 'request_id': 'req_011CY9VyYZESmCog3QT1wMk4'}
+[mira] Stream end-of-message to a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[tts] TTS stream request: Hmm, my brain glitched for a second. What were we talking about?
+INFO:     127.0.0.1:53453 - "POST /api/tts/stream HTTP/1.1" 200 OK
+[mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Calling Claude for a3e88c32-c832-4a44-99b8-0e3b278b6acf (turn #7)...
+[mira] Claude API call failed for a3e88c32-c832-4a44-99b8-0e3b278b6acf: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.3: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_01CZz2c1ZMd9EgzPkfZHWTuR, REDACTED. Each `tool_use` block must have a corresponding `tool_result` block in the next message.'}, 'request_id': 'REDACTED'}
+[mira] Stream end-of-message to a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[tts] TTS stream request: Hmm, my brain glitched for a second. What were we talking about?
+INFO:     127.0.0.1:53416 - "POST /api/tts/stream HTTP/1.1" 200 OK
+
+is this issue related to you??
+
+---
+
+undo your changes bro the take photo tool call does NOT work
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically trace through the conversation:
+
+1. **Initial request**: The user provided a detailed implementation plan for adding a `take_photo` tool to the Mira AI agent. The plan covered 4 files: `backend/agent/tools.py`, `backend/agent/orchestrator.py`, `backend/main.py`, and `frontend/src/app/mirror/page.tsx`.
+
+2. **Implementation phase**: I read all 4 files, created task items, and implemented the changes:
+   - `tools.py`: Added take_photo tool definition to TOOL_DEFINITIONS and fallback dispatch in execute_tool()
+   - `orchestrator.py`: Added PHOTO_TIMEOUT_SECONDS, _pending_photos dict, _take_photo() method, resolve_photo() method, intercepted take_photo in _handle_tool_calls(), updated _select_model() for image-containing tool results
+   - `main.py`: Added photo_response Socket.io event handler
+   - `page.tsx`: Fixed snapshot bug (flat→nested format) and added request_photo listener
+
+3. **Tests ran**: 65 passed, 4 failed (all pre-existing failures unrelated to changes)
+
+4. **User reported error**: The user shared backend logs showing a cascading 400 error: `messages.3: tool_use ids were found without tool_result blocks immediately after`. The session was permanently broken - every subsequent Claude call failed with the same error.
+
+5. **I diagnosed the issue**: The error recovery in `_call_claude` (lines 322-325) only popped the user tool_results message when a recursive Claude call failed, leaving the assistant tool_use message orphaned. I added code to also pop the orphaned assistant tool_use message.
+
+6. **User said to undo everything**: "undo your changes bro the take photo tool call does NOT work" and "undo ALL ur take photo tool changes for now"
+
+7. **I reverted all changes**:
+   - `git checkout backend/agent/tools.py backend/agent/orchestrator.py backend/main.py` for backend files
+   - Manually reverted the two edits in `page.tsx` (snapshot format fix and request_photo listener)
+
+Key technical details:
+- The `asyncio.Future` pattern for request/response across Socket.io
+- The deadlock problem: `is_processing = True` blocks `handle_event()`, so photo responses through `mirror_event` → `handle_event()` would deadlock
+- The error recovery bug: orphaned tool_use blocks in conversation history cause permanent 400 errors
+- The snapshot bug in page.tsx (flat vs nested format) was identified but also reverted
+
+The user was clear: ALL take_photo changes should be undone. This was completed.
+
+Summary:
+1. Primary Request and Intent:
+   The user initially asked to implement a detailed plan for adding a `take_photo` tool that allows Mira (the AI stylist agent) to request on-demand photos from the mirror camera mid-conversation. The plan involved 4 files and used an `asyncio.Future` pattern to avoid a deadlock where `is_processing = True` blocks `handle_event()`. After implementation, the user encountered a cascading 400 API error during live testing and ultimately requested ALL take_photo changes be **completely reverted**.
+
+2. Key Technical Concepts:
+   - `asyncio.Future` as a one-shot synchronization primitive for request/response across Socket.io channels
+   - Deadlock avoidance: separate `request_photo`/`photo_response` Socket.io channel bypasses `handle_event()` which is blocked during tool execution (`is_processing = True`)
+   - Anthropic API constraint: every `tool_use` block in an assistant message MUST have a corresponding `tool_result` block in the immediately following user message
+   - Error recovery bug in `_call_claude`: when a recursive call fails, popping only the user message (tool_results) orphans the assistant message (tool_use blocks), permanently corrupting conversation history
+   - Claude's `_select_model()` routing: Haiku for tool-result processing, Sonnet for conversational turns and image-containing tool results
+   - Frontend snapshot format: `mirror_event` handler in `main.py` expects nested `{user_id, event: {type, image_base64}}` but frontend sends flat `{type, image_base64, user_id}` — this is a pre-existing bug that was identified but fix was reverted
+
+3. Files and Code Sections:
+   - **`backend/agent/tools.py`** (READ + EDITED + REVERTED)
+     - Contains `TOOL_DEFINITIONS` list and `execute_tool()` dispatcher
+     - Added `take_photo` tool definition after `give_recommendation` (line ~307) and fallback dispatch in `execute_tool()`
+     - **All changes reverted via `git checkout`**
+   
+   - **`backend/agent/orchestrator.py`** (READ + EDITED + REVERTED)
+     - Core orchestrator with `MiraOrchestrator` class, `_call_claude()`, `_handle_tool_calls()`, `_select_model()`
+     - Added: `PHOTO_TIMEOUT_SECONDS = 5`, `_pending_photos` dict, `_take_photo()` async method, `resolve_photo()` sync method
+     - Intercepted `take_photo` in `_handle_tool_calls()` before the `execute_tool` path
+     - Updated `_select_model()` to route image-containing tool results to Sonnet
+     - Fixed error recovery bug in `_call_claude` exception handler (lines 321-330) to also pop orphaned assistant tool_use messages
+     - **All changes reverted via `git checkout`**
+     - Key error recovery code that has a pre-existing bug (lines 322-325):
+       ```python
+       except Exception as e:
+           print(f"[mira] Claude API call failed for {session.user_id}: {e}")
+           # Pop the last user message to keep conversation history consistent
+           if session.conversation_history and session.conversation_history[-1]["role"] == "user":
+               session.conversation_history.pop()
+       ```
+   
+   - **`backend/main.py`** (READ + EDITED + REVERTED)
+     - FastAPI app + Socket.io event handlers
+     - Added `photo_response` Socket.io handler that calls `mira.resolve_photo()`
+     - **All changes reverted via `git checkout`**
+   
+   - **`frontend/src/app/mirror/page.tsx`** (READ + EDITED + REVERTED)
+     - Mirror display page with camera, orb avatar, gesture recognition, Socket.io listeners
+     - Fixed snapshot bug: changed flat format `{type: "snapshot", image_base64, user_id}` to nested `{user_id, event: {type: "snapshot", image_base64}}`
+     - Added `request_photo` useEffect listener that captures JPEG frame and emits `photo_response`
+     - **Both changes manually reverted** (snapshot format restored to original flat format, request_photo listener removed)
+
+4. Errors and fixes:
+   - **Edit tool string matching error**: First attempt to edit `tools.py` failed because the `old_string` didn't match exactly (whitespace/indentation). Fixed by re-reading the specific lines and using the exact content.
+   - **Cascading 400 API error in production**: After deploying, the user saw `messages.3: tool_use ids were found without tool_result blocks immediately after: toolu_01CZz2c1ZMd9EgzPkfZHWTuR, REDACTED`. Root cause: Claude eagerly called `take_photo` + another tool on the first turn. When a recursive `_call_claude` processing tool results failed, the error handler popped only the user tool_results message, orphaning the assistant tool_use message. Every subsequent call then hit the same 400 error permanently. I added code to also pop orphaned assistant messages, but this was reverted along with everything else.
+   - **User feedback**: User said "undo your changes bro the take photo tool call does NOT work" and "undo ALL ur take photo tool changes for now" — I reverted everything.
+
+5. Problem Solving:
+   - Diagnosed that the `take_photo` tool triggers a pre-existing bug in `_call_claude`'s error recovery that permanently corrupts conversation history
+   - Identified the snapshot format mismatch between frontend (flat) and backend `mirror_event` handler (expects nested) — this is a pre-existing bug still present in the codebase
+   - The error recovery fix (popping orphaned assistant tool_use messages) was implemented but reverted along with all other changes
+
+6. All user messages:
+   - **Message 1**: "Implement the following plan: # Plan: Add `take_photo` Tool for Mira" — Detailed plan with architecture, 4 files to modify, code snippets, edge cases, and verification steps
+   - **Message 2**: Pasted backend error logs showing cascading 400 errors (`tool_use ids were found without tool_result blocks`) and asked "is this issue related to you??"
+   - **Message 3**: "undo your changes bro the take photo tool call does NOT work"
+   - **Message 4**: "undo ALL ur take photo tool changes for now"
+
+7. Pending Tasks:
+   - The `take_photo` feature still needs to be implemented, but the user explicitly asked to undo all changes for now. No active tasks remain.
+   - The pre-existing error recovery bug in `_call_claude` (orphaned tool_use blocks on recursive call failure) still exists and will need to be fixed before `take_photo` can work reliably.
+   - The pre-existing snapshot format bug in `page.tsx` (flat vs nested format) still exists.
+
+8. Current Work:
+   All take_photo changes have been fully reverted. The codebase is back to its state before the implementation began. The user's last two messages were:
+   - "undo your changes bro the take photo tool call does NOT work"
+   - "undo ALL ur take photo tool changes for now"
+   
+   I completed the revert: `git checkout` for 3 backend files, manual revert of 2 edits in `page.tsx`.
+
+9. Optional Next Step:
+   No next step — the user said "for now" indicating they want to pause on this feature. If/when they want to revisit `take_photo`, the key blocker to fix FIRST is the error recovery bug in `orchestrator.py`'s `_call_claude` exception handler (lines 322-325) which must also pop orphaned assistant tool_use messages to prevent cascading 400 errors. The snapshot format bug in `page.tsx` should also be fixed.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+Can you take out the changes that we recently made? I'm pretty sure that tool
+  calls are broken now ... spin up a few research agents
+
+---
+
+[Request interrupted by user for tool use]
