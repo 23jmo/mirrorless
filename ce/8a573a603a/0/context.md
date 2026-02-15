@@ -12,3 +12,7 @@ Implement the following plan:
 
 The user wants to verify MediaPipe body tracking is working in `/mirror-v2` by seeing skeleton/landmark points on a black background. All the infrastructure already exists — `usePoseDetection` runs in all kiosk states, and `DebugOverlay` toggles with the `d` key — but the skeleton is **invisible** because the DebugOverlay wrapper is at `z-index: 6` while the attract/waiting state overlays sit at ...
 
+### Prompt 2
+
+is there a log that tells me when i press it
+
