@@ -3,9 +3,17 @@
   "checkpoint_id": "5aba31dcfe2c",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
-    "backend/requirements.txt"
+    "backend/agent/orchestrator.py",
+    "backend/requirements.txt",
+    "frontend/src/__tests__/gesture-classifier.test.ts",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/components/mirror/GestureIndicator.tsx",
+    "frontend/src/components/mirror/LikedItemsTray.tsx",
+    "frontend/src/hooks/useGestureRecognizer.ts",
+    "frontend/src/lib/gesture-classifier.ts",
+    "frontend/src/types/gestures.ts"
   ],
   "sessions": [
     {
@@ -14,13 +22,20 @@
       "context": "/5a/ba31dcfe2c/0/context.md",
       "content_hash": "/5a/ba31dcfe2c/0/content_hash.txt",
       "prompt": "/5a/ba31dcfe2c/0/prompt.txt"
+    },
+    {
+      "metadata": "/5a/ba31dcfe2c/1/metadata.json",
+      "transcript": "/5a/ba31dcfe2c/1/full.jsonl",
+      "context": "/5a/ba31dcfe2c/1/context.md",
+      "content_hash": "/5a/ba31dcfe2c/1/content_hash.txt",
+      "prompt": "/5a/ba31dcfe2c/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 26,
-    "cache_creation_tokens": 33748,
-    "cache_read_tokens": 65763,
-    "output_tokens": 3,
-    "api_call_count": 3
+    "input_tokens": 89,
+    "cache_creation_tokens": 121366,
+    "cache_read_tokens": 5300766,
+    "output_tokens": 8158,
+    "api_call_count": 64
   }
 }

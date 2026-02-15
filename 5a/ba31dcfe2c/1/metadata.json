@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "5aba31dcfe2c",
+  "session_id": "53fbfc45-7b92-4f11-b502-10295e286f2e",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T15:29:23.232068Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "frontend/src/__tests__/gesture-classifier.test.ts",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/components/mirror/GestureIndicator.tsx",
+    "frontend/src/components/mirror/LikedItemsTray.tsx",
+    "frontend/src/hooks/useGestureRecognizer.ts",
+    "frontend/src/lib/gesture-classifier.ts",
+    "frontend/src/types/gestures.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 63,
+    "cache_creation_tokens": 87618,
+    "cache_read_tokens": 5235003,
+    "output_tokens": 8155,
+    "api_call_count": 61
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T15:29:23.097627Z",
+    "agent_lines": 16,
+    "human_added": 0,
+    "human_modified": 53,
+    "human_removed": 294,
+    "total_committed": 69,
+    "agent_percentage": 23.18840579710145
+  }
+}
