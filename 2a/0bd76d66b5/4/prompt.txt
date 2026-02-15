@@ -1,0 +1,183 @@
+Implement the following plan:
+
+# Plan: Graceful Session Ending with Recap Screen
+
+## Context
+
+When Mira hits the `SOFT_API_LIMIT` (20 Claude API calls), she silently stops responding — the user gets no feedback, no goodbye, no recap. The session stays "alive" but dead. This change makes Mira gracefully wrap up: she delivers a spoken closing recap via TTS, saves the session, and the mirror transitions to a visual recap screen showing liked items and stats before advancing to the next user.
+
+## Changes
+
+### 1. Backend: `backend/agent/orchestrator.py`
+
+**Replace silent API limit with graceful shutdown** (line 272-274):
+
+```python
+# Before:
+if session.api_calls >= SOFT_API_LIMIT:
+    print(f"[mira] API limit reached for {session.user_id}")
+    return
+
+# After:
+if session.api_calls >= SOFT_API_LIMIT:
+    print(f"[mira] API limit reached for {session.user_id}, initiating graceful shutdown")
+    if not session.wrapping_up:
+        session.wrapping_up = True
+        await self._graceful_shutdown(session)
+    return
+```
+
+**Add `wrapping_up` guard in `handle_event()`** (after line 196):
+- If `session.wrapping_up` is True, ignore all incoming events (voice, gesture, etc.) and return early
+- This prevents new transcripts from queueing up during the closing speech
+
+**Add `_graceful_shutdown()` method** (new, after `_call_claude`):
+1. Cancel the silence timer
+2. Call `_generate_closing_speech(session)` — a new Haiku call that generates a warm, in-character Mira closing message (2-4 sentences, with `[emotion:proud]` tag)
+3. Stream the closing speech via `_stream_text()` chunks + end-of-message — this triggers TTS on the frontend so the user *hears* the recap
+4. `await asyncio.sleep(0.5)` — brief pause to let TTS start
+5. Call `self.end_session(user_id)` — saves to DB, emits `session_ended` with recap payload
+
+**Add `_generate_closing_speech()` method** (new, after `_generate_summary`):
+- Separate from `_generate_summary()` because: summary = clinical DB record, closing speech = warm spoken goodbye
+- Uses Haiku, max 200 tokens
+- Prompt: "You are Mira wrapping up a session. Recap liked items, give a confidence boost, tell them picks are saved to their phone. Start with [emotion:proud]. Keep it conversational — no markdown."
+- Input: session stats + liked item names
+- Fallback on exception: hardcoded "That was a great session! Your favorites are saved to your phone. See you next time!"
+
+**Add `user_name` to `session_ended` payload** (line 446-458):
+- Add `"user_name": session.user_context.get("profile", {}).get("name", "")` to the emitted data so the recap screen can greet the user by name
+
+### 2. Frontend: New `frontend/src/components/mirror/SessionRecap.tsx`
+
+Full-screen overlay component for the mirror's post-session recap:
+
+- **Header**: "Session Complete" + "Great session, {userName}!"
+- **Summary text**: AI-generated session summary
+- **Liked items grid**: Up to 4 thumbnail cards (image, title, price) — only shown if liked items exist
+- **Stats row**: Items Shown count + Liked count
+- **Footer text**: "Your picks have been saved. Check your phone for links."
+- **Progress bar**: 20-second countdown, auto-dismisses when complete
+- **Style**: Dark glass overlay (`rgba(0,0,0,0.85)` + `backdrop-filter: blur(20px)`), consistent with existing attract/waiting overlays (inline styles, no Tailwind)
+
+### 3. Frontend: `frontend/src/app/mirror/page.tsx`
+
+**Add recap state** (after line 67):
+```typescript
+const [recapData, setRecapData] = useState<{
+  summary?: string;
+  liked_items?: Array<{ title: string; price?: string; image_url?: string }>;
+  stats?: { items_shown: number; likes: number; dislikes: number };
+  user_name?: string;
+} | null>(null);
+```
+
+**Update `session_ended` handler** (line 262-279):
+- Accept the data payload (currently the handler ignores it)
+- Don't call `mira.stopSession()` immediately — let the closing speech TTS finish playing
+- Set `sessionActive = false`, clear outfits
+- Set `recapData` from the payload — this renders the `SessionRecap` overlay
+- Keep `activeUser` set (needed for recap display)
+- Set `kioskState` to `"recap"` (new state)
+
+**Add `"recap"` to `KioskState`** (line 24):
+```typescript
+type KioskState = "attract" | "waiting" | "session" | "recap";
+```
+
+**Add auto-dismiss for recap** (new useEffect):
+- When `recapData` is set, start a 20-second timer
+- On timeout: call `mira.stopSession()`, clear `recapData`, clear `activeUser`, set `kioskState` to `"attract"`
+- The queue auto-advancement already happened server-side in `end_session()`, so `queue_updated` will fire naturally
+
+**Update `queue_updated` handler** (line 119):
+- Also block transitions when `kioskState === "recap"` (same as session)
+
+**Render `SessionRecap`** (in JSX, before error indicators):
+```tsx
+{recapData && (
+  <SessionRecap
+    summary={recapData.summary}
+    likedItems={recapData.liked_items || []}
+    stats={recapData.stats}
+    userName={recapData.user_name}
+    onDismiss={() => { /* clear recap, go to attract */ }}
+  />
+)}
+```
+
+### 4. Frontend: `frontend/src/app/phone/page.tsx` (minor fix)
+
+**Fix field name mismatch** (line 57-63):
+- The orchestrator emits `stats: { items_shown, likes, dislikes }` and `liked_items: [...]`
+- The phone handler expects `items_shown` and `items_liked` at top level
+- Update the handler to destructure from `data.stats.likes` and `data.stats.items_shown`
+
+## Event Flow (End-to-End)
+
+```
+1. api_calls hits 20 → _graceful_shutdown() fires
+2. Silence timer cancelled, wrapping_up = true
+3. _generate_closing_speech() → Haiku generates warm recap
+4. _stream_text() chunks → mira_speech events → frontend TTS plays through Orb
+5. end_session() → saves summary to DB → emits session_ended with full payload
+6. Mirror: receives session_ended → shows SessionRecap overlay (summary + items + stats)
+7. Mirror: 20s countdown → auto-dismiss → attract state
+8. Phone: receives session_ended → shows RecapView (already exists)
+9. Backend: _auto_advance_queue() promotes next user → queue_updated fires
+```
+
+## Edge Cases
+
+- **User speaking when limit hits**: `wrapping_up` guard in `handle_event()` ignores new events
+- **No liked items**: Closing speech handles gracefully ("We explored a lot of styles"), recap hides "Your Favorites" section
+- **Closing speech generation fails**: Hardcoded fallback message used
+- **TTS still playing when recap appears**: Recap renders as overlay while TTS finishes — no conflict
+- **Force-end/disconnect**: These skip the closing speech (already abrupt by design), but still emit `session_ended` so recap screen still shows if data is available
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| `backend/agent/orchestrator.py` | Replace silent limit, add `_graceful_shutdown()`, `_generate_closing_speech()`, `wrapping_up` guard, `user_name` in payload |
+| `frontend/src/components/mirror/SessionRecap.tsx` | **New file** — recap overlay component |
+| `frontend/src/app/mirror/page.tsx` | Add `"recap"` state, recap data state, update `session_ended` handler, auto-dismiss timer, render SessionRecap |
+| `frontend/src/app/phone/page.tsx` | Fix `session_ended` payload field name mismatch |
+
+## Verification
+
+1. Start a session via admin dashboard
+2. Send 20+ voice messages to hit the API limit
+3. Verify: Mira speaks a closing recap via TTS
+4. Verify: Mirror shows recap overlay with summary, liked items (if any), stats
+5. Verify: Recap auto-dismisses after ~20 seconds → mirror returns to attract
+6. Verify: Phone shows recap view with correct stats
+7. Verify: Queue auto-advances to next user
+8. Verify: Force-end from admin still works (skips closing speech, shows recap if data available)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+can you verify
+
+---
+
+Also i get some "uh oh my brain glitched" sometimes - what is the origin of these?
+
+---
+
+mira-tools] search_calendar: → 5 results (total matching: 17)
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for cee077b2-b367-4b73-8d84-7dcc04cc562c
+[mira] Calling Claude for cee077b2-b367-4b73-8d84-7dcc04cc562c (turn #8)...
+[mira] Claude API call failed for cee077b2-b367-4b73-8d84-7dcc04cc562c: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: REDACTED. Each `tool_use` block must have a corresponding `tool_result` block in the next message.'}, 'request_id': 'REDACTED'}
+[mira] Stream end-of-message to cee077b2-b367-4b73-8d84-7dcc04cc562c
+[tts] TTS stream request: Hmm, my brain glitched for a second. What were we talking about?
+INFO:     127.0.0.1:50471 - "POST /api/tts/stream HTTP/1.1" 200 OK
+
+we really need to fix this once and for all - can you also write test files as many as needed to test different cases and identify root causes?
+
+---
+
+[Request interrupted by user for tool use]
