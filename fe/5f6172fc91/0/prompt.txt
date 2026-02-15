@@ -1,0 +1,140 @@
+Implement the following plan:
+
+# Gesture System Overhaul
+
+## Context
+
+The mirror's gesture system has three problems:
+1. **Swipe sensitivity** — swipes trigger on any hand motion (even a single finger), causing false positives. Should require a deliberate open-palm swipe.
+2. **Like/dislike are invisible** — thumbs up/down send events to the LLM but have zero visual effect on the mirror UI. Users don't see feedback that their preference was registered.
+3. **No end-of-outfits handling** — swiping past the last outfit wraps back to the first (modulo). Should signal Mira to offer more suggestions.
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `frontend/src/types/gestures.ts` | Add `"end_of_outfits"` to `GestureType` union |
+| `frontend/src/lib/gesture-classifier.ts` | Add `isOpenPalm` gate to `detectSwipe()`, add `isOpenPalmGesture()` helper |
+| `frontend/src/hooks/useGestureRecognizer.ts` | Pass Open_Palm classification state to `detectSwipe()` |
+| `frontend/src/app/mirror/page.tsx` | New state (likedOutfits, outfitAnimation), clamped navigation, auto-advance, end signal, animation CSS, LikedItemsTray rendering |
+| `frontend/src/components/mirror/LikedItemsTray.tsx` | **New file** — liked-items tray with thumbnails + count badge |
+| `frontend/src/components/mirror/GestureIndicator.tsx` | Add `end_of_outfits` to gesture display mapping |
+| `backend/agent/orchestrator.py` | Decouple swipes from like/dislike tracking, add `end_of_outfits` gesture description |
+
+## Implementation Details
+
+### 1. Open-Palm Swipe Gating
+
+**`gesture-classifier.ts`**: Add `isOpenPalmGesture(name, score)` — returns true when MediaPipe classifies the hand as `"Open_Palm"` with score >= 0.6. Add `isOpenPalm: boolean` parameter to `detectSwipe()`. When false, clear `state.positions` (prevents stale tracking) and return null.
+
+**`useGestureRecognizer.ts`**: After `recognizeForVideo()`, check if top gesture is Open_Palm via `isOpenPalmGesture()`. Pass the boolean to `detectSwipe()`. Thumbs up/down detection unchanged.
+
+Key detail: When palm is NOT open, we clear the swipe state positions array. This prevents false swipes from firing the moment the user opens their palm after moving a closed fist.
+
+### 2. Clamped Navigation (No Wrapping)
+
+Replace modulo wrapping with clamped navigation in `page.tsx`:
+- `swipe_left` (next): advance if `index < outfits.length - 1`, otherwise emit `end_of_outfits`
+- `swipe_right` (previous): go back if `index > 0`, otherwise do nothing
+- Same clamping for keyboard ArrowLeft/ArrowRight
+
+### 3. Like Effect (thumbs_up → card-collect)
+
+**New state in `page.tsx`:**
+```typescript
+interface LikedOutfitThumbnail { imageUrl: string; outfitName: string }
+const [likedOutfits, setLikedOutfits] = useState<LikedOutfitThumbnail[]>([]);
+const [outfitAnimation, setOutfitAnimation] = useState<"none" | "like-collect" | "dislike-dismiss">("none");
+```
+
+**Extended `CanvasOutfit` interface** — add `originalImageUrls: string[]` (from `result.carouselCards[].image_url` in `handleToolResult`).
+
+**On thumbs_up hold completion:**
+1. Set `outfitAnimation = "like-collect"`
+2. Add current outfit's first original product image to `likedOutfits`
+3. Emit `mirror_event` with `thumbs_up`
+4. After 800ms: reset animation, auto-advance to next outfit (or emit `end_of_outfits` if at end)
+
+**CSS animation** (`like-collect` class on outfit wrapper):
+- Shrinks to 12% scale, translates toward bottom-right tray position, fades to 0.3 opacity over 800ms
+
+### 4. Dislike Effect (thumbs_down → dismiss)
+
+**On thumbs_down hold completion:**
+1. Set `outfitAnimation = "dislike-dismiss"`
+2. Emit `mirror_event` with `thumbs_down`
+3. After 700ms: reset animation, auto-advance (or emit `end_of_outfits`)
+
+**CSS animation** (`dislike-dismiss` class):
+- Red tint via CSS `filter: sepia(0.5) saturate(3) hue-rotate(-30deg)`, translates down 80px, fades out over 700ms
+
+**Block gestures during animation:** `handleGesture` early-returns when `outfitAnimation !== "none"`.
+
+### 5. LikedItemsTray Component (new file)
+
+- Position: `absolute`, `bottom: 80px`, `right: 24px`, `z-index: 12`
+- Glass-morphism background (`rgba(255,255,255,0.08)`, `backdrop-filter: blur(10px)`)
+- Shows up to 5 thumbnails (44px, rounded, original product photos) + count badge
+- Overflow: `+N` indicator
+- Entry animation: `slideInScale 400ms ease-out` per thumbnail
+- Hidden when empty, persists across entire session, cleared on session start
+
+### 6. End-of-Outfits Signal
+
+Emitted as `mirror_event` with `gesture: "end_of_outfits"` — follows existing gesture event pattern.
+
+**Backend (`orchestrator.py`):**
+- No like/dislike increment for `end_of_outfits`
+- Gesture description: `"The user has swiped through all available outfits. They've seen everything you've shown so far."`
+- Mira responds verbally via normal speech pipeline (no special frontend UI)
+
+### 7. Backend Semantic Change
+
+Decouple swipes from like/dislike tracking:
+```python
+# Before: swipe_right = like, swipe_left = dislike
+# After: only thumbs express preference
+if gesture == "thumbs_up":
+    session.likes += 1
+    if session._last_shown_item:
+        session.liked_items.append(session._last_shown_item)
+elif gesture == "thumbs_down":
+    session.dislikes += 1
+# swipe_left, swipe_right, end_of_outfits: no tracking
+```
+
+Update `gesture_descriptions`:
+- `swipe_right`: "The user swiped to go back to the previous outfit."
+- `swipe_left`: "The user swiped to see the next outfit."
+- `end_of_outfits`: "The user has swiped through all available outfits. They've seen everything you've shown so far."
+
+## Implementation Order
+
+1. Types (`gestures.ts`) — add `end_of_outfits`
+2. Gesture detection (`gesture-classifier.ts`) — add `isOpenPalmGesture()`, gate `detectSwipe()`
+3. Hook (`useGestureRecognizer.ts`) — pass Open_Palm state
+4. Backend (`orchestrator.py`) — gesture semantics + end_of_outfits description
+5. New component (`LikedItemsTray.tsx`)
+6. GestureIndicator update (`GestureIndicator.tsx`)
+7. Mirror page overhaul (`page.tsx`) — all state, animation, navigation, tray integration
+
+## Verification
+
+1. **Open-palm gating**: With camera on, point a single finger and move hand — should NOT trigger swipe. Open palm and swipe — should trigger.
+2. **Like effect**: Hold thumbs up for 2s — outfit should shrink/fly to bottom-right tray, auto-advance to next outfit. Tray should show product thumbnail with count.
+3. **Dislike effect**: Hold thumbs down for 2s — outfit should fade with red tint, auto-advance.
+4. **End signal**: Swipe past last outfit — Mira should respond verbally asking if user wants more options.
+5. **No wrapping**: At outfit 1, swipe_right (previous) does nothing. At last outfit, swipe_left triggers end signal.
+6. **Backend**: Check that swipes no longer increment likes/dislikes in session stats. Only thumbs do.
+7. **Keyboard**: ArrowRight at last outfit should trigger end signal. ArrowLeft at first does nothing.
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+did we push this alr?
+
+---
+
+Can you look at my poke fast MCP server? What URL or what address is it deploying at what port? Can we fix the port to 8001 please?
