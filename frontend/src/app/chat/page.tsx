@@ -99,12 +99,23 @@ export default function ChatPage() {
     };
   }, [mirrorId]);
 
+  const relayToPoke = useCallback(
+    async (text: string) => {
+      const resp = await fetch(`${API_URL}/api/mirror/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mirror_id: mirrorId, text }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    },
+    [mirrorId]
+  );
+
   const sendMessage = useCallback(async () => {
     if (!input.trim() || sending) return;
     const text = input.trim();
     setInput("");
 
-    // Show user message immediately
     setMessages((prev) => [
       ...prev,
       { id: `user-${Date.now()}`, role: "user", text },
@@ -112,14 +123,7 @@ export default function ChatPage() {
 
     setSending(true);
     try {
-      const resp = await fetch(`${API_URL}/api/mirror/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mirror_id: mirrorId, text }),
-      });
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
-      }
+      await relayToPoke(text);
     } catch (err) {
       setSending(false);
       setMessages((prev) => [
@@ -131,7 +135,36 @@ export default function ChatPage() {
         },
       ]);
     }
-  }, [input, sending, mirrorId]);
+  }, [input, sending, relayToPoke]);
+
+  const endSession = useCallback(async () => {
+    if (sending) return;
+    setSending(true);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `sys-${Date.now()}`,
+        role: "system",
+        text: "Ending session...",
+      },
+    ]);
+    try {
+      await relayToPoke(
+        "The session is ending now. Please save a summary of this session using save_session, including any items shown and reactions."
+      );
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "system",
+          text: `Failed to end session: ${err instanceof Error ? err.message : "Unknown error"}`,
+        },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  }, [sending, relayToPoke]);
 
   return (
     <main
@@ -176,7 +209,7 @@ export default function ChatPage() {
           </span>
         </div>
 
-        {/* Mirror ID */}
+        {/* Mirror ID + End Session */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <label
             style={{ fontSize: "0.8rem", color: "#888", whiteSpace: "nowrap" }}
@@ -198,6 +231,13 @@ export default function ChatPage() {
               fontFamily: "monospace",
             }}
           />
+          <button
+            onClick={endSession}
+            disabled={sending}
+            style={btnStyle(sending ? "#333" : "#dc2626")}
+          >
+            End Session
+          </button>
         </div>
       </div>
 

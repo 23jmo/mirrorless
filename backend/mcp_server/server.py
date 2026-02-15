@@ -7,6 +7,7 @@ Or via uvicorn:
     cd backend && uvicorn mcp_server.server:app --host 0.0.0.0 --port 8001
 """
 
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -22,49 +23,58 @@ from mcp_server.shopping import search_serper
 
 load_dotenv()
 
+log = logging.getLogger("mcp")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 mcp = FastMCP(
     "Mirrorless Shopping",
-    instructions="""Personal shopping assistant tools for a smart mirror display.
+    instructions="""You are connected to a smart mirror. These tools are the ONLY way
+to search for clothes and show things on the user's physical mirror display.
+
+MANDATORY: Whenever the user mentions ANYTHING related to shopping, clothing, fashion,
+outfits, style, accessories, shoes, or getting dressed — you MUST use these tools.
+Do NOT answer from your own knowledge about products. ALWAYS search with search_clothing
+and show results on the mirror with present_items. The user is standing in front of a
+mirror and expects to SEE items on it.
 
 TOOLS:
-- search_clothing: Search for clothing items online. Use detailed queries including
-  gender, style keywords, occasion, and price range. Returns product results with
-  images and prices. Example: "womens oversized cream wool coat under $200"
+- search_clothing: Search for clothing items online. Use detailed queries with
+  gender, style keywords, occasion, price range. Returns results with images and prices.
+  Results go to you ONLY — the user does NOT see them until you call present_items.
 
-- present_items: Display 1-5 curated clothing items on the user's smart mirror.
-  Requires mirror_id. Each item needs: title, price, image_url, link, source.
+- present_items: Display 1-5 curated items on the user's smart mirror. REQUIRED after
+  every search — this is how the user actually sees products. Each item needs:
+  title, price, image_url, link, source.
 
-- send_to_mirror: Send text to display on the user's smart mirror screen.
-  Use this to show your commentary, styling advice, or reactions on the mirror.
-  The mirror can also speak this text aloud via text-to-speech.
-  Requires mirror_id.
+- send_to_mirror: Send text to display on the mirror screen. Use this for commentary,
+  styling advice, greetings, and reactions. The mirror speaks this text aloud via TTS.
+  ALWAYS use this alongside present_items so the user hears your reasoning.
 
-- get_past_sessions: Retrieve previous shopping sessions for this mirror.
-  Returns session dates, items shown, user reactions (liked/disliked/skipped),
-  and summaries. Use this to personalize recommendations — reference items they
-  liked or disliked in past sessions.
+- get_past_sessions: Retrieve previous shopping sessions. Returns items shown, user
+  reactions (liked/disliked/skipped), and summaries. Use this to personalize.
 
-- save_session: Save a session summary when the shopping conversation ends.
-  Include items shown, reactions, and a brief summary of what happened.
-  ALWAYS call this when wrapping up a shopping interaction.
+- save_session: Save a session summary when done. Include items shown and reactions.
 
-WORKFLOW:
-1. Get the user's mirror_id if you don't have it yet (the code on their mirror)
-2. Call get_past_sessions to check their history — reference past likes/dislikes
+WORKFLOW — follow this every time:
+1. Get the user's mirror_id (permanent code like "MIRROR-A1") — ask if you don't have it
+2. ALWAYS call get_past_sessions first to check history
 3. Use send_to_mirror to greet them on the mirror
-4. Search for items based on what you know about the user + their session history
-5. Pick your best 1-5 results and display them via present_items
-6. Use send_to_mirror to explain why you chose those items
-7. React to feedback, refine, and keep the conversation going on the mirror
-8. When done, call save_session with a summary of what happened
+4. Search with search_clothing based on what you know about the user
+5. Pick your best 1-5 results and call present_items to show them on the mirror
+6. ALWAYS call send_to_mirror alongside present_items to explain your picks
+7. React to feedback, refine searches, keep showing items on the mirror
+8. When done, ALWAYS call save_session with a summary
 
-IMPORTANT:
-- ALWAYS use send_to_mirror alongside present_items so the user sees your
-  commentary on the mirror, not just in their phone.
-- ALWAYS call get_past_sessions at the start to build on previous interactions.
-- ALWAYS call save_session at the end so future sessions can reference this one.
-- The user's purchase history, calendar, and preferences are available to you
-  through your own integrations — use that context to personalize everything.
+RULES:
+- NEVER skip search_clothing for shopping requests — always search live, never guess
+- NEVER skip present_items after searching — the user expects to see items on their mirror
+- NEVER skip send_to_mirror alongside present_items — always explain your picks
+- ALWAYS call get_past_sessions at the start to build on previous interactions
+- ALWAYS call save_session at the end so future sessions can reference this one
 """,
 )
 
@@ -82,7 +92,14 @@ async def search_clothing(query: str, num_results: int = 8) -> dict:
                Example: "mens black minimalist sneakers under $150"
         num_results: Number of results to return (default 8, max 20).
     """
-    return await search_serper(query, num_results)
+    log.info("search_clothing called | query=%r num_results=%d", query, num_results)
+    result = await search_serper(query, num_results)
+    count = len(result.get("results", []))
+    if "error" in result:
+        log.error("search_clothing error: %s", result["error"])
+    else:
+        log.info("search_clothing returned %d results", count)
+    return result
 
 
 @mcp.tool
@@ -96,7 +113,14 @@ async def present_items(mirror_id: str, items: list[dict]) -> dict:
         mirror_id: The mirror's permanent ID (e.g. "MIRROR-A1").
         items: List of 1-5 items, each with: title, price, image_url, link, source.
     """
-    return await do_present_items(mirror_id, items)
+    titles = [item.get("title", "?") for item in items]
+    log.info("present_items called | mirror=%s items=%d titles=%s", mirror_id, len(items), titles)
+    result = await do_present_items(mirror_id, items)
+    if "error" in result:
+        log.error("present_items error: %s", result["error"])
+    else:
+        log.info("present_items success | mirror=%s", mirror_id)
+    return result
 
 
 @mcp.tool
@@ -110,7 +134,13 @@ async def send_to_mirror(mirror_id: str, text: str) -> dict:
         mirror_id: The mirror's permanent ID (e.g. "MIRROR-A1").
         text: The text to display and optionally speak on the mirror.
     """
-    return await do_send_to_mirror(mirror_id, text)
+    log.info("send_to_mirror called | mirror=%s text=%r", mirror_id, text[:100])
+    result = await do_send_to_mirror(mirror_id, text)
+    if "error" in result:
+        log.error("send_to_mirror error: %s", result["error"])
+    else:
+        log.info("send_to_mirror success | mirror=%s", mirror_id)
+    return result
 
 
 @mcp.tool
@@ -125,7 +155,14 @@ async def get_past_sessions(mirror_id: str, limit: int = 5) -> dict:
         mirror_id: The mirror's permanent ID (e.g. "MIRROR-A1").
         limit: Max number of sessions to return (default 5).
     """
-    return await do_get_past_sessions(mirror_id, limit)
+    log.info("get_past_sessions called | mirror=%s limit=%d", mirror_id, limit)
+    result = await do_get_past_sessions(mirror_id, limit)
+    if "error" in result:
+        log.error("get_past_sessions error: %s", result["error"])
+    else:
+        session_count = len(result.get("sessions", []))
+        log.info("get_past_sessions returned %d sessions | mirror=%s", session_count, mirror_id)
+    return result
 
 
 @mcp.tool
@@ -146,7 +183,14 @@ async def save_session(
         items_shown: List of items that were shown, each optionally with a "reaction" field.
         reactions: Aggregate reaction counts (e.g. {"likes": 2, "dislikes": 1, "items_shown": 5}).
     """
-    return await do_save_session(mirror_id, summary, items_shown, reactions)
+    item_count = len(items_shown) if items_shown else 0
+    log.info("save_session called | mirror=%s items=%d summary=%r", mirror_id, item_count, summary[:100])
+    result = await do_save_session(mirror_id, summary, items_shown, reactions)
+    if "error" in result:
+        log.error("save_session error: %s", result["error"])
+    else:
+        log.info("save_session success | mirror=%s session_id=%s", mirror_id, result.get("session_id"))
+    return result
 
 
 # --- Entry point ---
