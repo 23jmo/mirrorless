@@ -38,10 +38,22 @@ export function googleLogin(code: string, redirectUri: string = "postmessage") {
   });
 }
 
-export function updateProfile(userId: string, name: string, phone: string) {
+export function updateProfile(userId: string, name: string, phone?: string) {
+  const payload: { user_id: string; name: string; phone?: string } = {
+    user_id: userId,
+    name,
+  };
+  if (phone !== undefined) payload.phone = phone;
   return request<UserProfile>("/auth/profile", {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, name, phone }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function uploadSelfie(userId: string, selfieBase64: string) {
+  return request<UserProfile>("/auth/selfie", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, selfie_base64: selfieBase64 }),
   });
 }
 
@@ -54,6 +66,12 @@ export function joinQueue(userId: string) {
 
 export function getQueueStatus(userId: string) {
   return request<QueueInfo>(`/queue/status/${userId}`);
+}
+
+export function leaveQueue(userId: string) {
+  return request<{ status: string }>(`/queue/leave/${userId}`, {
+    method: "POST",
+  });
 }
 
 export function getUser(userId: string) {
@@ -122,4 +140,78 @@ export async function submitOnboarding(
     body: JSON.stringify(data),
   });
   return res.json();
+}
+
+// --- Queue control APIs ---
+
+export function skipQueueUser(userId: string) {
+  return request<{ status: string }>(`/queue/skip/${userId}`, {
+    method: "POST",
+  });
+}
+
+export function advanceQueue() {
+  return request<{ status: string; active_user?: { id: string; name: string } }>(
+    "/queue/advance",
+    { method: "POST" }
+  );
+}
+
+export function reorderQueue(userIds: string[]) {
+  return request<{ status: string }>("/queue/reorder", {
+    method: "PATCH",
+    body: JSON.stringify({ user_ids: userIds }),
+  });
+}
+
+export function startMirrorSession(userId: string) {
+  return request<{ status: string }>("/queue/start-session", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+// --- Admin APIs ---
+
+export interface AdminQueueEntry {
+  id: string;
+  user_id: string;
+  name: string;
+  position: number;
+  status: string;
+  joined_at: string;
+}
+
+export interface AdminSessionInfo {
+  user_id: string;
+  name: string;
+  session_id: string | null;
+  api_calls: number;
+  items_shown: number;
+  items_liked: number;
+}
+
+export interface BoothStats {
+  total_users_today: number;
+  avg_session_seconds: number;
+  total_items_shown: number;
+  total_items_liked: number;
+}
+
+export function getAdminQueue() {
+  return request<AdminQueueEntry[]>("/admin/queue");
+}
+
+export function getAdminSession() {
+  return request<AdminSessionInfo | null>("/admin/session");
+}
+
+export function getBoothStats() {
+  return request<BoothStats>("/admin/stats");
+}
+
+export function forceEndSession() {
+  return request<{ status: string }>("/admin/force-end", {
+    method: "POST",
+  });
 }
