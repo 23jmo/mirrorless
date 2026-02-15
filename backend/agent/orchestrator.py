@@ -727,7 +727,7 @@ class MiraOrchestrator:
                     "You are Mira, a warm and stylish AI fashion advisor wrapping up a session. "
                     "Give a brief closing recap (2-3 sentences). Mention their favorites, give a confidence boost, "
                     "and let them know their picks are saved to their phone. "
-                    "Start with [emotion:proud]. Keep it conversational — no markdown, no lists."
+                    "Keep it conversational — no markdown, no lists."
                 ),
                 messages=[
                     {
@@ -743,7 +743,7 @@ class MiraOrchestrator:
             return response.content[0].text
         except Exception as e:
             print(f"[mira] Closing speech generation failed, using fallback: {e}")
-            return "[emotion:proud] That was a great session! Your favorites are saved to your phone. See you next time!"
+            return "That was a great session! Your favorites are saved to your phone. See you next time!"
 
     def _event_to_message(self, event: dict) -> str | list:
         """Convert an event dict to a Claude user message."""

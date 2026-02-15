@@ -7,8 +7,9 @@ import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { usePoseDetection } from "@/hooks/usePoseDetection";
 import { useMiraVideoAvatar } from "@/hooks/useMiraVideoAvatar";
+import type { MiraEmotion } from "@/components/ui/mira-video-avatar";
 import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
-import { parseEmotionTag, detectEmotionFromText } from "@/lib/emotion-parser";
+import { detectEmotionFromText } from "@/lib/emotion-parser";
 import { MiraVideoAvatar } from "@/components/ui/mira-video-avatar";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas, type FitMethod } from "@/components/mirror/ClothingCanvas";
@@ -57,9 +58,16 @@ function MirrorV2Page() {
   const { videoRef, isReady: isCameraReady } = useCamera();
 
   // ── Gesture recognition ──
+  const HOLD_DURATION_MS = 2000;
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
   const gestureKeyRef = useRef(0);
   const [gestureKey, setGestureKey] = useState(0);
+  const [holdProgress, setHoldProgress] = useState(0);
+  const [pendingGestureType, setPendingGestureType] = useState<GestureType | null>(null);
+  const holdStartRef = useRef<number | null>(null);
+  const holdGestureRef = useRef<GestureType | null>(null);
+  const holdLastSeenRef = useRef<number>(0);
+  const holdRafRef = useRef<number>(0);
 
   // ── Session state ──
   const [sessionActive, setSessionActive] = useState(false);
@@ -114,8 +122,8 @@ function MirrorV2Page() {
   const sentenceBufferRef = useRef<string>("");
   // Track emotion for the current response (parsed from first chunk)
   const currentEmotionRef = useRef<string>("idle");
-  // Track whether emotion has been parsed for this response
-  const emotionParsedRef = useRef(false);
+  // Track whether emotion has been detected for this response
+  const emotionDetectedRef = useRef(false);
 
   // Track whether we just interrupted Mira (ignore stale mira_speech chunks)
   const interruptedRef = useRef(false);
@@ -266,7 +274,7 @@ function MirrorV2Page() {
           const displaySentence = sentence;
           mira.speakQueued(
             sentence,
-            emotion as ReturnType<typeof parseEmotionTag>["emotion"],
+            emotion as MiraEmotion,
             () => {
               // Fires when TTS actually starts playing this sentence
               setSpeechText(displaySentence);
@@ -306,20 +314,12 @@ function MirrorV2Page() {
 
         sentenceBufferRef.current += data.text;
 
-        // Parse emotion from first chunk (where [emotion:X] tag appears)
-        if (!emotionParsedRef.current) {
-          const { emotion, cleanText } = parseEmotionTag(sentenceBufferRef.current);
-          if (emotion !== "idle") {
-            currentEmotionRef.current = emotion;
-            emotionParsedRef.current = true;
-            sentenceBufferRef.current = cleanText;
-          } else {
-            // Try keyword detection on accumulated text
-            const detected = detectEmotionFromText(sentenceBufferRef.current);
-            if (detected !== "idle") {
-              currentEmotionRef.current = detected;
-              emotionParsedRef.current = true;
-            }
+        // Detect emotion from keywords in accumulated text
+        if (!emotionDetectedRef.current) {
+          const detected = detectEmotionFromText(sentenceBufferRef.current);
+          if (detected !== "idle") {
+            currentEmotionRef.current = detected;
+            emotionDetectedRef.current = true;
           }
         }
 
@@ -334,13 +334,9 @@ function MirrorV2Page() {
           sentenceBufferRef.current += data.text;
         }
 
-        // Parse emotion if we haven't yet (short responses)
-        if (!emotionParsedRef.current) {
-          const { emotion, cleanText } = parseEmotionTag(sentenceBufferRef.current);
-          currentEmotionRef.current = emotion === "idle"
-            ? detectEmotionFromText(sentenceBufferRef.current)
-            : emotion;
-          sentenceBufferRef.current = emotion !== "idle" ? cleanText : sentenceBufferRef.current;
+        // Detect emotion if we haven't yet (short responses)
+        if (!emotionDetectedRef.current) {
+          currentEmotionRef.current = detectEmotionFromText(sentenceBufferRef.current);
         }
 
         // Flush any remaining text as the final sentence
@@ -349,7 +345,7 @@ function MirrorV2Page() {
           const displayRemainder = remainder;
           mira.speakQueued(
             remainder,
-            currentEmotionRef.current as ReturnType<typeof parseEmotionTag>["emotion"],
+            currentEmotionRef.current as MiraEmotion,
             () => {
               // Fires when TTS actually starts playing this sentence
               setSpeechText(displayRemainder);
@@ -367,7 +363,7 @@ function MirrorV2Page() {
         // Reset for next response
         sentenceBufferRef.current = "";
         currentEmotionRef.current = "idle";
-        emotionParsedRef.current = false;
+        emotionDetectedRef.current = false;
       }
     };
 
@@ -512,7 +508,7 @@ function MirrorV2Page() {
       interruptedRef.current = true;
       sentenceBufferRef.current = "";
       currentEmotionRef.current = "idle";
-      emotionParsedRef.current = false;
+      emotionDetectedRef.current = false;
       setSpeechText("");
       setSpeechVisible(false);
       socket.emit("interrupt", { user_id: userId });
@@ -558,30 +554,98 @@ function MirrorV2Page() {
   // ── Gesture handler ──
   const handleGesture = useCallback(
     (gesture: DetectedGesture) => {
-      setLastGesture(gesture.type);
-      gestureKeyRef.current += 1;
-      setGestureKey(gestureKeyRef.current);
+      // Swipes → dispatch immediately (unchanged behavior)
+      if (gesture.type === "swipe_left" || gesture.type === "swipe_right") {
+        setLastGesture(gesture.type);
+        gestureKeyRef.current += 1;
+        setGestureKey(gestureKeyRef.current);
 
-      if (canvasOutfits.length > 1) {
-        if (gesture.type === "swipe_left") {
-          setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
-        } else if (gesture.type === "swipe_right") {
-          setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+        if (canvasOutfits.length > 1) {
+          if (gesture.type === "swipe_left") {
+            setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
+          } else if (gesture.type === "swipe_right") {
+            setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+          }
         }
+
+        socket.emit("mirror_event", {
+          user_id: userId,
+          event: {
+            type: "gesture",
+            gesture: gesture.type,
+            confidence: gesture.confidence,
+            timestamp: gesture.timestamp,
+          },
+        });
+        return;
       }
 
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: {
-          type: "gesture",
-          gesture: gesture.type,
-          confidence: gesture.confidence,
-          timestamp: gesture.timestamp,
-        },
-      });
+      // Thumbs → hold-to-confirm (update last-seen time each frame)
+      const now = Date.now();
+      holdLastSeenRef.current = now;
+
+      // If gesture type changed, reset and start a fresh hold
+      if (holdGestureRef.current !== gesture.type) {
+        holdGestureRef.current = gesture.type;
+        holdStartRef.current = now;
+        setPendingGestureType(gesture.type);
+        setHoldProgress(0);
+      }
     },
     [userId, canvasOutfits.length],
   );
+
+  // ── Hold-to-confirm progress loop (rAF) ──
+  useEffect(() => {
+    const tick = () => {
+      holdRafRef.current = requestAnimationFrame(tick);
+
+      if (!holdGestureRef.current || !holdStartRef.current) return;
+
+      const now = Date.now();
+
+      // If gesture hasn't been seen in 300ms, cancel the hold
+      if (now - holdLastSeenRef.current > 300) {
+        holdGestureRef.current = null;
+        holdStartRef.current = null;
+        setPendingGestureType(null);
+        setHoldProgress(0);
+        return;
+      }
+
+      const elapsed = now - holdStartRef.current;
+      const progress = Math.min(elapsed / HOLD_DURATION_MS, 1);
+      setHoldProgress(progress);
+
+      // Hold completed → dispatch the gesture event
+      if (progress >= 1) {
+        const gestureType = holdGestureRef.current;
+
+        setLastGesture(gestureType);
+        gestureKeyRef.current += 1;
+        setGestureKey(gestureKeyRef.current);
+
+        socket.emit("mirror_event", {
+          user_id: userId,
+          event: {
+            type: "gesture",
+            gesture: gestureType,
+            confidence: 1,
+            timestamp: Date.now(),
+          },
+        });
+
+        // Reset hold state
+        holdGestureRef.current = null;
+        holdStartRef.current = null;
+        setPendingGestureType(null);
+        setHoldProgress(0);
+      }
+    };
+
+    holdRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(holdRafRef.current);
+  }, [userId]);
 
   useGestureRecognizer({
     videoRef,
@@ -899,7 +963,12 @@ function MirrorV2Page() {
       )}
 
       {/* Gesture visual feedback (z-20, center) */}
-      <GestureIndicator key={gestureKey} gesture={lastGesture} />
+      <GestureIndicator
+        gesture={lastGesture}
+        gestureKey={gestureKey}
+        pendingGesture={pendingGestureType}
+        holdProgress={holdProgress}
+      />
 
       {/* === RECAP STATE === (z-25) */}
       {recapData && (
