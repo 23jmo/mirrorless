@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "a8c359763333",
+  "session_id": "000712b9-9031-4d04-b2b9-2f69d6a04fed",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T14:11:03.255276Z",
+  "branch": "feature/diagnostic-logging",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "frontend/src/components/mirror/ClothingCanvas.tsx",
+    "frontend/src/hooks/usePoseDetection.ts",
+    "frontend/src/lib/clothing-transform.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 34444,
+    "cache_read_tokens": 401381,
+    "output_tokens": 830,
+    "api_call_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T14:11:03.230138Z",
+    "agent_lines": 6,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 6,
+    "agent_percentage": 100
+  }
+}

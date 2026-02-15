@@ -3,7 +3,7 @@
   "checkpoint_id": "a8c359763333",
   "strategy": "manual-commit",
   "branch": "feature/diagnostic-logging",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/agent/prompts.py",
@@ -12,6 +12,8 @@
     "frontend/src/app/chat/page.tsx",
     "frontend/src/app/mirror-v2/page.tsx",
     "frontend/src/components/mirror/ClothingCanvas.tsx",
+    "frontend/src/hooks/usePoseDetection.ts",
+    "frontend/src/lib/clothing-transform.ts",
     "frontend/src/lib/map-clothing-items.ts",
     "frontend/src/lib/process-tool-result.ts"
   ],
@@ -22,13 +24,20 @@
       "context": "/a8/c359763333/0/context.md",
       "content_hash": "/a8/c359763333/0/content_hash.txt",
       "prompt": "/a8/c359763333/0/prompt.txt"
+    },
+    {
+      "metadata": "/a8/c359763333/1/metadata.json",
+      "transcript": "/a8/c359763333/1/full.jsonl",
+      "context": "/a8/c359763333/1/context.md",
+      "content_hash": "/a8/c359763333/1/content_hash.txt",
+      "prompt": "/a8/c359763333/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 12,
-    "cache_creation_tokens": 24673,
-    "cache_read_tokens": 847819,
-    "output_tokens": 2809,
-    "api_call_count": 8
+    "input_tokens": 25,
+    "cache_creation_tokens": 59117,
+    "cache_read_tokens": 1249200,
+    "output_tokens": 3639,
+    "api_call_count": 17
   }
 }
