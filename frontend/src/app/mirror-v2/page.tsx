@@ -238,14 +238,14 @@ function MirrorV2Page() {
         remaining = remaining.slice(endIdx);
 
         if (sentence) {
-          mira.speakQueued(sentence, emotion as ReturnType<typeof parseEmotionTag>["emotion"]);
-
-          // Show sentence on screen immediately
-          setSpeechText(sentence);
-          setSpeechVisible(true);
-          if (speechFadeTimerRef.current) {
-            clearTimeout(speechFadeTimerRef.current);
-          }
+          mira.speakQueued(sentence, emotion as ReturnType<typeof parseEmotionTag>["emotion"], () => {
+            // Show subtitle when audio actually starts playing
+            setSpeechText(sentence);
+            setSpeechVisible(true);
+            if (speechFadeTimerRef.current) {
+              clearTimeout(speechFadeTimerRef.current);
+            }
+          });
         }
       }
 
@@ -308,12 +308,14 @@ function MirrorV2Page() {
         // Flush any remaining text as the final sentence
         const remainder = sentenceBufferRef.current.trim();
         if (remainder) {
-          mira.speakQueued(remainder, currentEmotionRef.current as ReturnType<typeof parseEmotionTag>["emotion"]);
-          setSpeechText(remainder);
-          setSpeechVisible(true);
-          if (speechFadeTimerRef.current) {
-            clearTimeout(speechFadeTimerRef.current);
-          }
+          mira.speakQueued(remainder, currentEmotionRef.current as ReturnType<typeof parseEmotionTag>["emotion"], () => {
+            // Show subtitle when audio actually starts playing
+            setSpeechText(remainder);
+            setSpeechVisible(true);
+            if (speechFadeTimerRef.current) {
+              clearTimeout(speechFadeTimerRef.current);
+            }
+          });
         }
 
         // Signal end of queue — drain callback will reset avatar state
