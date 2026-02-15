@@ -2,8 +2,8 @@
   "cli_version": "0.4.2",
   "checkpoint_id": "2a0bd76d66b5",
   "strategy": "manual-commit",
-  "branch": "fix/admin-dashboard-sql-errors",
-  "checkpoints_count": 9,
+  "branch": "feature/full-merge",
+  "checkpoints_count": 10,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/main.py",
@@ -21,6 +21,7 @@
     "frontend/src/components/mirror/OutfitDots.tsx",
     "frontend/src/components/mirror/SessionRecap.tsx",
     "frontend/src/components/mirror/SpeechDisplay.tsx",
+    "frontend/src/components/ui/mira-video-avatar.tsx",
     "frontend/src/hooks/useCamera.ts"
   ],
   "sessions": [
@@ -79,13 +80,20 @@
       "context": "/2a/0bd76d66b5/7/context.md",
       "content_hash": "/2a/0bd76d66b5/7/content_hash.txt",
       "prompt": "/2a/0bd76d66b5/7/prompt.txt"
+    },
+    {
+      "metadata": "/2a/0bd76d66b5/8/metadata.json",
+      "transcript": "/2a/0bd76d66b5/8/full.jsonl",
+      "context": "/2a/0bd76d66b5/8/context.md",
+      "content_hash": "/2a/0bd76d66b5/8/content_hash.txt",
+      "prompt": "/2a/0bd76d66b5/8/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 250,
-    "cache_creation_tokens": 489377,
-    "cache_read_tokens": 13305218,
-    "output_tokens": 27088,
-    "api_call_count": 196
+    "input_tokens": 259,
+    "cache_creation_tokens": 508665,
+    "cache_read_tokens": 13538328,
+    "output_tokens": 27413,
+    "api_call_count": 203
   }
 }
