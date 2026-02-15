@@ -1,0 +1,97 @@
+ERROR: Ignored the following versions that require a different python version: 2.0.28 Requires-Python >3.7,<3.11; 2.0.29 Requires-Python >3.7,<3.11; 2.0.30 Requires-Python >3.7,<3.11; 2.0.31 Requires-Python >3.7,<3.11; 2.0.32 Requires-Python >3.7,<3.11; 2.0.33 Requires-Python >3.7,<3.11; 2.0.34 Requires-Python >3.7,<3.11; 2.0.35 Requires-Python >3.7,<3.11; 2.0.36 Requires-Python >3.7,<3.11; 2.0.37 Requires-Python >3.7,<3.11; 2.0.38 Requires-Python >3.7,<3.11; 2.0.39 Requires-Python >3.7,<3.11; 2.0.40 Requires-Python >3.7,<3.11; 2.0.41 Requires-Python >=3.8,<3.12; 2.0.43 Requires-Python >=3.8,<3.12; 2.0.44 Requires-Python >=3.8,<3.12; 2.0.45 Requires-Python >=3.8,<3.12; 2.0.46 Requires-Python >=3.8,<3.12; 2.0.47 Requires-Python >=3.8,<3.12; 2.0.48 Requires-Python >=3.8,<3.12; 2.0.49 Requires-Python >=3.8,<3.12; 2.0.50 Requires-Python >=3.8,<3.12; 2.0.51 Requires-Python >=3.8,<3.12; 2.0.52 Requires-Python >=3.8,<3.12; 2.0.53 Requires-Python >=3.8,<3.12; 2.0.54 Requires-Python >=3.8,<3.12; 2.0.55 Requires-Python >=3.8,<3.13; 2.0.56 Requires-Python >=3.8,<3.13; 2.0.57 Requires-Python >=3.8,<3.13; 2.0.58 Requires-Python >=3.8,<3.13; 2.0.59 Requires-Python >=3.8,<3.13; 2.0.60 Requires-Python >=3.8,<3.13; 2.0.61 Requires-Python >=3.8,<3.13; 2.0.62 Requires-Python >=3.10,<3.14; 2.0.63 Requires-Python >=3.10,<3.14; 2.0.64 Requires-Python >=3.10,<3.14; 2.0.65 Requires-Python >=3.10,<3.14; 2.0.66 Requires-Python >=3.10,<3.14; 2.0.67 Requires-Python >=3.10,<3.14
+ERROR: Could not find a version that satisfies the requirement rembg==2.0.57 (from versions: 2.0.68, 2.0.69, 2.0.70, 2.0.71, 2.0.72)
+[notice] A new release of pip is available: 25.3 -> 26.0.1
+[notice] To update, run: pip install --upgrade pip
+ERROR: No matching distribution found for rembg==2.0.57
+==> Build failed 😞
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
+
+---
+
+do it
+
+---
+
+[end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+[notice] A new release of pip is available: 25.3 -> 26.0.1
+[notice] To update, run: pip install --upgrade pip
+error: metadata-generation-failed
+× Encountered error while generating package metadata.
+╰─> pydantic-core
+note: This is an issue with the package mentioned above, not pip.
+hint: See above for details.
+==> Build failed 😞
+
+please fix  - use cli to test
+
+---
+
+==> Exited with status 1
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
+==> Running 'uvicorn mcp_server.server:app --host 0.0.0.0 --port $PORT'
+[15:43:04] mcp INFO: Starting Mirrorless Poke MCP server (HTTP mode)...
+[15:43:04] mcp INFO: DATABASE_URL: postgresql://neondb_owner:npg_...
+[15:43:14] mcp INFO: MCP server created with tools: get_past_sessions, save_session
+Traceback (most recent call last):
+  File "/opt/render/project/src/.venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 1485, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 1406, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 1269, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 824, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/main.py", line 412, in main
+    run(
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/main.py", line 579, in run
+    server.run()
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/server.py", line 66, in run
+    return asyncio.run(self.serve(sockets=sockets))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/python/Python-3.11.0/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/opt/render/project/python/Python-3.11.0/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/server.py", line 70, in serve
+    await self._serve(sockets)
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/server.py", line 77, in _serve
+    config.load()
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/config.py", line 435, in load
+    self.loaded_app = import_from_string(self.app)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/python/Python-3.11.0/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1206, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1178, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1149, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "/opt/render/project/src/backend/mcp_server/server.py", line 298, in <module>
+    app = _create_http_app()
+          ^^^^^^^^^^^^^^^^^^
+  File "/opt/render/project/src/backend/mcp_server/server.py", line 295, in _create_http_app
+    return server.http_app()
+           ^^^^^^^^^^^^^^^
+AttributeError: 'FastMCP' object has no attribute 'http_app'
+Need better ways to work with logs? Try theRender CLI, Render MCP Server, or set up a log stream integration
+
+---
+
+yes
