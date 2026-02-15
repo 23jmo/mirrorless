@@ -2,31 +2,38 @@
 
 Removes backgrounds from flat lay product images so they can be
 overlaid transparently on the mirror display.
+
+Imports are lazy to avoid loading onnxruntime + u2net (~170MB)
+at server startup, which would stall or OOM on free-tier hosts.
 """
 
 import asyncio
 import base64
 import io
-from functools import lru_cache
+import logging
 
-from PIL import Image
-from rembg import new_session, remove
+log = logging.getLogger(__name__)
+
+_rembg_session = None
 
 
 def _get_session():
-    """Return the cached rembg model session (eagerly loaded at import time)."""
-    return _REMBG_SESSION
+    """Return the cached rembg model session (lazy-loaded on first call)."""
+    global _rembg_session
+    if _rembg_session is None:
+        from rembg import new_session
 
-
-# Download and cache the u2net model at import time so it never
-# stalls mid-demo waiting for a ~170 MB download.
-print("[rembg] Loading u2net model...")
-_REMBG_SESSION = new_session("u2net")
-print("[rembg] u2net model ready")
+        log.info("[rembg] Loading u2net model...")
+        _rembg_session = new_session("u2net")
+        log.info("[rembg] u2net model ready")
+    return _rembg_session
 
 
 def _remove_bg(image_bytes: bytes) -> bytes:
     """Synchronous background removal. Runs in thread executor."""
+    from rembg import remove
+    from PIL import Image
+
     session = _get_session()
     input_image = Image.open(io.BytesIO(image_bytes))
     output_image = remove(input_image, session=session)
