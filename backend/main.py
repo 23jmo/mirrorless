@@ -4,15 +4,11 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
-from routers import auth, queue, users
-from scraper.routes import router as scraper_router
+from routers import auth, queue, users, heygen
+from routers.mirror import router as mirror_router
 from judges.routes import router as judges_router
-from agent.orchestrator import MiraOrchestrator
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
-
-# Map socket IDs to user IDs for disconnect cleanup
-_sid_to_user: dict[str, str] = {}
 
 app = FastAPI(title="Mirrorless API", version="0.1.0")
 
@@ -28,13 +24,12 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(queue.router)
 app.include_router(users.router)
-app.include_router(scraper_router)
 app.include_router(judges_router)
+app.include_router(heygen.router)
+app.include_router(mirror_router)
 
-# Make sio and Mira accessible to routes
+# Make sio accessible to routes (mirror bridge endpoints need it)
 app.state.sio = sio
-mira = MiraOrchestrator(socket_io=sio)
-app.state.mira = mira
 
 
 @app.get("/health")
@@ -52,24 +47,23 @@ async def connect(sid, environ):
 
 @sio.event
 async def join_room(sid, data):
-    """Client joins a user-specific room for targeted events."""
+    """Client joins a mirror-specific or user-specific room."""
+    mirror_id = data.get("mirror_id")
     user_id = data.get("user_id")
+
+    if mirror_id:
+        room = f"mirror:{mirror_id}"
+        await sio.enter_room(sid, room)
+        print(f"[socket] {sid} joined mirror room {room}")
+
     if user_id:
         await sio.enter_room(sid, user_id)
-        _sid_to_user[sid] = user_id
         print(f"[socket] {sid} joined room {user_id}")
 
 
 @sio.event
 async def disconnect(sid):
     print(f"[socket] Client disconnected: {sid}")
-    user_id = _sid_to_user.pop(sid, None)
-    if user_id and user_id in mira.sessions:
-        try:
-            await mira.end_session(user_id)
-            print(f"[socket] Cleaned up session for {user_id}")
-        except Exception as e:
-            print(f"[socket] Failed to clean up session for {user_id}: {e}")
 
 
 def _is_valid_uuid(value: str) -> bool:
@@ -82,48 +76,19 @@ def _is_valid_uuid(value: str) -> bool:
 
 @sio.event
 async def start_session(sid, data):
-    """Start a Mira session for a user."""
+    """Activate a Mira session for a user on the mirror."""
     user_id = data.get("user_id")
     if not user_id:
         return
 
     if not _is_valid_uuid(user_id):
-        print(f"[mira] Invalid UUID from {sid}: {user_id}")
-        await sio.emit("session_error", {"error": f"Invalid user ID: must be a valid UUID"}, to=sid)
+        print(f"[socket] Invalid UUID from {sid}: {user_id}")
+        await sio.emit("session_error", {"error": "Invalid user ID"}, to=sid)
         return
 
-    print(f"[mira] Starting session for user {user_id}")
-    try:
-        await mira.start_session(user_id)
-    except Exception as e:
-        print(f"[mira] start_session failed for {user_id}: {e}")
-        await sio.emit("session_error", {"error": f"Failed to start session: {e}"}, to=sid)
-
-
-@sio.event
-async def mirror_event(sid, data):
-    """Handle events from the mirror (voice, gesture, pose, snapshot)."""
-    user_id = data.get("user_id")
-    event = data.get("event", {})
-    if not user_id or not event:
-        return
-    try:
-        await mira.handle_event(user_id, event)
-    except Exception as e:
-        print(f"[mira] mirror_event failed for {user_id}: {e}")
-        await sio.emit("session_error", {"error": f"Event processing failed: {e}"}, to=sid)
-
-
-@sio.event
-async def end_session(sid, data):
-    """End a Mira session."""
-    user_id = data.get("user_id")
-    if not user_id:
-        return
-    print(f"[mira] Ending session for user {user_id}")
-    result = await mira.end_session(user_id)
-    if result:
-        await sio.emit("session_recap", result, room=user_id)
+    print(f"[socket] Starting session for user {user_id}")
+    await sio.emit("session_active", {"user_id": user_id}, room=user_id)
+    await sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
 
 
 # Wrap FastAPI with Socket.io — no outer CORS wrapper needed
