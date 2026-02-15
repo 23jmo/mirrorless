@@ -1,0 +1,339 @@
+/* ── Display UI: Liquid Glass Aesthetic ── */
+
+/* ── Glass Panel Base ── */
+.glassPanel {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+}
+
+/* ── Layout Container ── */
+.displayRoot {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "Helvetica Neue", Arial, sans-serif;
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Jenny Video Layer ── */
+.jennyLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.jennyVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.jennyPlaceholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #0a0a0a 0%, #000 80%);
+}
+
+.jennyPlaceholderPulse {
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.03) 0%,
+    transparent 70%
+  );
+  animation: breathe 6s ease-in-out infinite;
+}
+
+/* ── Overlay Container ── */
+.overlays {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+.overlays > * {
+  pointer-events: auto;
+}
+
+/* ── Top Row: Subtitles + Mira ── */
+.topRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  flex-shrink: 0;
+}
+
+/* ── Subtitles Panel ── */
+.subtitlesPanel {
+  max-width: 380px;
+  min-width: 260px;
+  max-height: 320px;
+  padding: 20px;
+  animation: slideIn 0.6s ease-out both;
+}
+
+.subtitlesScroll {
+  overflow-y: auto;
+  max-height: 260px;
+  scrollbar-width: none;
+}
+
+.subtitlesScroll::-webkit-scrollbar {
+  display: none;
+}
+
+.subtitlesEmpty {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 13px;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.subtitleLine {
+  padding: 6px 0;
+  transition: opacity 0.4s ease;
+  animation: fadeUp 0.3s ease-out both;
+}
+
+.subtitleSpeaker {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-right: 8px;
+  display: inline-block;
+  min-width: 36px;
+}
+
+.subtitleSpeaker[data-speaker="User"] {
+  color: rgba(180, 210, 255, 0.8);
+}
+
+.subtitleSpeaker[data-speaker="Mira"] {
+  color: rgba(200, 170, 255, 0.8);
+}
+
+.subtitleSpeaker[data-speaker="Jenny"] {
+  color: rgba(170, 230, 200, 0.8);
+}
+
+.subtitleText {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+/* ── Mira Panel ── */
+.miraPanel {
+  position: relative;
+  width: clamp(180px, 20vw, 320px);
+  aspect-ratio: 3 / 4;
+  flex-shrink: 0;
+  overflow: hidden;
+  animation: slideIn 0.6s ease-out 0.1s both;
+  transition: box-shadow 0.6s ease, border-color 0.6s ease;
+}
+
+.miraPanelActive {
+  border-color: rgba(180, 160, 255, 0.3);
+  box-shadow: 0 0 40px rgba(160, 140, 255, 0.15),
+    0 0 80px rgba(160, 140, 255, 0.05);
+}
+
+.miraVideoWrapper {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.4s ease;
+}
+
+.miraVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 19px;
+}
+
+/* ── Mic Button ── */
+.micContainer {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  z-index: 10;
+}
+
+.micButton {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  outline: none;
+  padding: 0;
+}
+
+.micButton:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.micButton:focus-visible {
+  box-shadow: 0 0 0 3px rgba(100, 149, 237, 0.5);
+}
+
+.micButton:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.micActive {
+  background: rgba(100, 149, 237, 0.2);
+  border-color: rgba(100, 149, 237, 0.4);
+  color: #fff;
+  animation: micPulse 2s ease-in-out infinite;
+}
+
+.micIcon {
+  width: 22px;
+  height: 22px;
+}
+
+.micLabel {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0);
+  transition: color 0.3s ease;
+}
+
+.micLabelVisible {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.micError {
+  font-size: 11px;
+  color: rgba(255, 100, 100, 0.7);
+  max-width: 200px;
+  text-align: center;
+}
+
+/* ── Spacer ── */
+.spacer {
+  flex: 1;
+}
+
+/* ── Animations ── */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.3;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.6;
+  }
+}
+
+@keyframes micPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(100, 149, 237, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px 6px rgba(100, 149, 237, 0.15);
+  }
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .overlays {
+    padding: 16px;
+  }
+
+  .topRow {
+    gap: 12px;
+  }
+
+  .subtitlesPanel {
+    max-width: 200px;
+    min-width: 160px;
+    padding: 12px;
+    max-height: 200px;
+  }
+
+  .subtitlesScroll {
+    max-height: 160px;
+  }
+
+  .subtitleText {
+    font-size: 12px;
+  }
+
+  .miraPanel {
+    width: clamp(120px, 25vw, 180px);
+  }
+
+  .micContainer {
+    bottom: 24px;
+  }
+
+  .micButton {
+    width: 48px;
+    height: 48px;
+  }
+}
