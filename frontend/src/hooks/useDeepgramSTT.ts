@@ -152,8 +152,15 @@ export function useDeepgramSTT(config?: DeepgramSTTConfig): UseDeepgramSTTReturn
           const text = alt.transcript;
           if (!text) return;
 
+          // Apply confidence threshold filter
+          const confidence = alt.confidence ?? 1.0;
+          if (confidence < configRef.current.confidence_threshold) {
+            console.log(`[STT] Rejected low-confidence transcript: ${confidence.toFixed(2)} < ${configRef.current.confidence_threshold}`);
+            return;
+          }
+
           if (data.is_final) {
-            console.log("[STT] Final transcript:", text);
+            console.log("[STT] Final transcript:", text, `(confidence: ${confidence.toFixed(2)})`);
             setTranscript(text);
             setInterimTranscript("");
           } else {
@@ -215,7 +222,7 @@ export function useDeepgramSTT(config?: DeepgramSTTConfig): UseDeepgramSTTReturn
     // Reconnect with existing mic stream (no re-prompt)
     connectWebSocket(streamRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConfig.utterance_end_ms, activeConfig.endpointing, activeConfig.model, activeConfig.smart_format]);
+  }, [activeConfig.utterance_end_ms, activeConfig.endpointing, activeConfig.confidence_threshold, activeConfig.model, activeConfig.smart_format]);
 
   const startListening = useCallback(async () => {
     if (wsRef.current) return;

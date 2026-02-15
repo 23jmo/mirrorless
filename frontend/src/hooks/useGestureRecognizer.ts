@@ -7,6 +7,7 @@ import {
   createSwipeState,
   detectSwipe,
   classifyBuiltInGesture,
+  isOpenPalmGesture,
 } from "@/lib/gesture-classifier";
 import type { DetectedGesture, SwipeState } from "@/types/gestures";
 
@@ -111,12 +112,19 @@ export function useGestureRecognizer({
       try {
         const result = recognizer.recognizeForVideo(video, now);
 
-        // Check built-in gestures (thumbs up/down)
+        // Determine top gesture classification for this frame
+        let topGestureName = "";
+        let topGestureScore = 0;
         if (result.gestures.length > 0 && result.gestures[0].length > 0) {
-          const topGesture = result.gestures[0][0];
+          topGestureName = result.gestures[0][0].categoryName;
+          topGestureScore = result.gestures[0][0].score;
+        }
+
+        // Check built-in gestures (thumbs up/down)
+        if (topGestureName) {
           const detected = classifyBuiltInGesture(
-            topGesture.categoryName,
-            topGesture.score,
+            topGestureName,
+            topGestureScore,
             now
           );
           if (detected) {
@@ -125,9 +133,11 @@ export function useGestureRecognizer({
         }
 
         // Check swipe via landmark tracking (wrist = landmark 0)
+        // Only tracks when palm is open — prevents false swipes from closed fists
+        const palmOpen = isOpenPalmGesture(topGestureName, topGestureScore);
         if (result.landmarks.length > 0 && result.landmarks[0].length > 0) {
           const wrist = result.landmarks[0][0];
-          const swipe = detectSwipe(swipeStateRef.current, wrist.x, now);
+          const swipe = detectSwipe(swipeStateRef.current, wrist.x, now, palmOpen);
           if (swipe) {
             onGestureRef.current(swipe);
           }

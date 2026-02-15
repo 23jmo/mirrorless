@@ -3,6 +3,7 @@ import {
   createSwipeState,
   detectSwipe,
   classifyBuiltInGesture,
+  isOpenPalmGesture,
 } from "@/lib/gesture-classifier";
 
 describe("createSwipeState", () => {
@@ -16,7 +17,7 @@ describe("createSwipeState", () => {
 describe("detectSwipe", () => {
   it("returns null when not enough positions", () => {
     const state = createSwipeState();
-    const result = detectSwipe(state, 0.5, 100);
+    const result = detectSwipe(state, 0.5, 100, true);
     expect(result).toBeNull();
   });
 
@@ -34,7 +35,7 @@ describe("detectSwipe", () => {
     ];
     state.positions = positions;
 
-    const result = detectSwipe(state, 0.62, 350);
+    const result = detectSwipe(state, 0.62, 350, true);
     expect(result).not.toBeNull();
     expect(result!.type).toBe("swipe_right");
   });
@@ -52,7 +53,7 @@ describe("detectSwipe", () => {
     ];
     state.positions = positions;
 
-    const result = detectSwipe(state, 0.38, 350);
+    const result = detectSwipe(state, 0.38, 350, true);
     expect(result).not.toBeNull();
     expect(result!.type).toBe("swipe_left");
   });
@@ -67,8 +68,27 @@ describe("detectSwipe", () => {
     ];
     state.positions = positions;
 
-    const result = detectSwipe(state, 0.52, 200);
+    const result = detectSwipe(state, 0.52, 200, true);
     expect(result).toBeNull();
+  });
+
+  it("returns null and clears positions when palm is not open", () => {
+    const state = createSwipeState();
+    const positions = [
+      { x: 0.3, timestamp: 0 },
+      { x: 0.35, timestamp: 50 },
+      { x: 0.4, timestamp: 100 },
+      { x: 0.45, timestamp: 150 },
+      { x: 0.5, timestamp: 200 },
+      { x: 0.55, timestamp: 250 },
+      { x: 0.6, timestamp: 300 },
+    ];
+    state.positions = positions;
+
+    // isOpenPalm = false → should clear positions and return null
+    const result = detectSwipe(state, 0.62, 350, false);
+    expect(result).toBeNull();
+    expect(state.positions).toEqual([]);
   });
 
   it("enforces cooldown between gestures", () => {
@@ -86,7 +106,7 @@ describe("detectSwipe", () => {
     state.positions = positions;
 
     // 850ms - 500ms = 350ms, less than 800ms cooldown
-    const result = detectSwipe(state, 0.62, 850);
+    const result = detectSwipe(state, 0.62, 850, true);
     expect(result).toBeNull();
   });
 });
@@ -118,5 +138,25 @@ describe("classifyBuiltInGesture", () => {
   it("returns null for low confidence", () => {
     const result = classifyBuiltInGesture("Thumb_Up", 0.3, 100);
     expect(result).toBeNull();
+  });
+});
+
+describe("isOpenPalmGesture", () => {
+  it("returns true for Open_Palm with high score", () => {
+    expect(isOpenPalmGesture("Open_Palm", 0.9)).toBe(true);
+  });
+
+  it("returns true at the minimum threshold (0.6)", () => {
+    expect(isOpenPalmGesture("Open_Palm", 0.6)).toBe(true);
+  });
+
+  it("returns false for Open_Palm with low score", () => {
+    expect(isOpenPalmGesture("Open_Palm", 0.4)).toBe(false);
+  });
+
+  it("returns false for other gesture names", () => {
+    expect(isOpenPalmGesture("Closed_Fist", 0.9)).toBe(false);
+    expect(isOpenPalmGesture("Thumb_Up", 0.9)).toBe(false);
+    expect(isOpenPalmGesture("Pointing_Up", 0.9)).toBe(false);
   });
 });

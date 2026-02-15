@@ -25,6 +25,7 @@ import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
 import ProductCarousel, { type ProductCard } from "@/components/mirror/ProductCarousel";
+import { LikedItemsTray, type LikedOutfitThumbnail } from "@/components/mirror/LikedItemsTray";
 import { processToolResult } from "@/lib/process-tool-result";
 
 type KioskState = "attract" | "waiting" | "session" | "recap";
@@ -81,6 +82,7 @@ function MirrorPage() {
     name: string;
     items: ClothingItem[];
     productInfo: PriceStripItem[];
+    originalImageUrls: string[];
   }
   const [canvasOutfits, setCanvasOutfits] = useState<CanvasOutfit[]>([]);
   const [canvasOutfitIndex, setCanvasOutfitIndex] = useState(0);
@@ -89,6 +91,12 @@ function MirrorPage() {
 
   // ── Outfit opacity for fade-in ──
   const [outfitOpacity, setOutfitOpacity] = useState(1);
+
+  // ── Outfit animation state (like-collect / dislike-dismiss) ──
+  const [outfitAnimation, setOutfitAnimation] = useState<"none" | "like-collect" | "dislike-dismiss">("none");
+
+  // ── Liked outfits for the tray ──
+  const [likedOutfits, setLikedOutfits] = useState<LikedOutfitThumbnail[]>([]);
 
   // ── Product carousel (fallback when no flat lays available) ──
   const [carouselItems, setCarouselItems] = useState<ProductCard[]>([]);
@@ -256,6 +264,8 @@ function MirrorPage() {
       setCanvasOutfitIndex(0);
       setCarouselItems([]);
       setOutfitOpacity(1);
+      setOutfitAnimation("none");
+      setLikedOutfits([]);
       setSpeechText("");
       setSpeechVisible(false);
       mira.startSession();
@@ -437,6 +447,11 @@ function MirrorPage() {
         console.warn("[Mirror:ToolResult] Canvas items received but currentPose is null — overlay won't render until pose is detected");
       }
       if (result.canvasItems.length > 0) {
+        // Capture original product image URLs for the liked-items tray
+        const imageUrls = result.carouselCards
+          .map((card) => card.image_url)
+          .filter(Boolean);
+
         setOutfitOpacity(0);
         setCanvasOutfits((prev) => {
           const next = [
@@ -445,6 +460,7 @@ function MirrorPage() {
               name: result.outfitName || `Outfit ${prev.length + 1}`,
               items: result.canvasItems,
               productInfo: result.priceInfo,
+              originalImageUrls: imageUrls,
             },
           ];
           setCanvasOutfitIndex(next.length - 1);
@@ -477,6 +493,7 @@ function MirrorPage() {
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
       setCarouselItems([]);
+      setOutfitAnimation("none");
       setSpeechText("");
       setSpeechVisible(false);
 
@@ -575,32 +592,76 @@ function MirrorPage() {
     };
   }, [videoRef, userId]);
 
+  // ── Helper: advance to next outfit or emit end_of_outfits ──
+  const advanceOrEnd = useCallback(() => {
+    setCanvasOutfitIndex((i) => {
+      if (i < canvasOutfits.length - 1) {
+        return i + 1;
+      }
+      // At the last outfit — signal end_of_outfits
+      setLastGesture("end_of_outfits");
+      gestureKeyRef.current += 1;
+      setGestureKey(gestureKeyRef.current);
+      socket.emit("mirror_event", {
+        user_id: userId,
+        event: { type: "gesture", gesture: "end_of_outfits" },
+      });
+      return i;
+    });
+  }, [canvasOutfits.length, userId]);
+
   // ── Gesture handler ──
   const handleGesture = useCallback(
     (gesture: DetectedGesture) => {
-      // Swipes → dispatch immediately (unchanged behavior)
-      if (gesture.type === "swipe_left" || gesture.type === "swipe_right") {
-        setLastGesture(gesture.type);
-        gestureKeyRef.current += 1;
-        setGestureKey(gestureKeyRef.current);
+      // Block all gestures during animation
+      if (outfitAnimation !== "none") return;
 
-        if (canvasOutfits.length > 1) {
-          if (gesture.type === "swipe_left") {
-            setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
-          } else if (gesture.type === "swipe_right") {
-            setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+      // Swipes → clamped navigation (no wrapping)
+      if (gesture.type === "swipe_left" || gesture.type === "swipe_right") {
+        if (gesture.type === "swipe_left") {
+          // Next outfit
+          if (canvasOutfitIndex < canvasOutfits.length - 1) {
+            setLastGesture(gesture.type);
+            gestureKeyRef.current += 1;
+            setGestureKey(gestureKeyRef.current);
+            setCanvasOutfitIndex(canvasOutfitIndex + 1);
+            socket.emit("mirror_event", {
+              user_id: userId,
+              event: {
+                type: "gesture",
+                gesture: gesture.type,
+                confidence: gesture.confidence,
+                timestamp: gesture.timestamp,
+              },
+            });
+          } else if (canvasOutfits.length > 0) {
+            // Past the last outfit → end_of_outfits
+            setLastGesture("end_of_outfits");
+            gestureKeyRef.current += 1;
+            setGestureKey(gestureKeyRef.current);
+            socket.emit("mirror_event", {
+              user_id: userId,
+              event: { type: "gesture", gesture: "end_of_outfits" },
+            });
+          }
+        } else {
+          // Previous outfit — clamp at 0, do nothing if already there
+          if (canvasOutfitIndex > 0) {
+            setLastGesture(gesture.type);
+            gestureKeyRef.current += 1;
+            setGestureKey(gestureKeyRef.current);
+            setCanvasOutfitIndex(canvasOutfitIndex - 1);
+            socket.emit("mirror_event", {
+              user_id: userId,
+              event: {
+                type: "gesture",
+                gesture: gesture.type,
+                confidence: gesture.confidence,
+                timestamp: gesture.timestamp,
+              },
+            });
           }
         }
-
-        socket.emit("mirror_event", {
-          user_id: userId,
-          event: {
-            type: "gesture",
-            gesture: gesture.type,
-            confidence: gesture.confidence,
-            timestamp: gesture.timestamp,
-          },
-        });
         return;
       }
 
@@ -617,7 +678,7 @@ function MirrorPage() {
         setHoldKey(holdKeyRef.current);
       }
     },
-    [userId, canvasOutfits.length],
+    [userId, canvasOutfits.length, canvasOutfitIndex, outfitAnimation],
   );
 
   // ── Hold-to-confirm timer loop (rAF) ──
@@ -639,7 +700,7 @@ function MirrorPage() {
         return;
       }
 
-      // Hold completed → dispatch the gesture event
+      // Hold completed → dispatch the gesture event + trigger animation
       const elapsed = now - holdStartRef.current;
       if (elapsed >= HOLD_DURATION_MS) {
         const gestureType = holdGestureRef.current;
@@ -662,12 +723,35 @@ function MirrorPage() {
         holdGestureRef.current = null;
         holdStartRef.current = null;
         setPendingGestureType(null);
+
+        // Trigger like/dislike animation + auto-advance
+        if (gestureType === "thumbs_up") {
+          setOutfitAnimation("like-collect");
+          // Add current outfit's first product image to liked tray
+          const currentOutfit = canvasOutfits[canvasOutfitIndex];
+          if (currentOutfit) {
+            const imageUrl = currentOutfit.originalImageUrls[0] || "";
+            if (imageUrl) {
+              setLikedOutfits((prev) => [...prev, { imageUrl, outfitName: currentOutfit.name }]);
+            }
+          }
+          setTimeout(() => {
+            setOutfitAnimation("none");
+            advanceOrEnd();
+          }, 800);
+        } else if (gestureType === "thumbs_down") {
+          setOutfitAnimation("dislike-dismiss");
+          setTimeout(() => {
+            setOutfitAnimation("none");
+            advanceOrEnd();
+          }, 700);
+        }
       }
     };
 
     holdRafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(holdRafRef.current);
-  }, [userId]);
+  }, [userId, canvasOutfits, canvasOutfitIndex, advanceOrEnd]);
 
   useGestureRecognizer({
     videoRef,
@@ -701,15 +785,26 @@ function MirrorPage() {
           break;
 
         case "ArrowLeft":
-          if (canvasOutfits.length > 1) {
-            setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
-          }
+          // Previous outfit — clamp at 0
+          setCanvasOutfitIndex((i) => Math.max(0, i - 1));
           break;
 
         case "ArrowRight":
-          if (canvasOutfits.length > 1) {
-            setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
-          }
+          // Next outfit — clamp at last, or signal end_of_outfits
+          setCanvasOutfitIndex((i) => {
+            if (i < canvasOutfits.length - 1) return i + 1;
+            if (canvasOutfits.length > 0) {
+              // At the end — signal Mira
+              setLastGesture("end_of_outfits");
+              gestureKeyRef.current += 1;
+              setGestureKey(gestureKeyRef.current);
+              socket.emit("mirror_event", {
+                user_id: userId,
+                event: { type: "gesture", gesture: "end_of_outfits" },
+              });
+            }
+            return i;
+          });
           break;
 
         case "r":
@@ -728,7 +823,7 @@ function MirrorPage() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canvasOutfits.length]);
+  }, [canvasOutfits.length, userId]);
 
   // ── Start session handler ──
   const handleStartSession = useCallback(() => {
@@ -919,9 +1014,18 @@ function MirrorPage() {
 
       {/* === SESSION STATE === */}
 
-      {/* Clothing overlay canvas (z-5) */}
+      {/* Clothing overlay canvas (z-5) with like/dislike animation */}
       {activeCanvasOutfit.length > 0 && currentPose && (
-        <div style={{ position: "absolute", inset: 0, zIndex: 5, transition: "opacity 500ms ease", opacity: outfitOpacity }}>
+        <div
+          className={outfitAnimation !== "none" ? outfitAnimation : undefined}
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 5,
+            transition: outfitAnimation === "none" ? "opacity 500ms ease" : undefined,
+            opacity: outfitAnimation === "none" ? outfitOpacity : undefined,
+          }}
+        >
           <ClothingCanvas
             pose={currentPose}
             items={activeCanvasOutfit}
@@ -979,6 +1083,9 @@ function MirrorPage() {
       {/* Outfit dots (z-18, bottom) */}
       <OutfitDots count={canvasOutfits.length} activeIndex={canvasOutfitIndex} />
 
+      {/* Liked items tray (z-12, bottom-right) */}
+      {sessionActive && <LikedItemsTray items={likedOutfits} />}
+
       {/* Voice indicator for user STT (z-15, bottom-left) */}
       {sessionActive && (
         <VoiceIndicator
@@ -1005,6 +1112,24 @@ function MirrorPage() {
           onDismiss={handleRecapDismiss}
         />
       )}
+
+      {/* Like/dislike animation keyframes */}
+      <style>{`
+        .like-collect {
+          animation: likeCollect 800ms ease-in forwards;
+        }
+        .dislike-dismiss {
+          animation: dislikeDismiss 700ms ease-in forwards;
+        }
+        @keyframes likeCollect {
+          0%   { transform: scale(1) translate(0, 0); opacity: 1; }
+          100% { transform: scale(0.12) translate(600px, 400px); opacity: 0.3; }
+        }
+        @keyframes dislikeDismiss {
+          0%   { transform: translateY(0); opacity: 1; filter: none; }
+          100% { transform: translateY(80px); opacity: 0; filter: sepia(0.5) saturate(3) hue-rotate(-30deg); }
+        }
+      `}</style>
 
       {/* Fit status indicator (bottom-right, debug-only) */}
       {debugMode && fitStatuses.size > 0 && (

@@ -11,6 +11,7 @@ const GESTURE_DISPLAY: Record<
   swipe_right: { icon: "\u2192", label: "Next", pendingLabel: "" },
   thumbs_up: { icon: "\uD83D\uDC4D", label: "Liked!", pendingLabel: "Hold to like" },
   thumbs_down: { icon: "\uD83D\uDC4E", label: "Skipped", pendingLabel: "Hold to skip" },
+  end_of_outfits: { icon: "\uD83D\uDC40", label: "That's all!", pendingLabel: "" },
 };
 
 const CONFIRMED_DISPLAY_MS = 1500;

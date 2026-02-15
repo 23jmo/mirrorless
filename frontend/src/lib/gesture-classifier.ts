@@ -4,16 +4,30 @@ const SWIPE_THRESHOLD = 0.15; // Minimum x-displacement (normalized 0-1)
 const SWIPE_WINDOW_MS = 500; // Time window to detect swipe
 const GESTURE_COOLDOWN_MS = 800; // Minimum time between gestures
 const MIN_CONFIDENCE = 0.6; // Minimum confidence for built-in gestures
+const OPEN_PALM_MIN_SCORE = 0.6; // Minimum score for open palm classification
 
 export function createSwipeState(): SwipeState {
   return { positions: [], lastGestureTime: 0 };
 }
 
+/** Check if MediaPipe classifies the hand as an open palm. */
+export function isOpenPalmGesture(name: string, score: number): boolean {
+  return name === "Open_Palm" && score >= OPEN_PALM_MIN_SCORE;
+}
+
 export function detectSwipe(
   state: SwipeState,
   currentX: number,
-  currentTimestamp: number
+  currentTimestamp: number,
+  isOpenPalm: boolean
 ): DetectedGesture | null {
+  // Only track swipes with an open palm — prevents false positives from
+  // single-finger waves, closed fists, or other non-deliberate hand movements
+  if (!isOpenPalm) {
+    state.positions = [];
+    return null;
+  }
+
   // Add current position
   state.positions.push({ x: currentX, timestamp: currentTimestamp });
 

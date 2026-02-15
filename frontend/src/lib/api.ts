@@ -227,6 +227,7 @@ export function clearQueue() {
 export interface STTConfig {
   utterance_end_ms: number;
   endpointing: number;
+  confidence_threshold: number;
   model: string;
   smart_format: boolean;
 }

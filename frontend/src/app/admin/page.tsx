@@ -257,6 +257,7 @@ function STTSettings({
 }) {
   const [localUtterance, setLocalUtterance] = useState(config.utterance_end_ms);
   const [localEndpointing, setLocalEndpointing] = useState(config.endpointing);
+  const [localConfidence, setLocalConfidence] = useState(config.confidence_threshold);
   const [saving, setSaving] = useState(false);
 
   const save = useCallback(
@@ -323,6 +324,28 @@ function STTSettings({
           <div className="flex justify-between text-xs text-zinc-400 mt-1">
             <span>10ms (fast/sensitive)</span>
             <span>500ms (slow/patient)</span>
+          </div>
+        </div>
+
+        {/* Confidence Threshold */}
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 mb-1">
+            Confidence Threshold: {localConfidence.toFixed(2)}
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={localConfidence}
+            onChange={(e) => setLocalConfidence(Number(e.target.value))}
+            onMouseUp={() => save({ confidence_threshold: localConfidence })}
+            onTouchEnd={() => save({ confidence_threshold: localConfidence })}
+            className="w-full accent-blue-500"
+          />
+          <div className="flex justify-between text-xs text-zinc-400 mt-1">
+            <span>0.0 (accept all)</span>
+            <span>1.0 (max filtering)</span>
           </div>
         </div>
 
