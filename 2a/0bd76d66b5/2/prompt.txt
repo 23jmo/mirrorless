@@ -1,0 +1,131 @@
+Implement the following plan:
+
+# Plan: Fix Conversation History Corruption (Permanent 400 Errors)
+
+## Context
+
+Mira's orchestrator suffers from a **concurrency race condition** that permanently corrupts `conversation_history`. When two socket events (e.g., voice + gesture, or voice + silence timer) enter `handle_event()` concurrently, they interleave at `await` points during Claude streaming and tool execution. This inserts a regular user message between an assistant's `tool_use` block and its expected `tool_result`, violating Claude's API contract. Once corrupted, **every subsequent Claude call fails with a 400 error** for the rest of the session, and the user hears "my brain glitched" repeatedly.
+
+The error from the logs:
+```
+messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: REDACTED
+```
+
+### Root Cause
+
+`handle_event()` has no concurrency guard. The `is_processing` flag is set but **never checked at entry** — only the silence timer respects it. Two async events can both enter, both append user messages, and corrupt the history.
+
+### Why Current Error Recovery Fails
+
+The `except` block in `_call_claude()` (line 321-344) pops only the **last 1-2 messages**. But corruption can happen deeper in the history (e.g., at `messages[2]`), and the shallow cleanup doesn't reach it. Once the corrupted pair persists, every future call sends the same broken history.
+
+## Changes
+
+### 1. `backend/agent/orchestrator.py` — Add event serialization lock
+
+Add an `asyncio.Lock` per session to serialize all event processing:
+
+```python
+# In SessionState dataclass:
+_event_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+```
+
+In `handle_event()`, acquire the lock before any history modifications:
+```python
+async with session._event_lock:
+    session.is_processing = True
+    try:
+        # ... existing event processing ...
+    finally:
+        session.is_processing = False
+```
+
+**Why a lock instead of just checking `is_processing`**: A flag check has a TOCTOU window in theory (though safe in single-threaded asyncio). More importantly, the lock **queues** events rather than dropping them — if the user speaks while Claude is processing a tool chain, their transcript waits and processes after, rather than being silently discarded.
+
+### 2. `backend/agent/orchestrator.py` — Add history validation before Claude calls
+
+Add `_validate_history()` method that runs at the top of `_call_claude()`. This is **defense-in-depth** — even with the lock, edge cases (bugs, future changes) could corrupt history. The validator:
+
+1. Ensures alternating `user` → `assistant` → `user` roles
+2. Ensures every assistant message with `tool_use` blocks is followed by a user message with matching `tool_result` blocks
+3. If corruption is detected, **truncates history** back to the last valid point rather than attempting surgical repair (simpler, more reliable)
+4. Logs a warning when repair occurs
+
+### 3. `backend/agent/orchestrator.py` — Fix missing `end_of_message` in outer catch
+
+The `handle_event()` outer `except` (line 247-249) streams the fallback text but never sends `end_of_message=True`. The frontend accumulates the text in `responseAccumulatorRef` but never flushes it — Mira appears to freeze silently. Add the missing signal.
+
+### 4. `backend/tests/test_history_integrity.py` — New comprehensive test file
+
+Test the lock, validation, and recovery across these scenarios:
+
+| Test | What it covers |
+|------|----------------|
+| `test_concurrent_events_serialized` | Two events entering `handle_event` simultaneously are serialized by the lock — history stays valid |
+| `test_event_during_tool_execution` | Event arrives while tools are executing (between tool_use append and tool_result append) — lock prevents interleaving |
+| `test_validate_history_orphaned_tool_use` | History with tool_use but no tool_result is truncated to last valid point |
+| `test_validate_history_consecutive_user_messages` | Two consecutive user messages are truncated |
+| `test_validate_history_clean_passthrough` | Valid history passes through unchanged |
+| `test_validate_history_deep_corruption` | Corruption at messages[2] (matching the real error) is repaired |
+| `test_is_processing_prevents_silence_during_lock` | Silence timer correctly skips when processing is locked |
+| `test_fallback_sends_end_of_message` | Outer catch sends both fallback text AND end_of_message signal |
+| `test_error_recovery_after_tool_chain` | API failure during depth-2 tool recursion recovers cleanly |
+
+Testing approach follows existing `test_error_recovery.py` patterns: `_make_orchestrator()` with `AsyncMock` sio, `_make_session()` with pre-built history, `patch.object` on `orch.client.messages.stream`.
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| `backend/agent/orchestrator.py` | Add `_event_lock` to SessionState, wrap `handle_event` body with `async with`, add `_validate_history()`, fix outer catch missing `end_of_message` |
+| `backend/tests/test_history_integrity.py` | **New file** — 9 tests covering concurrency, validation, and recovery |
+
+## Verification
+
+```bash
+cd backend
+pytest tests/test_history_integrity.py -v    # New tests
+pytest tests/test_error_recovery.py -v        # Existing tests still pass
+pytest tests/ -x -q                           # Full suite
+```
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/d9824a3e-8b40-4bdb-bebb-be82cf0b7dcc.jsonl
+
+---
+
+did tests pass?
+
+---
+
+tests/test_history_integrity.py::test_error_recovery_after_tool_chain [mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for test-user
+[mira] Calling Claude for test-user (turn #1)...
+[mira] Claude API call failed for test-user: API overloaded
+[mira] Stream end-of-message to test-user
+PASSED
+tests/test_error_recovery.py::test_api_failure_pops_user_message [mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for test-user
+[mira] Calling Claude for test-user (turn #1)...
+[mira] Claude API call failed for test-user: API down
+[mira] Stream end-of-message to test-user
+PASSED
+tests/test_error_recovery.py::test_api_failure_pops_orphaned_tool_use_assistant [mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for test-user
+[mira] Calling Claude for test-user (turn #1)...
+[mira] Claude API call failed for test-user: API down
+[mira] Stream end-of-message to test-user
+PASSED
+tests/test_error_recovery.py::test_api_failure_preserves_text_only_assistant [mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for test-user
+[mira] Calling Claude for test-user (turn #1)...
+[mira] Claude API call failed for test-user: API down
+[mira] Stream end-of-message to test-user
+PASSED
+tests/test_error_recovery.py::test_fallback_message_streamed_on_failure [mira] Using claude-sonnet-4-5-20250929 (max_tokens=400) for test-user
+[mira] Calling Claude for test-user (turn #1)...
+[mira] Claude API call failed for test-user: API down
+PASSED
+tests/test_error_recovery.py::test_api_failure_handles_dict_tool_use_blocks [mira] Using claude-haiku-4-5-20251001 (max_tokens=2048) for test-user
+[mira] Calling Claude for test-user (turn #1)...
+[mira] Claude API call failed for test-user: API down
+[mira] Stream end-of-message to test-user
+PASSED
+
+is this what we expect?
