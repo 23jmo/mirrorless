@@ -3,7 +3,7 @@
   "checkpoint_id": "e21ec40353b0",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "CLAUDE.md",
     "backend/agent/orchestrator.py",
@@ -11,6 +11,8 @@
     "backend/agent/tools.py",
     "backend/main.py",
     "backend/routers/tts.py",
+    "backend/tests/test_error_recovery.py",
+    "backend/tests/test_unified_pipeline.py",
     "frontend/postcss.config.mjs",
     "frontend/src/__tests__/emotion-parser.test.ts",
     "frontend/src/__tests__/mira-speech-handler.test.ts",
@@ -43,13 +45,20 @@
       "context": "/e2/1ec40353b0/2/context.md",
       "content_hash": "/e2/1ec40353b0/2/content_hash.txt",
       "prompt": "/e2/1ec40353b0/2/prompt.txt"
+    },
+    {
+      "metadata": "/e2/1ec40353b0/3/metadata.json",
+      "transcript": "/e2/1ec40353b0/3/full.jsonl",
+      "context": "/e2/1ec40353b0/3/context.md",
+      "content_hash": "/e2/1ec40353b0/3/content_hash.txt",
+      "prompt": "/e2/1ec40353b0/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 104,
-    "cache_creation_tokens": 337773,
-    "cache_read_tokens": 6191567,
-    "output_tokens": 17248,
-    "api_call_count": 80
+    "input_tokens": 142,
+    "cache_creation_tokens": 404144,
+    "cache_read_tokens": 8541078,
+    "output_tokens": 22103,
+    "api_call_count": 114
   }
 }
