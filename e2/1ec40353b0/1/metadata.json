@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "e21ec40353b0",
+  "session_id": "d7c82736-09ba-4d81-90d1-627dd1caf419",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T08:38:03.885111Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "CLAUDE.md",
+    "backend/agent/prompts.py",
+    "backend/routers/tts.py",
+    "frontend/postcss.config.mjs",
+    "frontend/src/__tests__/emotion-parser.test.ts",
+    "frontend/src/__tests__/mira-speech-handler.test.ts",
+    "frontend/src/__tests__/streaming-tts.test.ts",
+    "frontend/src/app/globals.css",
+    "frontend/src/app/layout.tsx",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/hooks/useOrbAvatar.ts",
+    "frontend/src/lib/emotion-parser.ts",
+    "frontend/src/lib/streaming-tts.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "8831e90d-fe46-49cd-a346-19f75a710f25",
+  "checkpoint_transcript_start": 810,
+  "transcript_lines_at_start": 810,
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 75939,
+    "cache_read_tokens": 1732125,
+    "output_tokens": 2085,
+    "api_call_count": 14
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T08:38:03.464714Z",
+    "agent_lines": 26,
+    "human_added": 159,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 185,
+    "agent_percentage": 14.054054054054054
+  }
+}

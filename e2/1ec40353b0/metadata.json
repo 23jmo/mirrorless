@@ -5,10 +5,22 @@
   "branch": "main",
   "checkpoints_count": 0,
   "files_touched": [
+    "CLAUDE.md",
     "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
     "backend/agent/tools.py",
     "backend/main.py",
-    "frontend/src/app/mirror/page.tsx"
+    "backend/routers/tts.py",
+    "frontend/postcss.config.mjs",
+    "frontend/src/__tests__/emotion-parser.test.ts",
+    "frontend/src/__tests__/mira-speech-handler.test.ts",
+    "frontend/src/__tests__/streaming-tts.test.ts",
+    "frontend/src/app/globals.css",
+    "frontend/src/app/layout.tsx",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/hooks/useOrbAvatar.ts",
+    "frontend/src/lib/emotion-parser.ts",
+    "frontend/src/lib/streaming-tts.ts"
   ],
   "sessions": [
     {
@@ -17,13 +29,20 @@
       "context": "/e2/1ec40353b0/0/context.md",
       "content_hash": "/e2/1ec40353b0/0/content_hash.txt",
       "prompt": "/e2/1ec40353b0/0/prompt.txt"
+    },
+    {
+      "metadata": "/e2/1ec40353b0/1/metadata.json",
+      "transcript": "/e2/1ec40353b0/1/full.jsonl",
+      "context": "/e2/1ec40353b0/1/context.md",
+      "content_hash": "/e2/1ec40353b0/1/content_hash.txt",
+      "prompt": "/e2/1ec40353b0/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 71,
-    "cache_creation_tokens": 231821,
-    "cache_read_tokens": 4086516,
-    "output_tokens": 12234,
-    "api_call_count": 57
+    "input_tokens": 93,
+    "cache_creation_tokens": 307760,
+    "cache_read_tokens": 5818641,
+    "output_tokens": 14319,
+    "api_call_count": 71
   }
 }

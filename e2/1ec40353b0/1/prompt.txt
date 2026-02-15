@@ -1,0 +1,1255 @@
+Implement the following plan:
+
+# Orb Avatar: Replace Memoji with ElevenLabs Orb + Streaming TTS
+
+## Context
+
+The current avatar system uses pre-recorded Memoji video loops (6 states) + 13 scripted response videos with per-sentence TTS fetching. It's complex, glitchy (blob URL crashes), and requires ~5MB of video assets. We're replacing the entire visual + audio pipeline with:
+
+1. **ElevenLabs UI Orb** — 3D WebGL sphere (`@elevenlabs/cli` component) that reacts to audio volume
+2. **Streaming TTS** — ElevenLabs REST streaming endpoint instead of per-sentence fetch
+3. **Emotion-tagged responses** — Claude prefixes each response with `[emotion:X]`, parsed on frontend
+4. **Context-aware floating** — Orb drifts to different screen positions based on state
+
+## Decisions from Interview
+
+| Decision | Choice |
+|---|---|
+| Orb component | ElevenLabs UI Orb (`@elevenlabs/cli`, Three.js WebGL) |
+| Orb placement | Context-aware: corner when idle, center when greeting, near products when showing |
+| Scripted videos | Kill entirely — no video files |
+| TTS approach | ElevenLabs REST streaming (`/stream` endpoint) via backend proxy |
+| STT | Keep Deepgram (unchanged) |
+| Emotion source | Claude streams `[emotion:X]` prefix tag, parsed on frontend |
+| Emotion palette | 4 states: idle (#F0F0F5), neutral (#F5E6A0), proud (#4A6FA5), teasing (#FFF3B0) |
+| Orb states | Full state machine: idle → listening → thinking → speaking → idle |
+| Visual style | Glass sphere with glow (ElevenLabs Orb is 3D WebGL with inner glow) |
+
+## Architecture Overview
+
+```
+┌─ Claude (streaming) ─────────────────────────────────────┐
+│ "[emotion:teasing] You should try a bomber jacket..."    │
+└──────────────────────┬───────────────────────────────────┘
+                       │ mira_speech socket events
+          ┌────────────▼────────────┐
+          │ Frontend: accumulate    │
+          │ Parse [emotion:X] tag   │
+          │ Strip tag from text     │
+          └────────────┬────────────┘
+                       │ POST /api/tts/stream {text}
+          ┌────────────▼────────────┐
+          │ Backend: proxy to       │
+          │ ElevenLabs /stream      │
+          │ Return chunked audio    │
+          └────────────┬────────────┘
+                       │ audio/mpeg chunks
+          ┌────────────▼────────────┐
+          │ Frontend: MediaSource + │
+          │ SourceBuffer playback   │
+          │ AnalyserNode → volume   │
+          └────────────┬────────────┘
+                       │ volume (0-1)
+          ┌────────────▼────────────┐
+          │ ElevenLabs Orb          │
+          │ agentState="talking"    │
+          │ manualOutput={volume}   │
+          │ colors={emotionColors}  │
+          └─────────────────────────┘
+```
+
+## Changes
+
+### Phase 1: Set Up Tailwind CSS + Install ElevenLabs Orb Component
+
+**Prerequisites — the frontend currently has NO Tailwind CSS or shadcn/ui setup** (all styling is inline `style={{}}`). The ElevenLabs orb requires both.
+
+**Step 1: Initialize Tailwind CSS for Next.js:**
+```bash
+cd frontend
+npm install -D tailwindcss @tailwindcss/postcss postcss
+```
+
+Create `frontend/postcss.config.mjs`:
+```js
+const config = { plugins: { "@tailwindcss/postcss": {} } };
+export default config;
+```
+
+Create `frontend/src/app/globals.css`:
+```css
+@import "tailwindcss";
+```
+
+Import in `frontend/src/app/layout.tsx` (add `import "./globals.css"` if not present).
+
+**Step 2: Initialize shadcn/ui:**
+```bash
+cd frontend
+npx shadcn@latest init
+```
+
+This creates `frontend/components.json` and configures the `@/` alias (already set up in `tsconfig.json`).
+
+**Step 3: Install the ElevenLabs Orb:**
+```bash
+cd frontend
+npx @elevenlabs/cli@latest components add orb
+```
+
+This creates `frontend/src/components/ui/orb.tsx` and installs dependencies:
+- `@react-three/drei`, `@react-three/fiber`, `three`, `@types/three`
+
+**Note:** The existing inline `style={{}}` on `mirror/page.tsx` will continue to work alongside Tailwind. No need to migrate existing styles.
+
+**Usage (from ElevenLabs docs):**
+```tsx
+import { Orb } from "@/components/ui/orb";
+
+<Orb
+  colors={["#F0F0F5", "#E8E8EE"]}      // two-color gradient
+  agentState="talking"                   // null | "thinking" | "listening" | "talking"
+  volumeMode="manual"
+  manualOutput={outputVolume}            // 0-1 range, drives sphere deformation
+  manualInput={inputVolume}              // 0-1 range, optional mic reactivity
+/>
+```
+
+The `colorsRef` prop allows dynamic color changes without re-renders:
+```tsx
+const colorsRef = useRef<[string, string]>(["#F0F0F5", "#E8E8EE"]);
+colorsRef.current = emotionColors;
+<Orb colorsRef={colorsRef} ... />
+```
+
+### Phase 2: Create Streaming TTS Client
+
+**New file: `frontend/src/lib/streaming-tts.ts`**
+
+Replace the per-sentence `ElevenLabsTTS` class with a streaming approach using `fetch` + `ReadableStream` + `MediaSource` API.
+
+```typescript
+// Key pattern from ElevenLabs docs:
+const response = await fetch(`${apiUrl}/api/tts/stream`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ text }),
+});
+
+const mediaSource = new MediaSource();
+const audio = new Audio();
+audio.src = URL.createObjectURL(mediaSource);
+
+mediaSource.addEventListener("sourceopen", () => {
+  const sourceBuffer = mediaSource.addSourceBuffer("audio/mpeg");
+  const reader = response.body!.getReader();
+
+  // Read chunks and append to source buffer
+  async function pump() {
+    const { done, value } = await reader.read();
+    if (done) {
+      mediaSource.endOfStream();
+      return;
+    }
+    sourceBuffer.appendBuffer(value);
+    sourceBuffer.addEventListener("updateend", pump, { once: true });
+  }
+  pump();
+});
+
+audio.play();
+```
+
+**Volume extraction for Orb (from ElevenLabs SDK source):**
+```typescript
+// Route audio through AudioContext + AnalyserNode
+const audioContext = new AudioContext();
+const source = audioContext.createMediaElementSource(audio);
+const analyser = audioContext.createAnalyser();
+source.connect(analyser);
+analyser.connect(audioContext.destination);
+
+// Calculate volume (ElevenLabs SDK pattern from VoiceConversation.ts):
+function getOutputVolume(): number {
+  const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(frequencyData);
+  let volume = 0;
+  for (let i = 0; i < frequencyData.length; i++) {
+    volume += frequencyData[i] / 255;
+  }
+  volume /= frequencyData.length;
+  return Math.max(0, Math.min(1, volume));
+}
+```
+
+The `StreamingTTS` class API:
+```typescript
+export class StreamingTTS {
+  constructor(apiUrl: string);
+  speak(text: string, onStart?: () => void, onEnd?: () => void): Promise<void>;
+  stop(): void;
+  isSpeaking(): boolean;
+  getOutputVolume(): number;  // 0-1, for feeding to Orb
+}
+```
+
+### Phase 3: Update Backend TTS Proxy
+
+**Modify: `backend/routers/tts.py`**
+
+Add streaming endpoint alongside existing `/speak`:
+
+```python
+@router.post("/stream")
+async def stream_speech(body: SpeakRequest):
+    """Stream audio from ElevenLabs — returns chunked audio/mpeg."""
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
+
+    async def audio_generator():
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST",
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
+                headers={
+                    "Accept": "audio/mpeg",
+                    "Content-Type": "application/json",
+                    "xi-api-key": api_key,
+                },
+                json={
+                    "text": body.text,
+                    "model_id": "eleven_multilingual_v2",
+                    "voice_settings": {
+                        "stability": 0.5,
+                        "similarity_boost": 0.8,
+                        "style": 0.5,
+                        "use_speaker_boost": True,
+                    },
+                },
+                timeout=30.0,
+            ) as resp:
+                async for chunk in resp.aiter_bytes(1024):
+                    yield chunk
+
+    return StreamingResponse(audio_generator(), media_type="audio/mpeg")
+```
+
+### Phase 4: Create `useOrbAvatar` Hook
+
+**New file: `frontend/src/hooks/useOrbAvatar.ts`**
+
+Replaces `useMemojiAvatar`. Much simpler — no video elements, no speech queue (streaming handles serialization), no scripted video playback.
+
+```typescript
+export type OrbState = "idle" | "listening" | "thinking" | "speaking";
+export type MiraEmotion = "idle" | "neutral" | "proud" | "teasing";
+
+const EMOTION_COLORS: Record<MiraEmotion, [string, string]> = {
+  idle:    ["#F0F0F5", "#E8E8EE"],  // pale white
+  neutral: ["#F5E6A0", "#E8D680"],  // calm yellow
+  proud:   ["#4A6FA5", "#3A5C8C"],  // darker blue
+  teasing: ["#FFF3B0", "#FFE580"],  // light yellow
+};
+
+export interface UseOrbAvatarReturn {
+  orbState: OrbState;
+  colors: [string, string];
+  colorsRef: RefObject<[string, string]>;
+  outputVolume: number;
+  speak: (text: string, emotion?: MiraEmotion) => void;
+  setOrbState: (state: OrbState) => void;
+  stop: () => void;
+  isSpeaking: boolean;
+}
+```
+
+State machine:
+- `idle` → user speaks → `listening`
+- `listening` → Claude processing → `thinking`
+- `thinking` → TTS starts → `speaking`
+- `speaking` → TTS ends → `idle`
+
+### Phase 5: Simplify `mirror/page.tsx`
+
+**Modify: `frontend/src/app/mirror/page.tsx`**
+
+Major simplifications:
+1. **Remove** all Memoji/scripted imports
+2. **Remove** `SentenceBuffer`, `findScriptedResponse`, `detectEmotion`
+3. **Remove** `responseAccumulatorRef`, `pendingTTSAfterScriptedRef`
+4. **Add** emotion tag parsing in `mira_speech` handler
+5. **Replace** `AvatarPiP` with inline `<Orb>` component
+6. **Add** context-aware positioning via CSS
+
+**Emotion tag parsing:**
+```typescript
+function parseEmotionTag(text: string): { emotion: MiraEmotion; cleanText: string } {
+  const match = text.match(/^\[emotion:(\w+)\]\s*/);
+  if (match) {
+    const emotion = match[1] as MiraEmotion;
+    const validEmotions: MiraEmotion[] = ["idle", "neutral", "proud", "teasing"];
+    return {
+      emotion: validEmotions.includes(emotion) ? emotion : "neutral",
+      cleanText: text.slice(match[0].length),
+    };
+  }
+  return { emotion: "neutral", cleanText: text };
+}
+```
+
+**Simplified mira_speech handler:**
+```typescript
+socket.on("mira_speech", (data) => {
+  if (data.is_chunk !== false) {
+    // Accumulating — show thinking state
+    accumulatorRef.current += data.text ?? "";
+    orb.setOrbState("thinking");
+  } else {
+    // End of message — parse emotion, stream TTS
+    if (data.text) accumulatorRef.current += data.text;
+    const fullText = accumulatorRef.current;
+    accumulatorRef.current = "";
+    if (!fullText) return;
+
+    const { emotion, cleanText } = parseEmotionTag(fullText);
+    orb.speak(cleanText, emotion);
+  }
+});
+```
+
+**Orb positioning (context-aware):**
+```tsx
+const orbPosition = useMemo(() => {
+  if (orb.orbState === "idle") return { top: 24, right: 24, width: 120 };
+  if (orb.orbState === "thinking") return { top: "40%", left: "45%", width: 180 };
+  if (products.length > 0) return { top: 24, right: 24, width: 150 };
+  return { top: "30%", right: 40, width: 200 };
+}, [orb.orbState, products.length]);
+```
+
+### Phase 6: Update Claude's System Prompt
+
+**Modify: `backend/agent/prompts.py`**
+
+Add emotion prefix instruction, remove scripted phrase instructions:
+
+```python
+# Add to system prompt:
+"""
+IMPORTANT: Begin EVERY response with an emotion tag in this exact format:
+[emotion:X] where X is one of: neutral, proud, teasing
+
+- neutral: default, informational, matter-of-fact
+- proud: complimenting the user, confident recommendations
+- teasing: playful jabs, sarcastic humor, judgmental fashion takes
+
+Example: "[emotion:teasing] Oh honey, those cargo shorts? In 2026? We need to talk."
+Example: "[emotion:proud] Now THAT is a look. The bomber jacket with those jeans? Chef's kiss."
+Example: "[emotion:neutral] I found a few options that might work with your style."
+"""
+```
+
+### Phase 7: Delete Dead Code
+
+| File | Action |
+|---|---|
+| `frontend/src/lib/memoji-avatar.ts` | Delete |
+| `frontend/src/lib/scripted-responses.ts` | Delete |
+| `frontend/src/lib/sentence-buffer.ts` | Delete |
+| `frontend/src/lib/elevenlabs-tts.ts` | Delete (replaced by streaming-tts.ts) |
+| `frontend/src/hooks/useMemojiAvatar.ts` | Delete (replaced by useOrbAvatar.ts) |
+| `frontend/src/components/mirror/AvatarPiP.tsx` | Delete (orb renders inline) |
+| `frontend/public/avatar/` | Delete entire directory (~5MB of mp4 files) |
+| `frontend/src/__tests__/scripted-responses.test.ts` | Delete |
+| `frontend/src/__tests__/sentence-buffer.test.ts` | Delete |
+| `frontend/src/__tests__/mira-speech-handler.test.ts` | Rewrite for new flow |
+
+### Phase 8: New Tests
+
+**`frontend/src/__tests__/emotion-parser.test.ts`** (new):
+- `[emotion:teasing] text` → parses correctly
+- `[emotion:unknown] text` → defaults to neutral
+- No tag → defaults to neutral
+- Tag with extra whitespace → handled
+
+**`frontend/src/__tests__/streaming-tts.test.ts`** (new):
+- Mock fetch + ReadableStream → audio plays
+- `stop()` during streaming → cleans up MediaSource
+- `getOutputVolume()` returns 0-1 range
+- Generation counter prevents stale streams
+
+**`frontend/src/__tests__/orb-avatar.test.ts`** (new):
+- State transitions: idle → thinking → speaking → idle
+- Color changes on emotion update
+- `speak()` triggers TTS and sets speaking state
+
+## Files Summary
+
+| File | Action | Description |
+|---|---|---|
+| `frontend/postcss.config.mjs` | Create | PostCSS config for Tailwind |
+| `frontend/src/app/globals.css` | Create | Tailwind CSS entry point |
+| `frontend/components.json` | Create (shadcn init) | shadcn/ui configuration |
+| `frontend/src/components/ui/orb.tsx` | Install (@elevenlabs/cli) | ElevenLabs Orb component |
+| `frontend/src/lib/streaming-tts.ts` | Create | Streaming TTS with MediaSource + volume |
+| `frontend/src/hooks/useOrbAvatar.ts` | Create | Orb state machine + TTS integration |
+| `frontend/src/app/mirror/page.tsx` | Modify | Simplify to orb + streaming + emotion parsing |
+| `backend/routers/tts.py` | Modify | Add `/stream` endpoint |
+| `backend/agent/prompts.py` | Modify | Add emotion tag instructions |
+| `frontend/src/lib/memoji-avatar.ts` | Delete | Replaced by orb |
+| `frontend/src/lib/scripted-responses.ts` | Delete | No more scripted matching |
+| `frontend/src/lib/sentence-buffer.ts` | Delete | Streaming replaces sentence buffering |
+| `frontend/src/lib/elevenlabs-tts.ts` | Delete | Replaced by streaming-tts.ts |
+| `frontend/src/hooks/useMemojiAvatar.ts` | Delete | Replaced by useOrbAvatar.ts |
+| `frontend/src/components/mirror/AvatarPiP.tsx` | Delete | Orb renders inline |
+| `frontend/public/avatar/` | Delete | ~5MB of video files removed |
+
+## Verification
+
+1. `cd frontend && npx @elevenlabs/cli@latest components add orb` — installs cleanly
+2. `cd frontend && npx vitest run` — all new tests pass
+3. `cd frontend && npx tsc --noEmit` — no type errors
+4. Manual test flow:
+   - Start session → orb appears in corner (idle, pale white)
+   - Speak → orb state = listening (mic reactive via Deepgram)
+   - Wait for Claude → orb = thinking (animated pulse)
+   - TTS starts → orb = speaking, color matches emotion, sphere deforms to audio
+   - TTS ends → orb = idle, drifts back to corner
+5. Console should show:
+   - `[Mirror] Parsed emotion: teasing`
+   - `[StreamingTTS] Streaming audio...`
+   - `[StreamingTTS] Playback started`
+   - `[StreamingTTS] Playback finished`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/6b6ba36a-57f2-4c8c-acaa-d45561aaace4.jsonl
+
+---
+
+<task-notification>
+<task-id>ae2a8fe</task-id>
+<status>completed</status>
+<summary>Agent "Research ElevenLabs streaming TTS" completed</summary>
+<result>Here is the complete research on ElevenLabs streaming TTS. There are two approaches, and I have real code for both.
+
+---
+
+## Two Approaches
+
+### Approach 1: REST Streaming (Simpler -- Recommended for Mirrorless)
+
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream`
+
+Uses standard `fetch` with `response.body.getReader()` to read audio chunks as they arrive, then feeds them into a `MediaSource` + `SourceBuffer` for browser playback. The audio format is MP3 (browser-native, no manual decoding needed).
+
+### Approach 2: WebSocket Streaming (Lower Latency, More Complex)
+
+**Endpoint:** `wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_multilingual_v2&output_format=pcm_44100`
+
+Uses a WebSocket with a specific message protocol (BOS/text/flush/EOS messages). Audio arrives as base64-encoded PCM16 chunks in JSON, which you decode manually and schedule for gapless playback via `AudioContext.createBufferSource()`.
+
+---
+
+## 1. WebSocket Streaming -- Full Details
+
+### URL Format
+```
+wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id={model}&output_format=pcm_44100
+```
+
+Regional servers: `wss://api.us.elevenlabs.io/...`, `wss://api.eu.residency.elevenlabs.io/...`
+
+### Authentication (3 options)
+1. `xi_api_key` field in the first (BOS) JSON message
+2. `authorization` field in the first message (`"Bearer <token>"`)
+3. `xi-api-key` as a query parameter in the URL
+
+### Message Protocol
+
+**Step 1 -- BOS (Beginning-of-Stream):**
+```json
+{
+  "text": " ",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.8,
+    "style": 0,
+    "use_speaker_boost": true
+  },
+  "generation_config": {
+    "chunk_length_schedule": [120, 160, 250, 290]
+  },
+  "xi_api_key": "YOUR_API_KEY"
+}
+```
+
+**Step 2 -- Send text (repeat as needed, text MUST end with a space):**
+```json
+{
+  "text": "Hello, how are you today? ",
+  "try_trigger_generation": true
+}
+```
+
+**Step 3 -- Flush (force-generate remaining buffered text):**
+```json
+{
+  "text": " ",
+  "flush": true
+}
+```
+
+**Step 4 -- EOS (End-of-Stream, text is empty string):**
+```json
+{
+  "text": ""
+}
+```
+
+### Server Responses
+
+**Audio chunk:**
+```json
+{
+  "audio": "base64_encoded_pcm16_data",
+  "alignment": {
+    "chars": ["H", "e", "l", "l", "o"],
+    "charStartTimesMs": [0, 50, 100, 150, 200],
+    "charDurationsMs": [50, 50, 50, 50, 100]
+  }
+}
+```
+
+**Final message (generation complete):**
+```json
+{
+  "isFinal": true
+}
+```
+
+### Complete Working Code -- WebSocket + AudioContext (PCM playback)
+
+```typescript
+export class ElevenLabsWebSocketTTS {
+  private ws: WebSocket | null = null;
+  private audioContext: AudioContext | null = null;
+  private nextPlayTime = 0;
+  private speaking = false;
+  private readonly sampleRate = 44100;
+
+  private voiceId: string;
+  private apiKey: string;
+  private modelId: string;
+
+  constructor(voiceId: string, apiKey: string, modelId = "eleven_multilingual_v2") {
+    this.voiceId = voiceId;
+    this.apiKey = apiKey;
+    this.modelId = modelId;
+  }
+
+  async speak(
+    text: string,
+    onStart?: () => void,
+    onEnd?: () => void,
+  ): Promise<void> {
+    if (!this.audioContext || this.audioContext.state === "closed") {
+      this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+    }
+    if (this.audioContext.state === "suspended") {
+      await this.audioContext.resume();
+    }
+
+    this.nextPlayTime = this.audioContext.currentTime;
+    this.speaking = true;
+
+    return new Promise<void>((resolve) => {
+      const wsUrl =
+        `wss://api.elevenlabs.io/v1/text-to-speech/${this.voiceId}/stream-input` +
+        `?model_id=${this.modelId}` +
+        `&output_format=pcm_${this.sampleRate}`;
+
+      const ws = new WebSocket(wsUrl);
+      this.ws = ws;
+
+      ws.onopen = () => {
+        // 1. BOS message with auth + voice settings
+        ws.send(JSON.stringify({
+          text: " ",
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.8,
+            style: 0,
+            use_speaker_boost: true,
+          },
+          generation_config: {
+            chunk_length_schedule: [120, 160, 250, 290],
+          },
+          xi_api_key: this.apiKey,
+        }));
+
+        onStart?.();
+
+        // 2. Send the actual text (must end with space)
+        ws.send(JSON.stringify({
+          text: text + " ",
+          try_trigger_generation: true,
+        }));
+
+        // 3. Flush remaining
+        ws.send(JSON.stringify({ text: " ", flush: true }));
+
+        // 4. EOS
+        ws.send(JSON.stringify({ text: "" }));
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.audio) {
+          this.playPCMChunk(data.audio);
+        }
+
+        if (data.isFinal) {
+          const remainingTime = Math.max(0, this.nextPlayTime - this.audioContext!.currentTime);
+          setTimeout(() => {
+            this.speaking = false;
+            onEnd?.();
+            resolve();
+          }, remainingTime * 1000);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error("[WS-TTS] WebSocket error:", err);
+        this.speaking = false;
+        onEnd?.();
+        resolve();
+      };
+
+      ws.onclose = () => { this.ws = null; };
+    });
+  }
+
+  /** Decode base64 PCM16 and schedule for gapless playback */
+  private playPCMChunk(base64Audio: string): void {
+    if (!this.audioContext) return;
+
+    // Base64 -> binary
+    const binaryString = atob(base64Audio);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // PCM16 signed 16-bit little-endian -> Float32 [-1.0, 1.0]
+    const pcm16 = new Int16Array(bytes.buffer);
+    const float32 = new Float32Array(pcm16.length);
+    for (let i = 0; i < pcm16.length; i++) {
+      float32[i] = pcm16[i] / 32768;
+    }
+
+    // Create AudioBuffer
+    const audioBuffer = this.audioContext.createBuffer(1, float32.length, this.sampleRate);
+    audioBuffer.copyToChannel(float32, 0);
+
+    // Schedule playback
+    const source = this.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.audioContext.destination);
+
+    const startTime = Math.max(this.nextPlayTime, this.audioContext.currentTime);
+    source.start(startTime);
+    this.nextPlayTime = startTime + audioBuffer.duration;
+  }
+
+  stop(): void {
+    if (this.ws) { this.ws.close(); this.ws = null; }
+    this.speaking = false;
+    if (this.audioContext) { this.audioContext.close(); this.audioContext = null; }
+  }
+
+  isSpeaking(): boolean { return this.speaking; }
+}
+```
+
+**Critical note:** This code passes the API key directly from the browser. For production, you would need a backend WebSocket proxy, or use the single-use token endpoint (`POST /v1/text-to-speech/{voice_id}/stream-input/create-single-use-token`).
+
+---
+
+## 2. REST Streaming -- Full Details
+
+### Endpoint
+```
+POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream?optimize_streaming_latency=3&output_format=mp3_44100_128
+```
+
+### Headers
+```
+Content-Type: application/json
+Accept: audio/mpeg
+xi-api-key: YOUR_API_KEY
+```
+
+### Request Body
+```json
+{
+  "text": "Hello, how are you today?",
+  "model_id": "eleven_multilingual_v2",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.8,
+    "style": 0.5,
+    "use_speaker_boost": true
+  }
+}
+```
+
+### Response
+`application/octet-stream` with chunked transfer encoding -- raw MP3 bytes streamed progressively.
+
+### Complete Working Code -- REST + MediaSource (MP3 playback)
+
+```typescript
+export class ElevenLabsStreamingTTS {
+  private apiUrl: string;
+  private audio: HTMLAudioElement | null = null;
+  private mediaSource: MediaSource | null = null;
+  private speaking = false;
+  private generation = 0;
+
+  constructor(apiUrl: string) {
+    this.apiUrl = apiUrl;
+  }
+
+  async speak(
+    text: string,
+    onStart?: () => void,
+    onEnd?: () => void,
+  ): Promise<void> {
+    const gen = ++this.generation;
+
+    try {
+      this.speaking = true;
+      onStart?.();
+
+      const resp = await fetch(`${this.apiUrl}/api/tts/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+
+      if (this.generation !== gen) { this.speaking = false; return; }
+      if (!resp.ok) throw new Error(`TTS proxy error: ${resp.status}`);
+      if (!resp.body) throw new Error("No response body for streaming");
+
+      if (typeof MediaSource !== "undefined" && MediaSource.isTypeSupported("audio/mpeg")) {
+        await this.playWithMediaSource(resp.body, gen, onEnd);
+      } else {
+        // Fallback: buffer entire response
+        const blob = await resp.blob();
+        if (this.generation !== gen) { this.speaking = false; return; }
+        await this.playBlob(blob, onEnd);
+      }
+    } catch (err) {
+      console.warn("[TTS] Streaming failed:", err);
+      this.speaking = false;
+      onEnd?.();
+    }
+  }
+
+  private playWithMediaSource(
+    body: ReadableStream<Uint8Array>,
+    gen: number,
+    onEnd?: () => void,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const mediaSource = new MediaSource();
+      this.mediaSource = mediaSource;
+
+      const audio = new Audio();
+      audio.src = URL.createObjectURL(mediaSource);
+      this.audio = audio;
+
+      mediaSource.addEventListener("sourceopen", async () => {
+        const sourceBuffer = mediaSource.addSourceBuffer("audio/mpeg");
+        const reader = body.getReader();
+
+        const appendQueue: Uint8Array[] = [];
+        let streamDone = false;
+        let isAppending = false;
+
+        const processQueue = () => {
+          if (isAppending || appendQueue.length === 0) return;
+          if (sourceBuffer.updating) return;
+          isAppending = true;
+          const chunk = appendQueue.shift()!;
+          sourceBuffer.appendBuffer(chunk);
+        };
+
+        sourceBuffer.addEventListener("updateend", () => {
+          isAppending = false;
+          if (streamDone && appendQueue.length === 0) {
+            if (mediaSource.readyState === "open") {
+              mediaSource.endOfStream();
+            }
+          } else {
+            processQueue();
+          }
+        });
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done || this.generation !== gen) break;
+            appendQueue.push(value);
+            processQueue();
+          }
+        } catch (err) {
+          console.error("[TTS] Stream read error:", err);
+        }
+        streamDone = true;
+        processQueue();
+      });
+
+      audio.onended = () => {
+        this.cleanup();
+        this.speaking = false;
+        onEnd?.();
+        resolve();
+      };
+
+      audio.onerror = () => {
+        this.cleanup();
+        this.speaking = false;
+        onEnd?.();
+        resolve();
+      };
+
+      audio.play().catch(() => {
+        this.cleanup();
+        this.speaking = false;
+        onEnd?.();
+        resolve();
+      });
+    });
+  }
+
+  private playBlob(blob: Blob, onEnd?: () => void): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      this.audio = audio;
+      const done = () => {
+        URL.revokeObjectURL(url);
+        this.speaking = false;
+        onEnd?.();
+        resolve();
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      audio.play().catch(done);
+    });
+  }
+
+  stop(): void {
+    this.generation++;
+    if (this.audio) {
+      this.audio.onended = null;
+      this.audio.onerror = null;
+      this.audio.pause();
+      this.audio = null;
+    }
+    this.cleanup();
+    this.speaking = false;
+  }
+
+  private cleanup(): void {
+    if (this.audio?.src) URL.revokeObjectURL(this.audio.src);
+    this.mediaSource = null;
+  }
+
+  isSpeaking(): boolean { return this.speaking; }
+}
+```
+
+For the REST approach, you also need a **streaming backend proxy** (your current `/api/tts/speak` waits for the full ElevenLabs response before returning). The streaming version uses `httpx` with `stream=True`:
+
+```python
+@router.post("/speak")
+async def speak(body: SpeakRequest):
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY not configured")
+
+    url = (
+        f"{ELEVENLABS_API_URL}/text-to-speech/{voice_id}/stream"
+        "?optimize_streaming_latency=3&output_format=mp3_44100_128"
+    )
+
+    client = httpx.AsyncClient(timeout=30.0)
+    try:
+        req = client.build_request("POST", url, headers={
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": api_key,
+        }, json={
+            "text": body.text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.8,
+                               "style": 0.5, "use_speaker_boost": True},
+        })
+        resp = await client.send(req, stream=True)
+        if resp.status_code != 200:
+            error_body = await resp.aread()
+            await client.aclose()
+            raise HTTPException(status_code=502,
+                detail=f"ElevenLabs error ({resp.status_code}): {error_body[:200]}")
+    except httpx.RequestError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}")
+
+    async def audio_stream():
+        try:
+            async for chunk in resp.aiter_bytes(chunk_size=4096):
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(audio_stream(), media_type="audio/mpeg",
+                             headers={"Content-Disposition": "inline"})
+```
+
+---
+
+## Comparison Table
+
+| Factor | REST Streaming | WebSocket Streaming |
+|--------|---------------|---------------------|
+| **Complexity** | Lower -- fetch + MediaSource | Higher -- WS lifecycle + PCM decode |
+| **Time to first audio** | ~500ms-1s | ~200-500ms |
+| **Best for** | Full text available upfront | Token-by-token from LLM |
+| **Audio format** | MP3 (browser-native) | PCM (manual decode needed) |
+| **API key** | Stays on backend (proxy) | Exposed in browser (or needs proxy) |
+| **Cancellation** | AbortController on fetch | ws.close() |
+
+---
+
+## Key Gotchas
+
+1. **API key security**: WebSocket from browser exposes your key. Use the REST proxy approach, or the single-use token endpoint.
+2. **MediaSource + Safari**: `MediaSource.isTypeSupported("audio/mpeg")` can be false on older Safari. Always include a blob fallback.
+3. **PCM sample rate must match**: `output_format=pcm_44100` in the URL must match `new AudioContext({ sampleRate: 44100 })`. Mismatch causes pitch distortion.
+4. **Text must end with space**: In WebSocket mode, every `text` field (except EOS) must end with a trailing space.
+5. **chunk_length_schedule**: Default `[120, 160, 250, 290]` means: 1st chunk generates after 120 chars, 2nd after 160, etc. Use `flush: true` for short text.
+6. **AudioContext requires user gesture**: Browsers block autoplay. Call `audioContext.resume()` inside a click handler.
+7. **Your current backend is "fake streaming"**: `StreamingResponse(iter([resp.content]))` buffers the entire response in memory first. Change to `httpx` streaming with `stream=True` for real streaming.
+
+---
+
+## Recommendation for Mirrorless
+
+Since your orchestrator produces complete sentences before calling TTS, the **REST streaming approach** is the better fit. It is simpler, keeps the API key on the backend, and MP3 playback via MediaSource requires no manual audio decoding. The WebSocket approach would add value if you later want to stream LLM tokens directly into TTS (word-by-word speech as Claude generates).
+
+The full plan with all code is saved at `/Users/johnathanmo/.claude/plans/snuggly-gathering-creek-agent-ae2a8fe.md`.
+
+Sources:
+- [ElevenLabs WebSocket API Reference](https://elevenlabs.io/docs/api-reference/text-to-speech/v-1-text-to-speech-voice-id-stream-input)
+- [ElevenLabs REST Stream Speech](https://elevenlabs.io/docs/api-reference/text-to-speech/stream)
+- [ElevenLabs Streaming Overview](https://elevenlabs.io/docs/api-reference/streaming)
+- [ElevenLabs WebSocket Reference (Mintlify)](https://elevenlabs-sdk.mintlify.app/api-reference/websockets)
+- [ElevenLabs JS SDK Streaming (DeepWiki)](https://deepwiki.com/elevenlabs/elevenlabs-js/2.2-streaming-text-to-speech)
+- [Streaming Implementation Gist](https://gist.github.com/chanmathew/6bce59d181d2edd64bcf27fe6bb76a90)
+- [GitHub Issue #48 - End-to-end streaming sample](https://github.com/elevenlabs/elevenlabs-js/issues/48)
+- [ElevenLabs Examples Repository](https://github.com/elevenlabs/elevenlabs-examples)
+- [ElevenLabs PCM Output Format Blog](https://elevenlabs.io/blog/pcm-output-format)</result>
+<usage>total_tokens: 50277
+tool_uses: 37
+duration_ms: 312855</usage>
+</task-notification>
+Full transcript available at: /private/tmp/claude-501/-Users-johnathanmo-mirrorless/tasks/ae2a8fe.output
+
+---
+
+does streaming tts make it faster?
+
+---
+
+okay commit and push your changes
+
+---
+
+Okay, can we push in verse the main
+
+---
+
+[Request interrupted by user]
+
+---
+
+Can we commit, push, and PR to main and then merge it
+
+---
+
+Okay, we should always follow this flow. Mira should always start by roasting your purchase history and your current outfit. Then it should suggest a fit and kind of work with you to find some style that you like, while referencing all the information it knows about you.
+
+And then it should display the options on the mirror using the front end, using the tools that we already have. Then the user will swipe through them and stuff. Generate a summary and send to your phone via Poke, which we will reference for now, we'll implement it soon
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the entire conversation:
+
+1. **Initial Request**: User asked to implement a detailed plan to replace Memoji avatar with ElevenLabs Orb + Streaming TTS. The plan was already written out in detail with 8 phases.
+
+2. **Phase 1: Tailwind CSS + ElevenLabs Orb Setup**
+   - Installed tailwindcss, @tailwindcss/postcss, postcss
+   - Created postcss.config.mjs
+   - Created globals.css with `@import "tailwindcss"`
+   - Updated layout.tsx to import globals.css
+   - Ran `npx shadcn@latest init` which generated components.json, globals.css (full theme), utils.ts
+   - Installed ElevenLabs Orb via `npx shadcn@latest add https://ui.elevenlabs.io/r/orb.json`
+   - This created orb.tsx and installed @react-three/drei, @react-three/fiber, three, @types/three
+
+3. **Phase 2: Streaming TTS Client**
+   - Created frontend/src/lib/streaming-tts.ts with StreamingTTS class
+   - Uses fetch + ReadableStream + MediaSource + SourceBuffer for chunked playback
+   - AudioContext + AnalyserNode for volume extraction
+   - Power-curve normalization (Math.pow(raw, 0.5) * 2.5) matching ElevenLabs SDK
+
+4. **Phase 3: Backend TTS Stream Endpoint**
+   - Added `/stream` endpoint to backend/routers/tts.py
+   - Uses httpx.AsyncClient().stream() for true chunked streaming from ElevenLabs
+   - Later added `?optimize_streaming_latency=3` query parameter
+
+5. **Phase 4: useOrbAvatar Hook**
+   - Created frontend/src/hooks/useOrbAvatar.ts
+   - State machine: idle → listening → thinking → speaking → idle
+   - 4 emotion palettes with colorsRef for no-rerender updates
+   - outputVolumeRef read by Orb every frame via useFrame
+   - Volume polling loop via requestAnimationFrame
+
+6. **Phase 5: Simplify mirror/page.tsx**
+   - Removed all Memoji/scripted/sentence-buffer imports
+   - Added dynamic import for Orb (lazy-loaded, ssr: false)
+   - Added parseEmotionTag function (initially exported from page.tsx - caused TS error)
+   - Simplified mira_speech handler: accumulate → parse emotion tag → stream TTS
+   - Added context-aware orb positioning via useMemo
+   - Added usePoseDetection import (was missing even in original)
+   - Added request_photo handler (added by linter/user outside session)
+
+7. **Phase 6: Update Claude's System Prompt**
+   - Replaced "Scripted Phrases" section with "Emotion Tags" section
+   - Claude now prefixes every response with [emotion:X] where X is neutral/proud/teasing
+
+8. **Phase 7: Delete Dead Code**
+   - Deleted: memoji-avatar.ts, scripted-responses.ts, sentence-buffer.ts, elevenlabs-tts.ts, useMemojiAvatar.ts, AvatarPiP.tsx, public/avatar/ (~5.7MB), scripted-responses.test.ts, sentence-buffer.test.ts
+
+9. **Phase 8: Write New Tests**
+   - Created emotion-parser.test.ts (10 tests)
+   - Created streaming-tts.test.ts (7 tests) with manual browser API mocks
+   - Rewrote mira-speech-handler.test.ts (9 tests) for new flow
+
+10. **TypeScript Errors Fixed**:
+    - parseEmotionTag exported from page.tsx violated Next.js page module constraint → moved to lib/emotion-parser.ts
+    - Uint8Array type mismatch in TS 5.7+ → used `as unknown as BufferSource` cast
+    - Test fetch mock type mismatch → used `as unknown as typeof fetch` cast
+    - resolveFetch callable type issue → explicit cast
+
+11. **User asked about streaming TTS speed** - I explained the latency comparison
+
+12. **User asked to commit, push, and PR to main and merge**
+    - Committed all changes to orb branch
+    - Pushed to origin orb
+    - Created PR #11
+    - Had to git stash local changes (request_photo handler added by linter)
+    - Merged PR #11 to main
+    - Popped stash, now on main
+
+13. **User's most recent request**: Described the desired session flow for Mira:
+    - Start by roasting purchase history + current outfit
+    - Suggest fits, work collaboratively to find styles
+    - Reference all known user data
+    - Display options on mirror using existing tools
+    - User swipes through options
+    - Generate summary and send to phone via Poke (to be implemented later)
+
+14. I was reading the current prompts.py and tools.py to understand what needs to change when the summary was requested.
+
+Summary:
+1. Primary Request and Intent:
+   The user asked to implement a comprehensive plan to replace the Memoji video avatar system with an ElevenLabs UI Orb (Three.js WebGL sphere) and streaming TTS pipeline. The plan had 8 phases covering: Tailwind CSS setup, streaming TTS client, backend streaming endpoint, useOrbAvatar hook, mirror page simplification, Claude prompt updates, dead code deletion, and new tests. After implementation was complete, the user asked to commit, push, create a PR to main, and merge it. Most recently, the user described the desired Mira session flow and asked to update the system prompt to enforce it: (1) roast purchase history + current outfit, (2) suggest fits collaboratively referencing user data, (3) display options on mirror with existing tools, (4) user swipes through, (5) generate summary and send to phone via Poke (future implementation).
+
+2. Key Technical Concepts:
+   - ElevenLabs UI Orb: Three.js WebGL sphere component installed via shadcn registry, using `@react-three/fiber` + `three`
+   - Streaming TTS: `MediaSource` + `SourceBuffer` API for low-latency chunked audio playback
+   - Volume extraction: `AudioContext` + `AnalyserNode` with ElevenLabs SDK power-curve normalization (`Math.pow(raw, 0.5) * 2.5`)
+   - Ref-based updates: `outputVolumeRef` and `colorsRef` to avoid 60fps React re-renders
+   - Emotion tag parsing: Claude prefixes `[emotion:X]` (neutral/proud/teasing), parsed by `emotion-parser.ts`
+   - Tailwind CSS v4 with `@tailwindcss/postcss` plugin
+   - shadcn/ui component model (copy-to-project, not npm imports)
+   - Next.js dynamic imports with `ssr: false` for Three.js components
+   - `optimize_streaming_latency=3` on ElevenLabs `/stream` endpoint for faster first-chunk delivery
+   - Context-aware Orb positioning (corner when idle, center when thinking, near products when showing)
+
+3. Files and Code Sections:
+
+   - **frontend/postcss.config.mjs** (CREATED)
+     - PostCSS config for Tailwind v4
+     ```js
+     const config = { plugins: { "@tailwindcss/postcss": {} } };
+     export default config;
+     ```
+
+   - **frontend/src/app/globals.css** (CREATED by shadcn init)
+     - Full Tailwind + shadcn/ui theme with CSS variables, dark mode support
+
+   - **frontend/src/app/layout.tsx** (MODIFIED)
+     - Added `import "./globals.css";` to enable Tailwind
+
+   - **frontend/components.json** (CREATED by shadcn init)
+     - shadcn/ui configuration with new-york style, aliases for @/ paths
+
+   - **frontend/src/components/ui/orb.tsx** (INSTALLED via shadcn registry)
+     - ElevenLabs Orb component with props: colors, colorsRef, agentState, volumeMode, manualOutput, outputVolumeRef, etc.
+     - AgentState type: `null | "thinking" | "listening" | "talking"`
+
+   - **frontend/src/lib/streaming-tts.ts** (CREATED)
+     - Core streaming TTS client replacing per-sentence fetch approach
+     ```typescript
+     export class StreamingTTS {
+       constructor(apiUrl: string);
+       async speak(text: string, onStart?: () => void, onEnd?: () => void): Promise<void>;
+       stop(): void;
+       isSpeaking(): boolean;
+       getOutputVolume(): number;  // 0-1, for Orb
+       destroy(): void;
+     }
+     ```
+     - Key pattern: `sourceBuffer.appendBuffer(value as unknown as BufferSource)` for TS 5.7+ compatibility
+     - Uses `Uint8Array<ArrayBuffer>` for frequencyData type
+
+   - **frontend/src/lib/emotion-parser.ts** (CREATED)
+     - Extracted from page.tsx to avoid Next.js page export constraint
+     ```typescript
+     export function parseEmotionTag(text: string): {
+       emotion: MiraEmotion;
+       cleanText: string;
+     }
+     ```
+     - Parses `[emotion:X]` prefix, defaults unknown emotions to "neutral"
+
+   - **frontend/src/hooks/useOrbAvatar.ts** (CREATED)
+     - Replaces useMemojiAvatar with dramatically simpler hook
+     ```typescript
+     export type OrbState = "idle" | "listening" | "thinking" | "speaking";
+     export type MiraEmotion = "idle" | "neutral" | "proud" | "teasing";
+     const EMOTION_COLORS: Record<MiraEmotion, [string, string]> = {
+       idle: ["#F0F0F5", "#E8E8EE"],
+       neutral: ["#F5E6A0", "#E8D680"],
+       proud: ["#4A6FA5", "#3A5C8C"],
+       teasing: ["#FFF3B0", "#FFE580"],
+     };
+     ```
+     - Returns: orbState, agentState, colors, colorsRef, outputVolumeRef, getOutputVolume, speak, setOrbState, stop, isSpeaking, startSession, stopSession
+     - Volume polling loop via requestAnimationFrame writing to outputVolumeRef
+
+   - **frontend/src/app/mirror/page.tsx** (REWRITTEN)
+     - Removed: useMemojiAvatar, SentenceBuffer, findScriptedResponse, detectEmotion, AvatarPiP, pendingTTSAfterScriptedRef, sentenceBuffer
+     - Added: useOrbAvatar, parseEmotionTag, dynamic Orb import, context-aware orbStyle
+     - Simplified mira_speech handler:
+     ```typescript
+     const { emotion, cleanText } = parseEmotionTag(fullText);
+     console.log("[Mirror] Parsed emotion:", emotion);
+     orb.speak(cleanText, emotion);
+     ```
+     - Context-aware Orb positioning via useMemo based on orbState and products.length
+     - Note: User/linter added a `request_photo` handler (lines 276-301) outside the session
+
+   - **backend/routers/tts.py** (MODIFIED)
+     - Added `/stream` endpoint using `httpx.AsyncClient().stream()` for true chunked streaming
+     - Uses `?optimize_streaming_latency=3` query parameter
+     ```python
+     @router.post("/stream")
+     async def stream_speech(body: SpeakRequest):
+         async def audio_generator():
+             async with httpx.AsyncClient() as client:
+                 async with client.stream(
+                     "POST",
+                     f"{ELEVENLABS_API_URL}/text-to-speech/{voice_id}/stream?optimize_streaming_latency=3",
+                     ...
+                 ) as resp:
+                     async for chunk in resp.aiter_bytes(1024):
+                         yield chunk
+         return StreamingResponse(audio_generator(), media_type="audio/mpeg")
+     ```
+
+   - **backend/agent/prompts.py** (MODIFIED)
+     - Replaced "Scripted Phrases" section with "Emotion Tags" section
+     - Claude now must prefix every response with `[emotion:X]` where X is neutral/proud/teasing
+
+   - **frontend/src/lib/utils.ts** (CREATED by shadcn)
+     - Standard `cn()` utility combining clsx + tailwind-merge
+
+   - **Test Files** (CREATED/REWRITTEN):
+     - `emotion-parser.test.ts`: 10 tests covering all edge cases
+     - `streaming-tts.test.ts`: 7 tests with manual browser API mocks (MediaSource, AudioContext, AnalyserNode)
+     - `mira-speech-handler.test.ts`: 9 tests rewritten for new orb flow
+
+   - **Files DELETED**: memoji-avatar.ts, scripted-responses.ts, sentence-buffer.ts, elevenlabs-tts.ts, useMemojiAvatar.ts, AvatarPiP.tsx, public/avatar/ (~5.7MB), scripted-responses.test.ts, sentence-buffer.test.ts
+
+   - **CLAUDE.md** (MODIFIED)
+     - Updated Voice & TTS Pipeline section, project structure, avatar description, completed/in-progress status
+
+   - **backend/agent/tools.py** (READ - not modified by me)
+     - Has 8 tools: search_clothing, search_gmail, search_purchases, search_calendar, present_items, display_product, send_voice_to_client, give_recommendation, take_photo
+     - Important for understanding the session flow update the user requested
+
+4. Errors and Fixes:
+   - **Next.js page export constraint**: `parseEmotionTag` exported from `page.tsx` caused TS error `Property 'parseEmotionTag' is incompatible with index signature`. Fixed by moving to `frontend/src/lib/emotion-parser.ts`.
+   - **Uint8Array type in TS 5.7+**: `sourceBuffer.appendBuffer(value)` failed because `Uint8Array<ArrayBufferLike>` is not assignable to `BufferSource`. Fixed with `value as unknown as BufferSource` cast. Also changed `private frequencyData: Uint8Array | null` to `Uint8Array<ArrayBuffer> | null`.
+   - **Test fetch mock types**: `vi.fn()` returning partial Response failed TS. Fixed with `as unknown as typeof fetch` cast.
+   - **resolveFetch not callable**: TypeScript inferred `never` for the captured resolve function. Fixed with explicit `(resolveFetch as (value: unknown) => void)(...)` cast.
+   - **rm -rf typo**: Initially wrote `rm /rf` instead of `rm -rf` for avatar directory deletion. Ran correct command after.
+   - **git stash needed for merge**: `gh pr merge` failed because local changes to `mirror/page.tsx` (the `request_photo` handler added by linter) would be overwritten. Fixed by stashing, merging, then popping.
+
+5. Problem Solving:
+   - All 8 phases implemented successfully
+   - TypeScript compiles cleanly (`npx tsc --noEmit` passes)
+   - 26 new tests pass (10 + 7 + 9), 44 total tests pass
+   - 2 pre-existing test failures in unrelated files (product-carousel.test.tsx, voice-indicator.test.tsx - both have `React is not defined`)
+   - PR #11 created and merged to main successfully
+   - Currently on `main` branch with only the `request_photo` handler as an unstaged change
+
+6. All User Messages:
+   - "Implement the following plan: [8-phase plan for replacing Memoji with ElevenLabs Orb + Streaming TTS]"
+   - "update claude.md too" (sent while commit was in progress)
+   - "does streaming tts make it faster?"
+   - "okay commit and push your changes"
+   - "Can we commit, push, and PR to main and then merge it"
+   - "Okay, we should always follow this flow. Mira should always start by roasting your purchase history and your current outfit. Then it should suggest a fit and kind of work with you to find some style that you like, while referencing all the information it knows about you. And then it should display the options on the mirror using the front end, using the tools that we already have. Then the user will swipe through them and stuff. Generate a summary and send to your phone via Poke, which we will reference for now, we'll implement it soon"
+
+7. Pending Tasks:
+   - Update `MIRA_PERSONALITY` system prompt in `backend/agent/prompts.py` to enforce the session flow the user described:
+     1. Roast purchase history + current outfit
+     2. Suggest fits collaboratively, referencing all user data
+     3. Display options on mirror using existing tools (search_clothing → present_items/display_product)
+     4. User swipes through options
+     5. Generate summary and send to phone via Poke (referenced for now, implemented later)
+   - The unstaged `request_photo` handler change in mirror/page.tsx should probably be committed
+
+8. Current Work:
+   I had just finished reading `backend/agent/prompts.py` (full MIRA_PERSONALITY prompt, 98 lines) and `backend/agent/tools.py` (all 8 tool definitions and their implementations, 910 lines) to understand the current state before updating the session flow per the user's most recent request. I was about to modify the "Session Flow" section of MIRA_PERSONALITY to match the user's described flow.
+
+9. Optional Next Step:
+   Update the `MIRA_PERSONALITY` prompt's "Session Flow" section in `backend/agent/prompts.py` to enforce the user's described flow. The user said: "Mira should always start by roasting your purchase history and your current outfit. Then it should suggest a fit and kind of work with you to find some style that you like, while referencing all the information it knows about you. And then it should display the options on the mirror using the front end, using the tools that we already have. Then the user will swipe through them and stuff. Generate a summary and send to your phone via Poke, which we will reference for now, we'll implement it soon." The current prompt already has Turn 1 (THE HOOK), Turn 2 (THE OUTFIT CHECK), Turn 3+ (RECOMMENDATIONS), and Session Close sections that need to be refined to match this flow, particularly adding the Poke summary step at the end.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+[Request interrupted by user for tool use]
