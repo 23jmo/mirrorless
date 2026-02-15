@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "91abc681597e",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/agent/tools.py",
+    "backend/migrations/010_phone_constraints.sql",
+    "test_format_size.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/91/abc681597e/0/metadata.json",
+      "transcript": "/91/abc681597e/0/full.jsonl",
+      "context": "/91/abc681597e/0/context.md",
+      "content_hash": "/91/abc681597e/0/content_hash.txt",
+      "prompt": "/91/abc681597e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 110,
+    "cache_creation_tokens": 73668,
+    "cache_read_tokens": 1022419,
+    "output_tokens": 1411,
+    "api_call_count": 13
+  }
+}
