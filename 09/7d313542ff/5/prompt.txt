@@ -1,0 +1,871 @@
+Implement the following plan:
+
+# Plan: Migrate from Mira to Poke as Agent Brain
+
+## Context
+
+Mirrorless currently uses **Mira**, a custom Claude-based agent orchestrator (`backend/agent/`), as the AI brain for the smart mirror shopping assistant. We're pivoting to **Poke** (by Interaction Company) — an AI assistant in iMessage/Telegram/SMS that acts as an MCP host.
+
+**The pivot**: Instead of running our own AI brain, we expose our shopping tools via an MCP server. Users install a Poke **recipe** that auto-connects our tools to their Poke agent. Poke already has complete contextual awareness over the user (Gmail, calendar, contacts) via its own integrations — so it knows what the user bought, what events are coming up, and what their style is. Our tools add the ability to **search for new clothes** and **display items on their physical mirror**.
+
+**What changes:**
+- Poke becomes the brain (replaces orchestrator, prompts, Claude API calls, session management)
+- Poke handles user data (replaces our Gmail/calendar scraping pipeline)
+- We build a lightweight MCP server with 5 tools
+
+**What stays:**
+- Serper clothing search API (our unique value-add)
+- Mirror display via Socket.io (present_items + send_to_mirror push to physical mirror)
+- Frontend mirror display app
+- Existing FastAPI backend (simplified — serves Socket.io + mirror bridge)
+
+### Streaming Limitation
+
+MCP does NOT support streaming tool results (confirmed by FastMCP maintainer — "Streamable HTTP" is misleadingly named). Tools return a single complete payload. Poke is message-based (iMessage/SMS), so responses are complete messages, not streams. Our `send_to_mirror` tool receives complete text blocks. For TTS, the mirror can speak each block as it arrives — each tool call is a "speech turn." This is sufficient for conversational UX.
+
+## How It Works End-to-End
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ USER installs recipe via poke.com/r/<code>                      │
+│   → Recipe auto-connects our MCP integration to their Poke      │
+│   → Onboarding asks for their mirror_id (shown on mirror screen)│
+│   → Poke remembers mirror_id for all future tool calls          │
+└─────────────────────────────────────────────────────────────────┘
+
+User texts Poke: "I need an outfit for my dinner Friday"
+        │
+        ▼
+┌─ Poke Agent (cloud brain) ─────────────────────────────────────┐
+│ Poke ALREADY KNOWS (from its own integrations):                 │
+│   • User has dinner at Nobu on Friday (Gmail/calendar)          │
+│   • User bought a Zara blazer last week (Gmail receipts)        │
+│   • User's style leans minimalist (purchase patterns)           │
+│                                                                 │
+│ Poke calls our tool:                                            │
+│   search_clothing("smart casual dinner minimalist under $200")  │
+│   → Our MCP server → Serper API → returns 8 items              │
+│                                                                 │
+│ Poke picks best 3, calls:                                       │
+│   present_items(mirror_id="MIRROR-A1", items=[...3 items...])   │
+│   → Our MCP server → HTTP POST to backend → Socket.io emit     │
+│   → Items appear on physical mirror display                     │
+│                                                                 │
+│ Poke calls send_to_mirror to show its commentary on the mirror: │
+│   send_to_mirror(mirror_id="MIRROR-A1",                         │
+│     text="The navy blazer pairs perfectly with that Zara piece   │
+│           you got last week. Check these 3 looks!")              │
+│   → Text appears on mirror display (+ TTS speaks it)            │
+│                                                                  │
+│ Poke also texts the user in iMessage with the same message.     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Mirror Linking: Permanent Mirror ID
+
+Each physical mirror has a **permanent ID** configured at setup (e.g., `"MIRROR-A1"`). This is displayed on the mirror screen and printed on the device. The user tells Poke their mirror ID once during recipe onboarding — Poke remembers it across sessions (Poke's 3-layer memory: conversation logs, agent logs, summarized context).
+
+**Why permanent mirror_id (not temporary codes or poke_id):**
+- No user registration or DB lookup needed — fully stateless
+- Permanent — doesn't expire or change on restart
+- User can re-enter it anytime by just telling Poke in conversation
+- Mirror joins Socket.io room `mirror:<mirror_id>` at startup
+- MCP server resolves `mirror_id` → HTTP POST to backend → emit to that room
+
+**Future upgrade path**: For multi-user production, add poke_id-based linking (the `poke_id` column already exists in the `users` table). This would let us map Poke accounts to mirrors persistently in the DB.
+
+---
+
+## Phase 1: Standalone MCP Server with `search_clothing`
+
+**Goal:** Deployable FastMCP server that Poke can connect to and search for clothes.
+
+### Files to create
+
+**`backend/mcp/server.py`** — Main MCP server entry point
+- FastMCP instance with server name + instructions metadata
+- `search_clothing` tool: calls Serper.dev Shopping API
+- Runs with `transport="http"`, `stateless_http=True` on port 8001
+- Pattern matches [InteractionCo/mcp-server-template](https://github.com/InteractionCo/mcp-server-template)
+
+**`backend/mcp/shopping.py`** — Serper API client (extracted from existing code)
+- Extract `_search_serper()` logic from `backend/agent/tools.py` (lines ~196-260)
+- Reuse the non-fashion filter logic and result formatting
+- Uses `httpx` for async HTTP calls to `POST https://google.serper.dev/shopping`
+- Env var: `SERPER_API_KEY`
+
+**`backend/mcp/requirements.txt`**
+```
+fastmcp>=2.12.0
+uvicorn>=0.35.0
+httpx
+python-dotenv
+```
+
+**`backend/mcp/render.yaml`** — Render deployment config (same pattern as template)
+
+**`backend/mcp/__init__.py`**
+
+### Key files to reference (read, not modify)
+- `backend/agent/tools.py` — Source of Serper API call logic to extract
+- `backend/agent/tools.py:TOOL_DEFINITIONS` — Current tool schemas for reference
+
+### Unit Tests — `backend/mcp/tests/test_search_clothing.py`
+
+```
+Test cases:
+1. test_search_clothing_returns_structured_results
+   - Mock Serper HTTP response with sample shopping data
+   - Verify returned items have required fields: title, price, image_url, link, source
+   - Verify num_results param limits output
+
+2. test_search_clothing_filters_non_fashion
+   - Mock Serper response including non-fashion items (e.g., "GitHub Pro Subscription")
+   - Verify non-fashion items are filtered out
+
+3. test_search_clothing_handles_empty_results
+   - Mock Serper response with no results
+   - Verify returns empty list, no error
+
+4. test_search_clothing_handles_serper_error
+   - Mock Serper HTTP 500 response
+   - Verify returns error dict, doesn't crash
+
+5. test_search_clothing_default_num_results
+   - Call without num_results param
+   - Verify default of 8 is used
+```
+
+### Run after Phase 1
+```bash
+cd backend && python -m pytest mcp/tests/test_search_clothing.py -v
+```
+All 5 tests must pass before proceeding to Phase 2.
+
+---
+
+## Phase 2: Add `present_items` + `send_to_mirror` with Mirror Bridge
+
+**Goal:** Poke can push clothing items AND text/speech to the physical mirror display.
+
+### Architecture
+
+```
+Poke → MCP server (present_items / send_to_mirror)
+         → HTTP POST to FastAPI backend (/api/mirror/*)
+              → Socket.io emit to room "mirror:<mirror_id>"
+                   → Mirror display updates (items / text + TTS)
+```
+
+The MCP server does NOT connect to Socket.io directly — it calls HTTP endpoints on the existing FastAPI backend, which handles Socket.io emission. This keeps the MCP server stateless.
+
+### Five MCP tools total after this phase
+
+| Tool | Purpose | Socket.io Event |
+|------|---------|----------------|
+| `search_clothing` | Search Serper API (Phase 1) | None (returns to Poke only) |
+| `present_items` | Show clothing cards on mirror | `tool_result` with `type: "clothing_results"` |
+| `send_to_mirror` | Show text on mirror (+ TTS) | `mirror_text` with `{text}` |
+| `get_past_sessions` | Query previous shopping sessions | None (returns to Poke only) |
+| `save_session` | Save current session summary + reactions | None (writes to DB) |
+
+### Files to create
+
+**`backend/mcp/server.py`** — Add both tools
+
+`present_items(mirror_id: str, items: list[dict])`:
+- Each item must have: title, price, image_url, link, source
+- Calls `POST {BACKEND_URL}/api/mirror/present` with the payload
+- Returns success/failure to Poke
+
+`send_to_mirror(mirror_id: str, text: str)`:
+- Sends Poke's commentary/speech text to the mirror display
+- Calls `POST {BACKEND_URL}/api/mirror/text` with `{mirror_id, text}`
+- Mirror displays the text and can run TTS on it
+- Returns success/failure to Poke
+- This replaces the old `mira_speech` socket event
+
+`get_past_sessions(mirror_id: str, limit: int = 5)`:
+- Returns previous shopping sessions for this mirror
+- Each session includes: date, items shown, reactions (liked/disliked/skipped), summary
+- Calls `GET {BACKEND_URL}/api/mirror/sessions/{mirror_id}?limit=5`
+- Poke uses this to recall "last time we looked at sneakers you liked the Nike ones"
+- Reuses existing `sessions` + `session_outfits` tables (with new `mirror_id` column)
+
+`save_session(mirror_id: str, summary: str, items_shown: list[dict], reactions: dict)`:
+- Saves the current shopping session when the interaction wraps up
+- Calls `POST {BACKEND_URL}/api/mirror/sessions` with session data
+- Each item in `items_shown` can have a reaction: "liked", "disliked", "skipped"
+- `reactions` is an aggregate: `{likes: 2, dislikes: 1, items_shown: 5}`
+- `summary` is a brief text recap Poke generates (e.g., "Looked at date night outfits, loved the navy blazer")
+- Poke should call this at the end of each shopping conversation
+
+**`backend/routers/mirror.py`** — New REST endpoints on existing FastAPI backend
+- `POST /api/mirror/present` — Receives `{mirror_id, items}`, emits `tool_result` to Socket.io room
+- `POST /api/mirror/text` — Receives `{mirror_id, text}`, emits `mirror_text` to Socket.io room
+- `GET /api/mirror/sessions/{mirror_id}` — Returns past sessions with items and reactions
+- `POST /api/mirror/sessions` — Saves a new session record
+- `GET /api/mirror/status/{mirror_id}` — Check if a mirror is connected (optional)
+
+### Schema change
+Add `mirror_id` column to `sessions` table so sessions can be queried by mirror:
+```sql
+-- backend/migrations/NNN_add_mirror_id_to_sessions.sql
+ALTER TABLE sessions ADD COLUMN mirror_id text;
+CREATE INDEX idx_sessions_mirror_id ON sessions(mirror_id) WHERE mirror_id IS NOT NULL;
+```
+
+**`backend/main.py`** — Update Socket.io setup
+- Add handler for mirrors joining with `mirror_id`: `join_room` → `room = f"mirror:{mirror_id}"`
+- Register new mirror router
+
+**`frontend/src/app/mirror/`** — Update mirror display
+- Show permanent `mirror_id` on screen (from env var or config)
+- Connect to Socket.io and join room `mirror:<mirror_id>`
+- Listen for `tool_result` events (clothing cards — same as current)
+- Listen for `mirror_text` events (new — display text overlay + TTS)
+
+### Files to modify
+- `backend/main.py` — Add mirror router, update Socket.io join_room handler
+- `frontend/src/app/mirror/page.tsx` (or equivalent) — Show mirror_id, update room join, add text display
+
+### Streaming note
+MCP tools return complete payloads (no streaming). Each `send_to_mirror` call is one "speech turn." For a conversational feel, Poke can make multiple `send_to_mirror` calls in sequence. The mirror frontend should handle displaying new text smoothly (fade in/out, overwrite previous text).
+
+### Unit Tests — MCP tools (`backend/mcp/tests/`)
+
+**`test_present_items.py`**
+```
+1. test_present_items_calls_backend_endpoint
+   - Mock httpx POST to /api/mirror/present
+   - Verify correct payload sent: {mirror_id, items}
+   - Verify returns {presented: N}
+
+2. test_present_items_validates_item_fields
+   - Call with items missing required fields (e.g., no image_url)
+   - Verify returns error/validation message
+
+3. test_present_items_max_5_items
+   - Call with 7 items
+   - Verify only first 5 are sent (or error returned)
+
+4. test_present_items_backend_unreachable
+   - Mock httpx to raise connection error
+   - Verify graceful error response
+```
+
+**`test_send_to_mirror.py`**
+```
+1. test_send_to_mirror_calls_backend_endpoint
+   - Mock httpx POST to /api/mirror/text
+   - Verify payload: {mirror_id, text}
+   - Verify returns success
+
+2. test_send_to_mirror_empty_text
+   - Call with empty string
+   - Verify returns error (don't send blank messages to mirror)
+
+3. test_send_to_mirror_backend_unreachable
+   - Mock httpx to raise connection error
+   - Verify graceful error response
+```
+
+**`test_sessions.py`**
+```
+1. test_save_session_calls_backend_endpoint
+   - Mock httpx POST to /api/mirror/sessions
+   - Verify payload includes: mirror_id, summary, items_shown, reactions
+   - Verify returns success
+
+2. test_get_past_sessions_returns_history
+   - Mock httpx GET /api/mirror/sessions/{mirror_id}
+   - Verify returns list of sessions with expected fields
+
+3. test_get_past_sessions_empty_history
+   - Mock empty response
+   - Verify returns empty list, no error
+
+4. test_get_past_sessions_respects_limit
+   - Verify limit param is passed to backend
+```
+
+### Unit Tests — Backend endpoints (`backend/tests/test_mirror_endpoint.py`)
+
+```
+1. test_present_items_endpoint_emits_socket
+   - POST /api/mirror/present with valid payload
+   - Mock Socket.io, verify emit to room "mirror:<mirror_id>"
+   - Verify event name and payload structure
+
+2. test_text_endpoint_emits_socket
+   - POST /api/mirror/text with valid payload
+   - Mock Socket.io, verify emit with {text}
+
+3. test_save_session_writes_to_db
+   - POST /api/mirror/sessions with session data
+   - Verify session row created in DB
+   - Verify session_outfits row(s) created
+
+4. test_get_sessions_returns_history
+   - Insert test sessions into DB
+   - GET /api/mirror/sessions/{mirror_id}
+   - Verify correct sessions returned, ordered by date DESC
+
+5. test_get_sessions_filters_by_mirror_id
+   - Insert sessions for 2 different mirror_ids
+   - Verify only the queried mirror_id's sessions are returned
+
+6. test_mirror_status_connected
+   - Register a Socket.io connection for a mirror_id
+   - GET /api/mirror/status/{mirror_id}
+   - Verify returns {connected: true}
+
+7. test_mirror_status_disconnected
+   - GET /api/mirror/status/{mirror_id} for unknown mirror
+   - Verify returns {connected: false}
+```
+
+### Run after Phase 2
+```bash
+# MCP tool tests (mocked HTTP, no backend needed)
+cd backend && python -m pytest mcp/tests/test_present_items.py mcp/tests/test_send_to_mirror.py mcp/tests/test_sessions.py -v
+
+# Backend endpoint tests (may use live Neon DB per project convention)
+cd backend && python -m pytest tests/test_mirror_endpoint.py -v
+```
+All tests must pass before proceeding to Phase 3.
+
+---
+
+## Phase 3: Create the Poke Recipe
+
+**Goal:** Shareable recipe that anyone installs to get a personal shopping mirror assistant.
+
+### Recipe Configuration (via poke.com/kitchen)
+
+| Field | Value |
+|-------|-------|
+| **Name** | Smart Mirror Stylist |
+| **Integration** | Our MCP server URL (e.g. `https://mirrorless-mcp.onrender.com/mcp`) |
+| **inputContext** | "Ask the user for their mirror ID — the code displayed on their smart mirror screen" |
+| **prefilledFirstText** | "Hey! I can help you find outfits and show them on your mirror. What's the code displayed on your mirror screen?" |
+| **Credential sharing** | "Share with users (no setup required)" — our Serper API key stays server-side |
+| **Automations** | None initially |
+
+### MCP Server Instructions (in `server.py` metadata)
+
+These instructions guide Poke's AI on when and how to use our tools — this is the most critical part of the integration per Poke's docs:
+
+```python
+mcp = FastMCP(
+    "Mirrorless Shopping",
+    instructions="""Personal shopping assistant tools for a smart mirror display.
+
+TOOLS:
+- search_clothing: Search for clothing items online. Use detailed queries including
+  gender, style keywords, occasion, and price range. Returns product results with
+  images and prices. Example: "womens oversized cream wool coat under $200"
+
+- present_items: Display 1-5 curated clothing items on the user's smart mirror.
+  Requires mirror_id. Each item needs: title, price, image_url, link, source.
+
+- send_to_mirror: Send text to display on the user's smart mirror screen.
+  Use this to show your commentary, styling advice, or reactions on the mirror.
+  The mirror can also speak this text aloud via text-to-speech.
+  Requires mirror_id.
+
+- get_past_sessions: Retrieve previous shopping sessions for this mirror.
+  Returns session dates, items shown, user reactions (liked/disliked/skipped),
+  and summaries. Use this to personalize recommendations — reference items they
+  liked or disliked in past sessions.
+
+- save_session: Save a session summary when the shopping conversation ends.
+  Include items shown, reactions, and a brief summary of what happened.
+  ALWAYS call this when wrapping up a shopping interaction.
+
+WORKFLOW:
+1. Get the user's mirror_id if you don't have it yet (the code on their mirror)
+2. Call get_past_sessions to check their history — reference past likes/dislikes
+3. Use send_to_mirror to greet them on the mirror
+4. Search for items based on what you know about the user + their session history
+5. Pick your best 1-5 results and display them via present_items
+6. Use send_to_mirror to explain why you chose those items
+7. React to feedback, refine, and keep the conversation going on the mirror
+8. When done, call save_session with a summary of what happened
+
+IMPORTANT:
+- ALWAYS use send_to_mirror alongside present_items so the user sees your
+  commentary on the mirror, not just in their phone.
+- ALWAYS call get_past_sessions at the start to build on previous interactions.
+- ALWAYS call save_session at the end so future sessions can reference this one.
+- The user's purchase history, calendar, and preferences are available to you
+  through your own integrations — use that context to personalize everything.
+"""
+)
+```
+
+### Integration Tests — `backend/mcp/tests/test_integration.py`
+
+End-to-end test that runs the MCP server and calls tools via the MCP client SDK:
+```
+1. test_mcp_server_starts_and_lists_tools
+   - Start server in subprocess
+   - Connect MCP client
+   - Verify all 5 tools are discovered with correct schemas
+
+2. test_search_clothing_via_mcp_client
+   - Call search_clothing through MCP client (with mocked Serper)
+   - Verify structured results returned
+
+3. test_present_items_via_mcp_client
+   - Call present_items through MCP client (with mocked backend)
+   - Verify HTTP call made to backend
+
+4. test_send_to_mirror_via_mcp_client
+   - Call send_to_mirror through MCP client (with mocked backend)
+   - Verify HTTP call made to backend
+
+5. test_session_roundtrip_via_mcp_client
+   - Call save_session then get_past_sessions through MCP client
+   - Verify session data persists and is retrievable
+```
+
+### Run after Phase 3
+```bash
+# Full MCP tool test suite
+cd backend && python -m pytest mcp/tests/ -v
+
+# Full backend test suite
+cd backend && python -m pytest tests/test_mirror_endpoint.py -v
+
+# Integration test (MCP client → server → backend)
+cd backend && python -m pytest mcp/tests/test_integration.py -v
+```
+
+### Manual verification
+1. Deploy MCP server to Render
+2. Add as integration in Poke settings, verify all 5 tools discovered
+3. Create recipe in Kitchen with our integration
+4. Test in Sandbox: ask Poke to search for clothes → verify tool call
+5. Test full flow: search → present_items → send_to_mirror → save_session
+6. Test get_past_sessions in next conversation → verify history returned
+7. Publish recipe, test install via share link
+
+---
+
+## Phase 4: Cleanup — Remove Mira, Simplify Backend
+
+**Goal:** Remove dead code now that Poke is the brain.
+
+### Files to delete
+- `backend/agent/orchestrator.py` — Mira's brain (replaced by Poke)
+- `backend/agent/prompts.py` — Mira's personality
+- `backend/agent/memory.py` — User data loading (Poke handles this)
+- `backend/agent/test_harness.py` — CLI test tool for Mira
+- `backend/scraper/pipeline.py` — Gmail scraping
+- `backend/scraper/routes.py` — Scrape API endpoints
+- `backend/scraper/socket_events.py` — Scrape socket events
+- `backend/scraper/gmail_fetch.py` — Gmail API calls
+- `backend/scraper/calendar_fetch.py` — Calendar API calls
+
+### Files to simplify
+- `backend/agent/tools.py` — Can be deleted once `backend/mcp/shopping.py` is complete (logic extracted)
+- `backend/main.py` — Remove Mira socket events (`start_session`, `mirror_event`, `end_session`, `mira_speech`), keep mirror pairing
+- `backend/routers/` — Remove scrape routes, simplify or keep auth for mirror setup
+
+### Database
+- Stop writing to: `purchases`, `style_profiles`, `calendar_events` (Poke handles these)
+- Keep `sessions` + `session_outfits` (now written by save_session tool)
+- Keep all tables in schema (don't drop — no harm, and we may want historical data)
+- Keep `users` table if we add poke_id linking later
+
+### CLAUDE.md
+- Update to reflect Poke-based architecture
+
+### Run after Phase 4
+```bash
+# Verify no import errors from removed modules
+cd backend && python -c "from main import app; print('Backend imports OK')"
+cd backend && python -c "from mcp.server import mcp; print('MCP imports OK')"
+
+# Run ALL tests to verify nothing broke
+cd backend && python -m pytest mcp/tests/ tests/test_mirror_endpoint.py -v
+
+# Verify old tests that referenced deleted modules are also cleaned up
+cd backend && python -m pytest --collect-only 2>&1 | grep -i error || echo "No collection errors"
+```
+All tests must pass. No import errors.
+
+---
+
+## Phase 5 (Optional): `send_message` — Proactive Mirror Wakeup
+
+**Goal:** Mirror detects user approaching → wakes up their Poke agent.
+
+```python
+from poke import Poke
+client = Poke()  # uses POKE_API_KEY env var
+client.send_message("Your mirror is ready! Step in front and I'll help you find an outfit.")
+```
+
+Requires: user links their Poke API key, or we use webhook triggers. Defer until core flow works.
+
+---
+
+## Implementation Order & Dependencies
+
+```
+Phase 1: search_clothing MCP tool        ← standalone, no dependencies
+Phase 2: present_items + mirror bridge    ← depends on Phase 1 (same server)
+Phase 3: Poke recipe in Kitchen           ← depends on Phase 2 (needs deployed server)
+Phase 4: Cleanup dead code                ← depends on Phase 3 (verify Poke works first)
+Phase 5: send_message (optional)          ← independent enhancement
+```
+
+## Key Dependencies
+- `fastmcp>=2.12.0` — MCP server framework
+- `httpx` — HTTP client for Serper API + backend bridge calls
+- `python-dotenv` — Env var loading
+- Render account — MCP server deployment (separate service from existing backend)
+- Poke Kitchen account — recipe creation and publishing
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/4a6770c4-0e47-4668-880b-6ee220c7fc46.jsonl
+
+---
+
+you do it and then guide me to create recipe and how to test in detail
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the conversation:
+
+1. The user provided a detailed plan to migrate from Mira (custom AI orchestrator) to Poke (external MCP host) as the AI brain for the Mirrorless smart mirror project.
+
+2. The plan had 4 phases:
+   - Phase 1: Create MCP server with search_clothing tool
+   - Phase 2: Add present_items, send_to_mirror, get_past_sessions, save_session tools + mirror bridge
+   - Phase 3: Recipe config + integration tests + MCP server instructions
+   - Phase 4: Clean up dead Mira code and simplify backend
+
+3. I implemented all 4 phases, encountering several important errors along the way:
+   - Package naming collision: `backend/mcp/` shadowed the `mcp` PyPI package → renamed to `backend/mcp_server/`
+   - AsyncMock vs MagicMock: httpx Response methods (json(), raise_for_status()) are sync, needed MagicMock not AsyncMock
+   - FastMCP `@mcp.tool` wraps functions into FunctionTool objects that aren't directly callable → extracted logic into separate modules
+   - FastMCP `streamable_http_app()` doesn't exist in v2.14.5 → use `http_app()`
+   - FastMCP Client.call_tool returns `fastmcp.client.client.CallToolResult` with `is_error` (snake_case) not `isError` (camelCase)
+   - socketio.AsyncManager.get_participants is a sync generator, not async
+   - When using AsyncMock for sio, manager.get_participants becomes a coroutine → use MagicMock for sio.manager
+
+4. The user's final message was: "you do it and then guide me to create recipe and how to test in detail" — this was after I presented the summary of all phases. The user wants me to:
+   a. Continue with remaining manual steps (run migration, deploy)
+   b. Guide them on creating the Poke recipe
+   c. Guide them on how to test in detail
+
+5. The current state: All 4 phases are complete with 36/36 tests passing. The pending manual steps are:
+   - Run migration 009
+   - Deploy MCP server to Render
+   - Create Poke recipe in Kitchen
+   - Test the full flow
+
+Summary:
+1. Primary Request and Intent:
+   The user provided a comprehensive plan to migrate the Mirrorless smart mirror project from **Mira** (a custom Claude-based AI orchestrator in `backend/agent/`) to **Poke** (an external AI assistant by Interaction Company that acts as an MCP host). The plan had 4 implementation phases plus a final request to "do it and then guide me to create recipe and how to test in detail." All 4 code phases are complete; the user still needs guidance on creating the Poke recipe and detailed testing instructions.
+
+2. Key Technical Concepts:
+   - **MCP (Model Context Protocol)**: Standardized protocol for exposing tools to AI agents
+   - **FastMCP v2.14.5**: Python framework for building MCP servers with `@mcp.tool` decorators
+   - **Poke**: External AI assistant (iMessage/Telegram/SMS) that acts as MCP host — replaces the custom Mira orchestrator
+   - **Mirror Bridge Pattern**: Stateless MCP server → HTTP POST to FastAPI backend → Socket.io emit to mirror room
+   - **Permanent Mirror ID**: Physical mirrors identified by `mirror_id` (e.g., "MIRROR-A1"), not user accounts
+   - **Socket.io Room Naming**: Mirrors join `mirror:<mirror_id>` rooms instead of user_id rooms
+   - **Poke Recipe**: A pre-configured agent profile created in Poke Kitchen (poke.com/kitchen) that auto-connects MCP tools
+   - **FastMCP `@mcp.tool` wraps functions** into `FunctionTool` objects — NOT directly callable in tests
+
+3. Files and Code Sections:
+
+   - **`backend/mcp_server/server.py`** — Main MCP server entry point with 5 tool definitions and comprehensive instructions for Poke
+     - Created with FastMCP instance, tool wrappers that delegate to `shopping.py` and `mirror.py`
+     - Uses `mcp.http_app()` for HTTP transport (NOT `streamable_http_app()`)
+     ```python
+     from fastmcp import FastMCP
+     from mcp_server.mirror import do_get_past_sessions, do_present_items, do_save_session, do_send_to_mirror
+     from mcp_server.shopping import search_serper
+     
+     mcp = FastMCP("Mirrorless Shopping", instructions="""...""")
+     
+     @mcp.tool
+     async def search_clothing(query: str, num_results: int = 8) -> dict:
+         return await search_serper(query, num_results)
+     
+     @mcp.tool
+     async def present_items(mirror_id: str, items: list[dict]) -> dict:
+         return await do_present_items(mirror_id, items)
+     
+     # ... send_to_mirror, get_past_sessions, save_session similarly
+     
+     app = mcp.http_app()
+     ```
+
+   - **`backend/mcp_server/shopping.py`** — Serper.dev Shopping API client extracted from old `agent/tools.py`
+     - Contains `search_serper()` and `_parse_price()` functions
+     ```python
+     async def search_serper(query: str, num_results: int = 8) -> dict:
+         api_key = os.getenv("SERPER_API_KEY")
+         if not api_key:
+             return {"error": "SERPER_API_KEY not configured", "results": []}
+         num_results = min(num_results, 20)
+         try:
+             async with httpx.AsyncClient() as client:
+                 response = await client.post(SERPER_SHOPPING_URL, headers={"X-API-KEY": api_key, "Content-Type": "application/json"}, json={"q": query, "num": num_results})
+                 response.raise_for_status()
+                 data = response.json()
+         except httpx.HTTPStatusError as e:
+             return {"error": f"Shopping search failed: HTTP {e.response.status_code}", "results": []}
+         # ... normalize results
+     ```
+
+   - **`backend/mcp_server/mirror.py`** — HTTP client for backend bridge endpoints (present_items, send_to_mirror, get/save sessions)
+     - Contains `do_present_items()`, `do_send_to_mirror()`, `do_get_past_sessions()`, `do_save_session()`
+     - These are the testable functions that the `@mcp.tool` wrappers delegate to
+     ```python
+     async def do_present_items(mirror_id: str, items: list[dict]) -> dict:
+         if not items:
+             return {"error": "No items provided", "presented": 0}
+         items = items[:5]
+         required_fields = {"title", "price", "image_url", "link", "source"}
+         for item in items:
+             missing = required_fields - set(item.keys())
+             if missing:
+                 return {"error": f"Item missing required fields: {missing}"}
+         try:
+             async with httpx.AsyncClient() as client:
+                 resp = await client.post(f"{BACKEND_URL}/api/mirror/present", json={"mirror_id": mirror_id, "items": items}, timeout=10)
+                 resp.raise_for_status()
+                 return resp.json()
+         except Exception as e:
+             return {"error": f"Failed to present items: {str(e)}"}
+     ```
+
+   - **`backend/routers/mirror.py`** — Mirror bridge REST endpoints that translate HTTP → Socket.io
+     - POST `/api/mirror/present` — emits `tool_result` with `type: "clothing_results"` to `mirror:<mirror_id>` room
+     - POST `/api/mirror/text` — emits `mirror_text` to room
+     - GET `/api/mirror/sessions/{mirror_id}` — queries DB for past sessions
+     - POST `/api/mirror/sessions` — saves session with outfits to DB
+     - GET `/api/mirror/status/{mirror_id}` — checks Socket.io room for connected members
+     - Uses `sio.manager.get_participants("/", room)` which is a **sync generator** (not async)
+     ```python
+     @router.get("/status/{mirror_id}")
+     async def mirror_status(mirror_id: str, request: Request):
+         sio = request.app.state.sio
+         room = f"mirror:{mirror_id}"
+         connected = any(True for _ in sio.manager.get_participants("/", room))
+         return {"connected": connected, "mirror_id": mirror_id}
+     ```
+
+   - **`backend/main.py`** — Simplified: removed Mira orchestrator, scraper imports, Mira socket events
+     - Added mirror router, mirror room join handler
+     - Removed `start_session`, `mirror_event`, `end_session` socket events
+     - Removed `_sid_to_user` tracking and Mira session cleanup on disconnect
+     ```python
+     from routers.mirror import router as mirror_router
+     # No more: from agent.orchestrator import MiraOrchestrator
+     # No more: from scraper.routes import router as scraper_router
+     
+     app.include_router(mirror_router)
+     app.state.sio = sio  # No more: app.state.mira = mira
+     
+     @sio.event
+     async def join_room(sid, data):
+         mirror_id = data.get("mirror_id")
+         user_id = data.get("user_id")
+         if mirror_id:
+             room = f"mirror:{mirror_id}"
+             await sio.enter_room(sid, room)
+         if user_id:
+             await sio.enter_room(sid, user_id)
+     ```
+
+   - **`frontend/src/app/mirror/page.tsx`** — Updated mirror display
+     - Added `mirror_id` from search params, env var, or default "MIRROR-A1"
+     - Joins `mirror:<mirror_id>` Socket.io room
+     - Listens for `mirror_text` events (new — displays text overlay + TTS)
+     - Shows mirror ID badge in top-left corner
+     - Shows text overlay with fade/blur styling and 15s auto-clear
+     ```typescript
+     const mirrorId = searchParams.get("mirror_id") ?? process.env.NEXT_PUBLIC_MIRROR_ID ?? "MIRROR-A1";
+     const [mirrorText, setMirrorText] = useState<string | null>(null);
+     
+     // Socket connection joins mirror room
+     socket.emit("join_room", { mirror_id: mirrorId, ...(userId ? { user_id: userId } : {}) });
+     
+     // mirror_text listener with TTS fallback
+     socket.on("mirror_text", (data: { text: string }) => {
+         setMirrorText(data.text);
+         if (avatar.isReady) avatar.speak(data.text);
+         else if ("speechSynthesis" in window) speechSynthesis.speak(new SpeechSynthesisUtterance(data.text));
+     });
+     ```
+
+   - **`backend/migrations/009_add_mirror_id_to_sessions.sql`** — Schema migration
+     ```sql
+     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mirror_id text;
+     CREATE INDEX IF NOT EXISTS idx_sessions_mirror_id ON sessions(mirror_id) WHERE mirror_id IS NOT NULL;
+     ALTER TABLE sessions ALTER COLUMN user_id DROP NOT NULL;
+     ```
+
+   - **`backend/mcp_server/requirements.txt`**
+     ```
+     fastmcp>=2.12.0
+     uvicorn>=0.35.0
+     httpx
+     python-dotenv
+     ```
+
+   - **`backend/mcp_server/render.yaml`** — Render deployment config for MCP server
+
+   - **Test files created** (all passing):
+     - `mcp_server/tests/test_search_clothing.py` — 9 tests
+     - `mcp_server/tests/test_present_items.py` — 5 tests
+     - `mcp_server/tests/test_send_to_mirror.py` — 3 tests
+     - `mcp_server/tests/test_sessions.py` — 4 tests
+     - `mcp_server/tests/test_integration.py` — 5 tests (MCP client→server)
+     - `tests/test_mirror_endpoint.py` — 9 tests
+
+   - **Files deleted** (dead Mira/scraper code):
+     - `backend/agent/orchestrator.py`, `prompts.py`, `memory.py`, `tools.py`, `test_harness.py`
+     - `backend/scraper/pipeline.py`, `routes.py`, `socket_events.py`, `gmail_fetch.py`, `calendar_fetch.py`, `gmail_auth.py`, `purchase_parser.py`, `profile_builder.py`, `brand_scanner.py`, `db.py`
+     - `backend/scrape_debug.py`
+     - 12 old test files (test_mira.py, test_pipeline.py, test_socket_events.py, etc.)
+
+   - **`CLAUDE.md`** — Completely rewritten to reflect Poke-based architecture
+
+4. Errors and fixes:
+   - **Package name collision (`mcp/` shadowing `mcp` PyPI package)**:
+     - Error: `ModuleNotFoundError: No module named 'mcp.types'` when importing fastmcp
+     - Fix: Renamed `backend/mcp/` to `backend/mcp_server/` and updated all imports and mock patch targets
+   
+   - **AsyncMock for httpx Response methods**:
+     - Error: `AttributeError: 'coroutine' object has no attribute 'get'` — `response.json()` returned a coroutine instead of dict
+     - Fix: Use `MagicMock` for httpx Response objects (json/raise_for_status are sync), `AsyncMock` only for client.post/get
+   
+   - **FastMCP `streamable_http_app()` doesn't exist**:
+     - Error: `AttributeError: 'FastMCP' object has no attribute 'streamable_http_app'`
+     - Fix: Use `mcp.http_app()` (confirmed by checking `dir(m)`)
+   
+   - **FastMCP `@mcp.tool` creates FunctionTool objects**:
+     - Error: `TypeError: 'FunctionTool' object is not callable` when tests tried to call decorated functions
+     - Fix: Extracted business logic into `mirror.py` and `shopping.py` modules with standalone functions (e.g., `do_present_items`), kept `@mcp.tool` functions as thin wrappers in `server.py`. Tests import from the standalone modules.
+   
+   - **FastMCP CallToolResult attribute naming**:
+     - Error: `AttributeError: 'CallToolResult' object has no attribute 'isError'`
+     - Fix: FastMCP wraps MCP's CallToolResult in its own dataclass at `fastmcp.client.client.CallToolResult` with `is_error` (snake_case), `content`, `data` — NOT `mcp.types.CallToolResult` with `isError` (camelCase)
+   
+   - **socketio.AsyncManager.get_participants is sync, not async**:
+     - Error: `TypeError: 'async for' requires an object with __aiter__ method, got coroutine`
+     - Fix: Changed from `async for _ in members` to `any(True for _ in sio.manager.get_participants("/", room))`
+   
+   - **AsyncMock wrapping manager.get_participants**:
+     - Error: When sio is `AsyncMock`, `sio.manager.get_participants()` becomes a coroutine
+     - Fix: Use `mock_sio.manager = MagicMock()` to prevent AsyncMock from wrapping sync methods
+
+   - **fastmcp installed in wrong Python version**:
+     - Error: pip installed to Python 3.10, but project uses Python 3.11.8 via pyenv
+     - Fix: Used `python -m pip install` instead of bare `pip install`
+
+5. Problem Solving:
+   - Successfully migrated from monolithic Mira orchestrator to composable MCP-based architecture
+   - Solved the stateless MCP → stateful Socket.io bridge pattern using HTTP REST endpoints
+   - Created comprehensive test coverage (36 tests) with proper mocking patterns for httpx, Socket.io, and FastMCP
+   - Handled FastMCP's decorator pattern by separating logic into testable modules
+
+6. All user messages:
+   - First message: "Implement the following plan:" followed by the complete multi-phase migration plan with detailed file specifications, test cases, and architecture diagrams
+   - Second message: "you do it and then guide me to create recipe and how to test in detail"
+
+7. Pending Tasks:
+   - Run migration `009_add_mirror_id_to_sessions.sql` against Neon database
+   - Deploy MCP server to Render as a separate service
+   - Guide user to create Poke recipe in Kitchen (poke.com/kitchen) with MCP server URL
+   - Guide user on detailed testing: sandbox testing, full flow testing, manual verification
+   - The user explicitly asked to be guided on recipe creation and testing in detail
+
+8. Current Work:
+   All 4 implementation phases are complete with 36/36 tests passing. The user's last message was "you do it and then guide me to create recipe and how to test in detail" — the "do it" part (code implementation) is done. The "guide me to create recipe and how to test in detail" part is pending. I need to:
+   1. Run the database migration
+   2. Deploy the MCP server to Render
+   3. Provide detailed recipe creation instructions for Poke Kitchen
+   4. Provide detailed testing instructions
+
+9. Optional Next Step:
+   Based on the user's explicit request "you do it and then guide me to create recipe and how to test in detail", the next steps are:
+   1. Run the migration `009_add_mirror_id_to_sessions.sql` against Neon
+   2. Deploy the MCP server to Render (background task)
+   3. Provide detailed step-by-step guide for creating the Poke recipe in Kitchen with specific field values
+   4. Provide detailed testing instructions covering sandbox testing, full flow verification, and manual checks
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+okay run the migration for me
+
+---
+
+can we just deploy mcp as a local tunnel via poke cli (https://www.npmjs.com/package/poke) instead of render for now lol
+
+---
+
+yes
+
+---
+
+are these changes written to the worktree
+
+---
+
+the poke worktree ??
+
+---
+
+[Request interrupted by user]
+
+---
+
+dont remove old code just disconnect
+
+---
+
+wait im so confused so did you write all the changes onto main too?
+
+---
+
+no don't i just want to know if main would lowk work with poke if we tried it rn?
+
+---
+
+oh okay - wait so right now all the stuff goes through poke and not mira?
+
+---
+
+how can i test this
+
+---
+
+yeah okay... lowk can we clean main of all our poke changes and switch it back to mira... and then just use the poke worktree for all poke testing...
+
+---
+
+okay whats the command to swtich to poke worktree
+
+---
+
+so if i quit claude code and then run cd /Users/johnathanmo/mirrorless/.worktrees/poke and then run claude will all edits be in that branch, and will u have context?
+
+---
+
+can you generate a poke skill based on our conversation
