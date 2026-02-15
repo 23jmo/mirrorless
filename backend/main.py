@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
-from routers import auth, queue, users
+from routers import auth, avatar, queue, tts, users
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
 from agent.orchestrator import MiraOrchestrator
@@ -26,7 +26,9 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(avatar.router)
 app.include_router(queue.router)
+app.include_router(tts.router)
 app.include_router(users.router)
 app.include_router(scraper_router)
 app.include_router(judges_router)

@@ -237,6 +237,14 @@ class MiraOrchestrator:
 
                 # Get the final message for tool use blocks
                 final_message = await stream.get_final_message()
+
+            # Signal that Mira's speech stream is complete (triggers TTS on frontend)
+            if collected_text.strip() and self.sio:
+                await self.sio.emit(
+                    "mira_speech_done",
+                    {"text": collected_text},
+                    room=session.user_id,
+                )
         except Exception as e:
             print(f"[mira] Claude API call failed for {session.user_id}: {e}")
             # Pop the last user message to keep conversation history consistent
