@@ -1,0 +1,85 @@
+Implement the following plan:
+
+# Plan: Fix selfie upload 500 error
+
+## Context
+
+The `/auth/selfie` endpoint returns a 500 (Neon HTTP API 400) when called during onboarding. Two root causes:
+1. The `selfie_base64` column likely doesn't exist yet (migration `009` not run)
+2. Even after migration, the endpoint lacks error handling — a raw httpx exception crashes the server, and because the 500 happens mid-response, Starlette's CORS middleware doesn't add headers, producing a misleading CORS error in the browser
+
+## Changes
+
+### `backend/routers/auth.py` — `upload_selfie()`
+- Wrap the DB call in a try/except to catch httpx errors and return a clear 500 with detail message
+- Strip any `data:image/jpeg;base64,` prefix from the selfie string (defensive, in case the frontend accidentally sends the full data URI instead of raw base64)
+
+### Reminder to user
+- Run `psql $DATABASE_URL -f backend/migrations/009_add_selfie_column.sql` before testing
+
+## Verification
+1. Run the migration
+2. Restart backend
+3. Test phone sign-in flow → selfie upload should succeed
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/a7dc16af-046e-4cca-b15b-6eca3a5c75ec.jsonl
+
+---
+
+can you run it for me
+
+---
+
+I'm first in queue rn but it never moves me out -> i have another tab with the /mirror open but nothing is happening. Shouldn't it be starting my session?
+
+---
+
+i seethis on forntend logs but no start session: IMENSIONS or use PROJECTION_MATRIX.
+page.tsx:124 [Mirror] queue_updated: 
+Object
+active_user
+: 
+null
+queue
+: 
+Array(6)
+0
+: 
+{id: '0012109d-dab8-4f48-aae1-73b62ee47a76', user_id: 'cee077b2-b367-4b73-8d84-7dcc04cc562c', name: 'Johnathan Y Mo', position: 1, status: 'waiting'}
+1
+: 
+{id: 'dd5697f9-e7c0-4b22-a8ed-254a392ff66b', user_id: 'cee077b2-b367-4b73-8d84-7dcc04cc562c', name: 'Johnathan Y Mo', position: 1, status: 'waiting'}
+2
+: 
+{id: 'bf5ad299-22ec-4c72-88d1-0ff69f9496c9', user_id: 'a3e88c32-c832-4a44-99b8-0e3b278b6acf', name: 'Johnathan Mo', position: 2, status: 'waiting'}
+3
+: 
+{id: '484cce47-927c-4a04-8244-4662cc4ffe66', user_id: 'a3e88c32-c832-4a44-99b8-0e3b278b6acf', name: 'Johnathan Mo', position: 2, status: 'waiting'}
+4
+: 
+{id: '7da9947b-7ab3-4b66-84fb-e27973451f25', user_id: '5dd9f799-05f0-45dd-9225-41312b17a42c', name: 'Johnathan Mo', position: 3, status: 'waiting'}
+5
+: 
+{id: '5f1cccce-ed81-43eb-a408-0400b19d1bb1', user_id: '5dd9f799-05f0-45dd-9225-41312b17a42c', name: 'Johnathan Mo', position: 3, status: 'waiting'}
+length
+: 
+6
+[[Prototype]]
+: 
+Array(0)
+[[Prototype]]
+: 
+Object
+page.tsx:124 [Mirror] queue_updated: 
+Object
+active_user
+: 
+null
+queue
+: 
+(6) [{…}, {…}, {…}, {…}, {…}, {…}]
+[[Prototype]]
+: 
+Object
+﻿

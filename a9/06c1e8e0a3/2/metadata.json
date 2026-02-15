@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "a906c1e8e0a3",
+  "session_id": "dd3fcc7e-307d-44e8-8916-6f1922f8b028",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T09:30:34.951467Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "backend/main.py",
+    "backend/routers/auth.py",
+    "backend/routers/queue.py"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 43,
+    "cache_creation_tokens": 58193,
+    "cache_read_tokens": 1216831,
+    "output_tokens": 1648,
+    "api_call_count": 24
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T09:30:34.920605Z",
+    "agent_lines": 55,
+    "human_added": 0,
+    "human_modified": 47,
+    "human_removed": 251,
+    "total_committed": 102,
+    "agent_percentage": 53.92156862745098
+  }
+}
