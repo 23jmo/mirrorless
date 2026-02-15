@@ -15,11 +15,24 @@
     "backend/routers/sessions.py",
     "backend/tests/test_auth.py",
     "backend/tests/test_sessions.py",
+    "frontend/.env.local",
     "frontend/src/__tests__/phone-validation.test.ts",
+    "frontend/src/app/api/auth/google/route.ts",
+    "frontend/src/app/api/auth/profile/route.ts",
+    "frontend/src/app/api/auth/selfie/route.ts",
+    "frontend/src/app/api/queue/join/route.ts",
+    "frontend/src/app/api/queue/leave/[userId]/route.ts",
+    "frontend/src/app/api/queue/status/[userId]/route.ts",
+    "frontend/src/app/api/users/[userId]/onboarding/route.ts",
+    "frontend/src/app/api/users/[userId]/route.ts",
     "frontend/src/app/mirror/page.tsx",
     "frontend/src/app/phone/page.tsx",
     "frontend/src/components/mirror/SessionRecap.tsx",
     "frontend/src/components/phone/PhoneInput.tsx",
+    "frontend/src/components/phone/QueueStatus.tsx",
+    "frontend/src/components/phone/SelfieCapture.tsx",
+    "frontend/src/lib/api.ts",
+    "frontend/src/lib/db.ts",
     "test_format_size.py"
   ],
   "sessions": [
@@ -43,13 +56,20 @@
       "context": "/91/abc681597e/2/context.md",
       "content_hash": "/91/abc681597e/2/content_hash.txt",
       "prompt": "/91/abc681597e/2/prompt.txt"
+    },
+    {
+      "metadata": "/91/abc681597e/3/metadata.json",
+      "transcript": "/91/abc681597e/3/full.jsonl",
+      "context": "/91/abc681597e/3/context.md",
+      "content_hash": "/91/abc681597e/3/content_hash.txt",
+      "prompt": "/91/abc681597e/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 510,
-    "cache_creation_tokens": 171930,
-    "cache_read_tokens": 4151927,
-    "output_tokens": 9311,
-    "api_call_count": 61
+    "input_tokens": 529,
+    "cache_creation_tokens": 241590,
+    "cache_read_tokens": 5679909,
+    "output_tokens": 9393,
+    "api_call_count": 72
   }
 }
