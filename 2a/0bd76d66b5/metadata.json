@@ -3,7 +3,7 @@
   "checkpoint_id": "2a0bd76d66b5",
   "strategy": "manual-commit",
   "branch": "fix/admin-dashboard-sql-errors",
-  "checkpoints_count": 8,
+  "checkpoints_count": 9,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/main.py",
@@ -11,9 +11,17 @@
     "backend/routers/queue.py",
     "backend/tests/test_history_integrity.py",
     "backend/tests/test_tts_dedup.py",
+    "frontend/src/app/mirror-v2/page.tsx",
     "frontend/src/app/mirror/page.tsx",
+    "frontend/src/app/mirror/test/components/TestSidebar.tsx",
+    "frontend/src/app/mirror/test/page.tsx",
     "frontend/src/app/phone/page.tsx",
-    "frontend/src/components/mirror/SessionRecap.tsx"
+    "frontend/src/components/mirror/ClothingCanvas.tsx",
+    "frontend/src/components/mirror/DebugOverlay.tsx",
+    "frontend/src/components/mirror/OutfitDots.tsx",
+    "frontend/src/components/mirror/SessionRecap.tsx",
+    "frontend/src/components/mirror/SpeechDisplay.tsx",
+    "frontend/src/hooks/useCamera.ts"
   ],
   "sessions": [
     {
@@ -64,13 +72,20 @@
       "context": "/2a/0bd76d66b5/6/context.md",
       "content_hash": "/2a/0bd76d66b5/6/content_hash.txt",
       "prompt": "/2a/0bd76d66b5/6/prompt.txt"
+    },
+    {
+      "metadata": "/2a/0bd76d66b5/7/metadata.json",
+      "transcript": "/2a/0bd76d66b5/7/full.jsonl",
+      "context": "/2a/0bd76d66b5/7/context.md",
+      "content_hash": "/2a/0bd76d66b5/7/content_hash.txt",
+      "prompt": "/2a/0bd76d66b5/7/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 209,
-    "cache_creation_tokens": 400270,
-    "cache_read_tokens": 10040388,
-    "output_tokens": 23158,
-    "api_call_count": 159
+    "input_tokens": 250,
+    "cache_creation_tokens": 489377,
+    "cache_read_tokens": 13305218,
+    "output_tokens": 27088,
+    "api_call_count": 196
   }
 }

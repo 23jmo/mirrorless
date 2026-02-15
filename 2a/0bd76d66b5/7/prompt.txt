@@ -1,0 +1,225 @@
+Implement the following plan:
+
+# Plan: Build `/mirror-v2` — Unified Mirror Route
+
+## Context
+
+The mirror experience is currently split across two pages:
+- **`/mirror`** — Full kiosk (attract → waiting → session → recap) with avatar, voice, gestures, socket events, but uses basic quad-only clothing rendering and shows the camera feed as background
+- **`/mirror/test`** — Body tracking visualization with enhanced anchor detection (shoulder seam, waistband), but no kiosk flow, no voice, no avatar
+
+We need to merge these into a single **`/mirror-v2`** route that has the full kiosk flow + the proper clothing visualization on a **black background** (floating clothes, invisible camera). This connects the full end-to-end pipeline: Serper search → Gemini flat lay → rembg background removal → Socket.io `tool_result` → ClothingCanvas overlay on body.
+
+**Important discovery**: The test page built an enhanced `ClothingCanvas` with shoulder seam + waistband anchor detection (`mirror/test/components/ClothingCanvas.tsx`), but the test page actually imports the **shared** basic version — so the enhanced canvas was never wired up. We'll promote this enhanced version to be the shared one.
+
+---
+
+## Design Decisions (from interview)
+
+| Decision | Choice |
+|----------|--------|
+| Body visibility | Black background, floating clothes only (camera hidden) |
+| Kiosk states | Keep all 4: attract → waiting → session → recap |
+| Route strategy | New `/mirror-v2` (keep existing `/mirror` intact) |
+| BG removal pipeline | Existing: Serper → Gemini flat lay → rembg |
+| Empty session state | Just avatar + speech on black |
+| Gestures | Keep all (swipe left/right, thumbs up/down) |
+| Speech style | Clean white text on black (no bubble containers) |
+| Outfit transitions | Fade in ~0.5s |
+| Controls | Admin triggers + debug keyboard shortcuts (d, f, arrows) |
+| Camera resolution | 1920x1080 (hidden) for better pose accuracy |
+| Fit fallback | Subtle visual indicator on items using fallback rendering |
+
+---
+
+## Implementation Steps
+
+### Step 1: Upgrade `useCamera` hook to accept resolution
+
+**File**: `frontend/src/hooks/useCamera.ts`
+
+Add optional `width`/`height` parameters (default 1280x720 for backward compat):
+
+```ts
+interface UseCameraOptions {
+  width?: number;
+  height?: number;
+}
+export function useCamera(options?: UseCameraOptions): UseCameraResult {
+  // ...getUserMedia({ video: { width: options?.width ?? 1280, height: options?.height ?? 720 } })
+}
+```
+
+### Step 2: Promote enhanced ClothingCanvas to shared component
+
+**Replace**: `frontend/src/components/mirror/ClothingCanvas.tsx`
+**With**: Contents of `frontend/src/app/mirror/test/components/ClothingCanvas.tsx` (the enhanced version with anchor detection)
+
+Changes to the enhanced version before promoting:
+- Fix import path: `getClothingQuad` from `'@/lib/clothing-transform'` (not relative `'../lib/clothing-transform'`)
+- Add `opacity?: number` prop — applied to `ctx.globalAlpha` during rendering
+- Add `onFitStatus?: (statuses: Map<string, 'precise' | 'fallback'>) => void` callback — reports which items used anchor detection vs fallback
+- Render a subtle dashed border around items using fallback path (thin, translucent yellow dashes)
+- Handle `crossOrigin` for data URLs (the shared version already does this — port that logic)
+
+This is a backward-compatible enhancement — existing callers (current `/mirror`, `/mirror/test`) continue working since new props are optional.
+
+### Step 3: Move DebugOverlay to shared components
+
+**Copy**: `frontend/src/app/mirror/test/components/DebugOverlay.tsx`
+**To**: `frontend/src/components/mirror/DebugOverlay.tsx`
+
+No changes needed — it already uses shared imports (`@/lib/clothing-transform`, `@/types/pose`).
+
+Update test page import to use the shared path: `import { DebugOverlay } from '@/components/mirror/DebugOverlay'`
+
+### Step 4: Create `SpeechDisplay` component
+
+**New file**: `frontend/src/components/mirror/SpeechDisplay.tsx`
+
+```ts
+interface SpeechDisplayProps {
+  text: string;
+  visible: boolean;
+}
+```
+
+- White text directly on transparent background (page bg is black)
+- `text-shadow: 0 1px 4px rgba(0,0,0,0.8)` for readability
+- Positioned absolutely: `bottom: 120px`, centered horizontally
+- `max-width: 70vw`, `font-size: 1.3rem`, `line-height: 1.6`
+- CSS `opacity` transition (300ms) for fade in/out
+- No bubble, no backdrop blur, no border
+
+### Step 5: Create `OutfitDots` component
+
+**New file**: `frontend/src/components/mirror/OutfitDots.tsx`
+
+```ts
+interface OutfitDotsProps {
+  count: number;
+  activeIndex: number;
+}
+```
+
+Extract from existing inline JSX in `/mirror/page.tsx` (lines ~605-614). Small circles, white = active, translucent = inactive. Bottom center positioning.
+
+### Step 6: Create `/mirror-v2/page.tsx` — the main deliverable
+
+**New file**: `frontend/src/app/mirror-v2/page.tsx`
+
+This merges functionality from both pages:
+
+**From `/mirror/page.tsx`** (carry over):
+- Full kiosk state machine (attract/waiting/session/recap)
+- All Socket.io event handlers: `queue_updated`, `session_active`, `mira_speech`, `tool_result`, `session_ended`, `session_force_end`, `request_snapshot`
+- Socket.io emitters: `join_mirror_room`, `join_room`, `start_session`, `mirror_event`, `end_session`
+- Waiting timeout (2min auto-skip)
+- Recap with 20s auto-dismiss + pending queue buffering
+- `useMiraVideoAvatar` + `useDeepgramSTT` hooks
+- Response accumulation pattern (`responseAccumulatorRef`)
+- Transcript buffering while Mira speaks (`pendingTranscriptRef`)
+- Audio context unlock on "Start Session" click
+- Attract overlay JSX (QR code + branding)
+- Waiting overlay JSX (user name + start/skip + countdown)
+- Gesture handler with outfit cycling
+- Snapshot handler
+
+**From `/mirror/test/page.tsx`** (carry over):
+- Keyboard shortcuts (d=debug, f=fullscreen, arrows=cycle, numbers=jump, r=reset)
+- Hidden video element pattern (1x1px, opacity 0)
+
+**New behavior in mirror-v2**:
+- Camera at 1920x1080: `useCamera({ width: 1920, height: 1080 })`
+- Black background, no visible camera feed
+- `SpeechDisplay` instead of VoiceIndicator for Mira's responses (set `speechText` on end-of-message, fade out 2s after Mira stops speaking)
+- VoiceIndicator retained for user's STT interim transcript (bottom-left, small)
+- Outfit fade-in: set `outfitOpacity=0` when new outfit arrives, transition to 1 after a frame
+- Enhanced ClothingCanvas with anchor detection + opacity + fit status
+- DebugOverlay toggled with 'd' key (default OFF)
+- `fitStatuses` state tracks which items used precise vs fallback rendering
+
+**Component layout (session state)**:
+```
+<main> (100vw x 100vh, bg: #000)
+  <video> (hidden: 1x1, opacity 0, 1920x1080)
+
+  [attract]  Attract overlay (z-20)
+  [waiting]  Waiting overlay (z-20)
+
+  [session]
+    ClothingCanvas (z-5, full screen, opacity transition)
+    DebugOverlay (z-6, toggle with 'd')
+    MiraVideoAvatar (z-10, top-right, 180px)
+    SpeechDisplay (z-10, bottom-center, above price strip)
+    PriceStrip (z-15, bottom-center)
+    OutfitDots (z-18, bottom-center, below price strip)
+    VoiceIndicator (z-15, bottom-left, small)
+    GestureIndicator (z-20, center, fades)
+
+  [recap]  SessionRecap (z-25)
+```
+
+### Step 7: Update test page import
+
+**File**: `frontend/src/app/mirror/test/page.tsx`
+
+Update DebugOverlay import to use shared component:
+```ts
+import { DebugOverlay } from '@/components/mirror/DebugOverlay';
+```
+
+Remove local `test/components/DebugOverlay.tsx` after confirming the shared version works.
+
+---
+
+## Files Summary
+
+| Action | File | What |
+|--------|------|------|
+| **Modify** | `frontend/src/hooks/useCamera.ts` | Add optional resolution params |
+| **Replace** | `frontend/src/components/mirror/ClothingCanvas.tsx` | Promote enhanced version with anchor detection + opacity + fit status |
+| **Create** | `frontend/src/components/mirror/DebugOverlay.tsx` | Move from test page to shared |
+| **Create** | `frontend/src/components/mirror/SpeechDisplay.tsx` | Clean white text on black |
+| **Create** | `frontend/src/components/mirror/OutfitDots.tsx` | Extracted outfit pagination dots |
+| **Create** | `frontend/src/app/mirror-v2/page.tsx` | Main page — merged kiosk + visualization |
+| **Modify** | `frontend/src/app/mirror/test/page.tsx` | Update DebugOverlay import path |
+
+**No backend changes needed** — the socket event contracts and pipeline remain the same.
+
+**Existing hooks reused as-is** (no changes):
+- `useMiraVideoAvatar.ts`, `useDeepgramSTT.ts`, `usePoseDetection.ts`, `useGestureRecognizer.ts`
+
+**Existing components reused as-is**:
+- `mira-video-avatar.tsx`, `GestureIndicator.tsx`, `PriceStrip.tsx`, `SessionRecap.tsx`, `VoiceIndicator.tsx`
+
+**Existing libs reused as-is**:
+- `socket.ts`, `streaming-tts.ts`, `emotion-parser.ts`, `map-clothing-items.ts`, `clothing-transform.ts`, `shoulder-seam-detection.ts`, `waistband-detection.ts`
+
+---
+
+## Verification
+
+1. **Build check**: `cd frontend && npm run build` — should compile with no errors
+2. **Existing routes intact**: Navigate to `/mirror` and `/mirror/test` — both should work unchanged
+3. **Kiosk flow**: Navigate to `/mirror-v2`:
+   - Should show attract screen (QR code) on load
+   - Join queue via phone → should transition to waiting
+   - Click "Start Session" → should enter session with black bg + avatar
+4. **Clothing pipeline**: During session, when Mira calls `display_product` tool:
+   - `tool_result` socket event arrives with items
+   - Items fade in over ~0.5s on the body
+   - Anchor detection (shoulder seam for tops, waistband for bottoms) runs on image load
+   - Fallback items show subtle dashed border indicator
+5. **Voice**: Mira's speech appears as clean white text on black, fades out after speaking
+6. **Gestures**: Swipe left/right cycles outfits, thumbs up/down reacts
+7. **Debug**: Press 'd' to toggle skeleton overlay
+8. **Recap**: End session → recap shows for 20s → transitions back
+9. **Existing tests**: `cd frontend && npm test` — all existing tests pass
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+good - commit and push this
