@@ -1,0 +1,183 @@
+Implement the following plan:
+
+# Fix: Avatar renders but never speaks
+
+## Context
+
+The LiveAvatar SDK migration shows the avatar's face (video stream works), but no speech plays. Previous fixes (end-of-message flush in orchestrator, queue resilience) are already applied. Three remaining bugs block speech, identified from browser console logs.
+
+## Root Cause Analysis (from logs)
+
+### Failure sequence observed in console:
+
+```
+1. [LiveAvatar] repeat(): Hey Johnathan!
+2. Session is not connected                     ← assertConnected() fails
+3. [LiveAvatar] Queued: I'm Mira... (ready=true, queue=1)
+4. [LiveAvatar] Queued: Let's figure out... (ready=true, queue=2)
+5. [LiveAvatar] Stream ready — draining queue   ← processQueue() returns immediately (isProcessingQueueRef stuck true)
+6. Unmuting failed... user didn't interact       ← autoplay blocked
+7. could not playback audio                      ← audio blocked
+8. [LiveAvatar] State changed: CONNECTED         ← SDK finally connected
+9. [LiveAvatar] session.start() resolved
+```
+
+### Bug 1: `repeat()` called before SDK reaches CONNECTED state (CRITICAL)
+
+`SESSION_STREAM_READY` fires before `State changed: CONNECTED`. Our `isReadyRef` becomes true on STREAM_READY, so `processQueue()` passes the guard and calls `repeat()`. But the SDK's `assertConnected()` checks for `CONNECTED` state — which hasn't been reached yet — and **silently returns** (no throw). `isProcessingQueueRef` stays `true`, `AVATAR_SPEAK_ENDED` never fires, **queue permanently stuck**.
+
+The item ("Hey Johnathan!") was already `.shift()`ed off the queue — lost forever. The remaining 2 items sit in queue but `processQueue()` returns immediately because `isProcessingQueueRef` is still true.
+
+### Bug 2: Browser autoplay policy blocks audio
+
+The "Start Session" button click emits a socket event to the backend. The backend responds async (seconds later) with `session_active` / `mira_speech`. By the time `session.start()` → `attach()` → `play()` runs, the user gesture context is long gone. Browser blocks audio playback.
+
+### Bug 3: SDK WebSocket routing drops text commands (latent)
+
+Once the session IS connected (after fixing bugs 1+2), `repeat()` will hit another wall: `sendCommandEventToWebSocket()` has no case for `AVATAR_SPEAK_TEXT` — it logs `"Unsupported command event type:"` and does nothing. This hasn't appeared in logs yet because `assertConnected()` fails first, but it will surface once bug 1 is fixed.
+
+## Fixes
+
+### Fix 1: Guard `processQueue` with SDK state check
+
+**File**: `frontend/src/hooks/useLiveAvatar.ts` — `processQueue()`
+
+Before shifting from queue and calling `repeat()`, check `session.state === AvatarSessionState.CONNECTED`. If not connected yet, defer with `setTimeout` so the queue retries once the state catches up.
+
+```typescript
+const processQueue = useCallback(() => {
+  if (isProcessingQueueRef.current || !sessionRef.current || !isReadyRef.current) return;
+
+  // SDK fires STREAM_READY before state reaches CONNECTED.
+  // repeat() silently no-ops if not CONNECTED, so defer until ready.
+  if (sessionRef.current.state !== AvatarSessionState.CONNECTED) {
+    setTimeout(() => processQueue(), 200);
+    return;
+  }
+
+  const next = speechQueueRef.current.shift();
+  // ... rest unchanged
+```
+
+This prevents the "shift then silently fail" bug. Items stay in queue until the SDK is truly ready.
+
+### Fix 2: Unlock audio on user gesture
+
+**File**: `frontend/src/app/mirror/page.tsx` — `handleStartSession()`
+
+Resume an `AudioContext` during the button click (user gesture) to globally unlock browser audio. This ensures that when `session.attach()` later calls `play()`, the browser allows it.
+
+```typescript
+const handleStartSession = useCallback(() => {
+  if (!userId || isStarting || sessionActive) return;
+
+  // Unlock browser audio policy with user gesture
+  const ctx = new AudioContext();
+  ctx.resume().then(() => ctx.close());
+
+  setIsStarting(true);
+  socket.emit("start_session", { user_id: userId });
+}, [userId, isStarting, sessionActive]);
+```
+
+### Fix 3: Monkey-patch `sendCommandEvent` for text commands
+
+**File**: `frontend/src/hooks/useLiveAvatar.ts` — `startSession()`
+
+After `session.start()` resolves, override `sendCommandEvent` on the instance to route `AVATAR_SPEAK_TEXT` and `AVATAR_SPEAK_RESPONSE` through the LiveKit data channel (which works) instead of the WebSocket handler (which silently drops them). WebSocket stays open for incoming events (`AVATAR_SPEAK_STARTED/ENDED`).
+
+```typescript
+// After session.start() succeeds:
+
+// SDK v0.0.10 bug: WebSocket handler drops AVATAR_SPEAK_TEXT commands.
+// Route text commands through LiveKit data channel instead.
+const sess = session as any;
+const origSend = sess.sendCommandEvent.bind(sess);
+sess.sendCommandEvent = (cmd: any) => {
+  const TEXT_CMDS = ["avatar.speak_text", "avatar.speak_response"];
+  if (TEXT_CMDS.includes(cmd.event_type) && sess.room?.state === "connected") {
+    const data = new TextEncoder().encode(JSON.stringify(cmd));
+    sess.room.localParticipant.publishData(data, {
+      reliable: true,
+      topic: "agent-control",
+    });
+  } else {
+    origSend(cmd);
+  }
+};
+```
+
+## Files to Modify
+
+| # | File | Change |
+|---|------|--------|
+| 1 | `frontend/src/hooks/useLiveAvatar.ts` | Fix 1 (state guard) + Fix 3 (monkey-patch) |
+| 2 | `frontend/src/app/mirror/page.tsx` | Fix 2 (audio unlock on click) |
+
+## Verification
+
+1. `cd frontend && npx tsc --noEmit` — type-checks
+2. Browser console on mirror page:
+   - Should NOT see `"Session is not connected"` (fix 1)
+   - Should NOT see `"Unsupported command event type: avatar.speak_text"` (fix 3)
+   - Should NOT see `"could not playback audio"` (fix 2)
+   - SHOULD see `[LiveAvatar] repeat(): ...` followed by `Avatar started speaking`
+3. Avatar speaks Mira's opening line aloud
+4. Multi-sentence responses play in sequence (queue + SPEAK_ENDED cycle)
+5. `cd backend && pytest tests/ -v` — unchanged
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+it still doens't work but just commit push, PR to main and merge
+
+---
+
+[Request interrupted by user]
+
+---
+
+wait do not override any of the CV stuff idk if ur doing that just letting u know - ask me before
+
+---
+
+can you merge jennylive branch to main
+
+---
+
+[mira-tools] search_clothing: failed — Client error '400 Bad Request' for url 'https://google.serper.dev/shopping'
+
+i'm getting this error now
+
+---
+
+mira] Tool call: give_recommendation({"brands": ["COS", "Stussy", "Uniqlo", "Everlane", "Reiss", "AllSaints", "Norse Projects"], "gender": "mens", "style_notes": "casual minimalist streetwear, elevated basics that work with jeans, pieces...)
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=1024) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Tool call: present_items({})
+[mira-tools] present_items: no items provided
+[mira] Using claude-haiku-4-5-20251001 (max_tokens=1024) for a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[mira] Tool call: present_items({})
+[mira-tools] present_items: no items provided
+[mira] Tool depth limit reached (3) for a3e88c32-c832-4a44-99b8-0e3b278b6acf, stopping
+
+- this still happens a bit - can we increase tokens for haiku
+
+---
+
+create a new branch called jmo-attempt-merge
+
+---
+
+Okay, I need you to write a nice plan. We're basically going to try to merge everything that's in /Jenny into /Mira. 
+
+What I want you to do is first investigate with several sub-agents the Jenny directory that's in the root, and then check how, because that one basically allows us to do lip-synced, live lip-synced memoji, custom memojis, avatars for users. So I want you to investigate that and figure out how it works. 
+
+Scrap the HeyGen LiveAvatar stuff for now. Ideally, just scrap it because it's not working, the dude is not responding to me. And instead, use the Memoji stuff. 
+
+Can you go ahead and look into that and then write a plan on how we can do that and ask me any questions using /interview
+
+---
+
+[Request interrupted by user for tool use]
