@@ -1,15 +1,15 @@
 {
   "cli_version": "0.4.2",
   "checkpoint_id": "420ce2d13dea",
+  "session_id": "c0ae9bd0-7e6b-4ed1-8d3f-6f39394566d9",
   "strategy": "manual-commit",
+  "created_at": "2026-02-15T08:05:40.63353Z",
   "branch": "orb",
-  "checkpoints_count": 6,
+  "checkpoints_count": 2,
   "files_touched": [
-    "CLAUDE.md",
     "backend/agent/orchestrator.py",
     "backend/agent/tools.py",
     "backend/main.py",
-    "backend/routers/tts.py",
     "frontend/public/avatar/loops/concerned.mp4",
     "frontend/public/avatar/loops/excited.mp4",
     "frontend/public/avatar/loops/happy.mp4",
@@ -29,48 +29,31 @@
     "frontend/public/avatar/scripted/positive_yes.mp4",
     "frontend/public/avatar/scripted/supportive_notbad.mp4",
     "frontend/public/avatar/scripted/supportive_works.mp4",
-    "frontend/src/__tests__/emotion-parser.test.ts",
     "frontend/src/__tests__/scripted-responses.test.ts",
     "frontend/src/__tests__/sentence-buffer.test.ts",
-    "frontend/src/__tests__/streaming-tts.test.ts",
     "frontend/src/app/mirror/page.tsx",
     "frontend/src/components/mirror/AvatarPiP.tsx",
     "frontend/src/hooks/useMemojiAvatar.ts",
-    "frontend/src/hooks/useOrbAvatar.ts",
     "frontend/src/lib/elevenlabs-tts.ts",
-    "frontend/src/lib/emotion-parser.ts",
     "frontend/src/lib/memoji-avatar.ts",
     "frontend/src/lib/scripted-responses.ts",
     "frontend/src/lib/sentence-buffer.ts"
   ],
-  "sessions": [
-    {
-      "metadata": "/42/0ce2d13dea/0/metadata.json",
-      "transcript": "/42/0ce2d13dea/0/full.jsonl",
-      "context": "/42/0ce2d13dea/0/context.md",
-      "content_hash": "/42/0ce2d13dea/0/content_hash.txt",
-      "prompt": "/42/0ce2d13dea/0/prompt.txt"
-    },
-    {
-      "metadata": "/42/0ce2d13dea/1/metadata.json",
-      "transcript": "/42/0ce2d13dea/1/full.jsonl",
-      "context": "/42/0ce2d13dea/1/context.md",
-      "content_hash": "/42/0ce2d13dea/1/content_hash.txt",
-      "prompt": "/42/0ce2d13dea/1/prompt.txt"
-    },
-    {
-      "metadata": "/42/0ce2d13dea/2/metadata.json",
-      "transcript": "/42/0ce2d13dea/2/full.jsonl",
-      "context": "/42/0ce2d13dea/2/context.md",
-      "content_hash": "/42/0ce2d13dea/2/content_hash.txt",
-      "prompt": "/42/0ce2d13dea/2/prompt.txt"
-    }
-  ],
+  "agent": "Claude Code",
   "token_usage": {
-    "input_tokens": 183,
-    "cache_creation_tokens": 591192,
-    "cache_read_tokens": 15559373,
-    "output_tokens": 28423,
-    "api_call_count": 163
+    "input_tokens": 36,
+    "cache_creation_tokens": 153484,
+    "cache_read_tokens": 2300492,
+    "output_tokens": 7470,
+    "api_call_count": 32
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T08:05:40.540177Z",
+    "agent_lines": 199,
+    "human_added": 8399,
+    "human_modified": 11,
+    "human_removed": 0,
+    "total_committed": 8609,
+    "agent_percentage": 2.311534440701591
   }
 }
