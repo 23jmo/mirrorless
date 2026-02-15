@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "ce8a573a603a",
+  "strategy": "manual-commit",
+  "branch": "feature/diagnostic-logging",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "frontend/src/app/mirror-v2/page.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ce/8a573a603a/0/metadata.json",
+      "transcript": "/ce/8a573a603a/0/full.jsonl",
+      "context": "/ce/8a573a603a/0/context.md",
+      "content_hash": "/ce/8a573a603a/0/content_hash.txt",
+      "prompt": "/ce/8a573a603a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5,
+    "cache_creation_tokens": 14135,
+    "cache_read_tokens": 82514,
+    "output_tokens": 28,
+    "api_call_count": 3
+  }
+}

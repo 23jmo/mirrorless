@@ -1,0 +1,42 @@
+Implement the following plan:
+
+# Plan: Make Pose Debug Overlay Visible in Mirror-V2
+
+## Context
+
+The user wants to verify MediaPipe body tracking is working in `/mirror-v2` by seeing skeleton/landmark points on a black background. All the infrastructure already exists — `usePoseDetection` runs in all kiosk states, and `DebugOverlay` toggles with the `d` key — but the skeleton is **invisible** because the DebugOverlay wrapper is at `z-index: 6` while the attract/waiting state overlays sit at `z-index: 20` with opaque black backgrounds, completely covering it.
+
+## Change
+
+**File:** `frontend/src/app/mirror-v2/page.tsx` — **line 911**
+
+Change:
+```tsx
+<div style={{ position: "absolute", inset: 0, zIndex: 6 }}>
+```
+To:
+```tsx
+<div style={{ position: "absolute", inset: 0, zIndex: debugMode ? 50 : 6 }}>
+```
+
+That's it — one line.
+
+### Why this works
+- **`debugMode` false (default):** z-index stays at 6, no behavior change. DebugOverlay returns `null` anyway when not visible.
+- **`debugMode` true (press `d`):** z-index jumps to 50, above attract (z-20), waiting (z-20), recap (z-25), and fit indicator (z-30). The attract/waiting `#000` backgrounds serve as the black backdrop the user wants, with cyan skeleton points drawn on top.
+
+### No other files need changes
+- `DebugOverlay.tsx` — already draws skeleton + landmarks correctly
+- `usePoseDetection.ts` — already runs in all kiosk states (not gated behind session)
+- `useCamera()` — already always-on
+
+## Verification
+
+1. Open `/mirror-v2` in browser (starts in attract state)
+2. Stand in front of camera
+3. Press `d` — cyan skeleton and dots should appear on black background
+4. Press `d` again — returns to normal attract screen
+5. Start a session, press `d` — skeleton still works during session
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
