@@ -6,11 +6,15 @@
   "checkpoints_count": 10,
   "files_touched": [
     ".claude/commands/poke.md",
+    "CLAUDE.md",
+    "backend/.env",
+    "backend/.env.example",
     "backend/agent/memory.py",
     "backend/agent/orchestrator.py",
     "backend/agent/prompts.py",
     "backend/agent/test_harness.py",
     "backend/agent/tools.py",
+    "backend/judges/scraper.py",
     "backend/main.py",
     "backend/mcp/__init__.py",
     "backend/mcp_server/__init__.py",
@@ -80,13 +84,20 @@
       "context": "/09/7d313542ff/2/context.md",
       "content_hash": "/09/7d313542ff/2/content_hash.txt",
       "prompt": "/09/7d313542ff/2/prompt.txt"
+    },
+    {
+      "metadata": "/09/7d313542ff/3/metadata.json",
+      "transcript": "/09/7d313542ff/3/full.jsonl",
+      "context": "/09/7d313542ff/3/context.md",
+      "content_hash": "/09/7d313542ff/3/content_hash.txt",
+      "prompt": "/09/7d313542ff/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 630,
-    "cache_creation_tokens": 393093,
-    "cache_read_tokens": 15166386,
-    "output_tokens": 23837,
-    "api_call_count": 183
+    "input_tokens": 749,
+    "cache_creation_tokens": 524022,
+    "cache_read_tokens": 20452524,
+    "output_tokens": 30954,
+    "api_call_count": 256
   }
 }
