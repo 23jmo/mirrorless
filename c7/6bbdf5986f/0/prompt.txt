@@ -1,0 +1,131 @@
+Implement the following plan:
+
+# Plan: Mirror V2 — Streaming Speech, Product Visualization & Tests
+
+## Context
+
+The Mirror V2 page (`frontend/src/app/mirror-v2/page.tsx`) has the infrastructure for speech display and clothing visualization, but three gaps prevent it from working end-to-end:
+
+1. **Speech text is invisible during streaming** — chunks accumulate in `responseAccumulatorRef` but `speechText` only updates at end-of-message (line 249). Users see nothing while Mira speaks.
+2. **`present_items` results are silently dropped** — the `tool_result` handler (line 291) only checks for `type === "display_product"`, ignoring `type === "clothing_results"` from `present_items`.
+3. **No fallback when flat lays or pose are missing** — `mapToClothingItems` filters out items without `cleaned_image_url`/`flat_image_url`, and `ClothingCanvas` requires `currentPose` (line 690). If Gemini fails or camera isn't available, nothing renders.
+
+An existing `ProductCarousel` component (`frontend/src/components/mirror/ProductCarousel.tsx`) already handles card-based product display with gesture interactions — it just isn't wired into mirror-v2.
+
+---
+
+## Phase 0: Setup Git Worktree
+
+- Create a new git worktree called `frontend-streaming` branching from current branch (`feature/full-merge`)
+- All work happens in the worktree directory
+- Command: `git worktree add ../mirrorless-frontend-streaming -b frontend-streaming`
+
+---
+
+## ~~Phase 1: Streaming Speech Display~~ (SKIPPED — will be addressed via prompt changes later)
+
+---
+
+## Phase 2: Product Visualization
+
+**File: `frontend/src/app/mirror-v2/page.tsx`**
+
+### 2a. Handle `clothing_results` type
+- Import `ProductCarousel` and its `ProductCard` type
+- Add `carouselItems` state (`ProductCard[]`)
+- In `handleToolResult`: add handler for `type === "clothing_results"` — map items to `ProductCard[]` and set `carouselItems`
+- Clear `carouselItems` on session start/end
+
+### 2b. Fallback for `display_product` without flat lays
+- In the existing `display_product` handler: when `mapToClothingItems` returns 0 items (flat lay generation failed), fall back to `ProductCarousel` by mapping raw items to `ProductCard[]`
+
+### 2c. Add ProductCarousel to JSX
+- Render `ProductCarousel` when `sessionActive && carouselItems.length > 0`
+- Add `handleCarouselGesture` callback that emits `mirror_event` via Socket.io
+- Hide `PriceStrip` when carousel is showing (avoids bottom-of-screen z-index conflict)
+
+---
+
+## Phase 3: Extract Testable Logic
+
+To keep tests clean and fast (no component rendering), extract handler logic into pure functions:
+
+**New file: `frontend/src/lib/process-tool-result.ts`**
+- Extract `processToolResult(data)` — returns `{ canvasItems, carouselCards, priceInfo, outfitName }` or `null`
+- Reuse `mapToClothingItems` internally
+- Handles both `display_product` (with flat lay fallback) and `clothing_results`
+
+Page.tsx calls this function in `handleToolResult` and uses the result to update state.
+
+---
+
+## Phase 4: Frontend Tests
+
+All in `frontend/src/__tests__/`, following existing vitest + jsdom patterns.
+
+### `mirror-v2-tool-result.test.ts`
+- Tests the extracted `processToolResult` function
+- Tests: `display_product` with flat lays → canvasItems, `display_product` without flat lays → carouselCards fallback, `clothing_results` → carouselCards, unknown type → null, empty items → null
+
+### `speech-display.test.tsx`
+- Component test with `@testing-library/react`
+- Tests: renders text when visible, hides when not visible, shows streaming text, updates on rerender
+
+---
+
+## Phase 5: Backend Tests
+
+All in `backend/tests/`, following existing pytest + asyncio patterns.
+
+### `test_tool_execution.py` (single file for all three tools)
+- **`_present_items`**: returns `clothing_results` payload, caps at 5 items, empty items returns error
+- **`_display_product`**: returns `display_product` payload, Gemini import error is non-fatal (items proceed without flat lays), Gemini API failure is non-fatal, empty items returns error
+- **`_send_voice_to_client`**: returns `voice_message` payload, defaults emotion to neutral, empty text returns error
+
+Gemini failure tests mock `services.gemini_flatlay.generate_flat_lays_batch` with `AsyncMock(side_effect=Exception(...))`.
+
+---
+
+## Phase 6: Verification
+
+1. `cd frontend && npm run build` — TypeScript compilation
+2. `cd frontend && npx vitest run` — all frontend tests
+3. `cd backend && pytest tests/test_tool_execution.py -v` — new backend tests
+4. Manual: open `/mirror-v2` in browser, verify streaming text appears as Mira speaks
+
+---
+
+## Key Files
+
+| File | Action |
+|------|--------|
+| `frontend/src/app/mirror-v2/page.tsx` | Modify — carousel state, ProductCarousel integration |
+| `frontend/src/components/mirror/ProductCarousel.tsx` | Reuse as-is |
+| `frontend/src/lib/process-tool-result.ts` | **New** — extracted handler logic |
+| `frontend/src/lib/map-clothing-items.ts` | Read-only (reused by process-tool-result) |
+| `frontend/src/__tests__/mirror-v2-tool-result.test.ts` | **New** |
+| `backend/tests/test_tool_execution.py` | **New** |
+| `backend/agent/tools.py` | Read-only (test target) |
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+where is this plan saved
+
+---
+
+how do i go to the new git worktree
+
+---
+
+okay keep going on the plan - we are in the worktree now
+
+---
+
+commit this

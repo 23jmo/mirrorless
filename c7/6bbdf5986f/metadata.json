@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "c76bbdf5986f",
+  "strategy": "manual-commit",
+  "branch": "frontend-streaming",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/tests/test_tool_execution.py",
+    "frontend/src/__tests__/mirror-v2-tool-result.test.ts",
+    "frontend/src/__tests__/speech-display.test.tsx",
+    "frontend/src/app/mirror-v2/page.tsx",
+    "frontend/src/lib/process-tool-result.ts",
+    "frontend/vitest.config.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c7/6bbdf5986f/0/metadata.json",
+      "transcript": "/c7/6bbdf5986f/0/full.jsonl",
+      "context": "/c7/6bbdf5986f/0/context.md",
+      "content_hash": "/c7/6bbdf5986f/0/content_hash.txt",
+      "prompt": "/c7/6bbdf5986f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 72,
+    "cache_creation_tokens": 148615,
+    "cache_read_tokens": 5254390,
+    "output_tokens": 9006,
+    "api_call_count": 62
+  }
+}
