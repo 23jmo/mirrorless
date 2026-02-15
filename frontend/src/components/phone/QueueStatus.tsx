@@ -83,16 +83,16 @@ export default function QueueStatus({ userId, onBecameActive, onLeave }: QueueSt
 
   if (queue.status === "active") {
     return (
-      <div className="flex flex-col items-center gap-4">
-        <div className="w-20 h-20 rounded-full bg-green-500 flex items-center justify-center text-white text-4xl">
+      <div className="flex flex-col items-center gap-3">
+        <div className="w-14 h-14 rounded-full bg-green-500 flex items-center justify-center text-white text-2xl">
           ✓
         </div>
-        <h2 className="text-2xl font-bold">It&apos;s your turn!</h2>
-        <p className="text-zinc-500">Head to the mirror to begin your session.</p>
+        <h2 className="text-xl font-bold">It&apos;s your turn!</h2>
+        <p className="text-zinc-500 text-sm">Head to the mirror to begin your session.</p>
         <button
           onClick={handleLeave}
           disabled={leaving}
-          className="mt-4 text-sm text-zinc-400 hover:text-zinc-600 transition-colors disabled:opacity-50"
+          className="mt-2 text-xs text-zinc-400 hover:text-zinc-600 transition-colors disabled:opacity-50"
         >
           {leaving ? "Leaving..." : "Leave Queue"}
         </button>
@@ -101,23 +101,23 @@ export default function QueueStatus({ userId, onBecameActive, onLeave }: QueueSt
   }
 
   return (
-    <div className="flex flex-col items-center gap-5">
-      <h2 className="text-xl font-bold">You&apos;re in the queue</h2>
-      <div className="w-24 h-24 rounded-full bg-zinc-100 flex items-center justify-center text-4xl font-bold">
+    <div className="flex flex-col items-center gap-3">
+      <h2 className="text-lg font-bold">You&apos;re in the queue</h2>
+      <div className="w-18 h-18 rounded-full bg-zinc-100 flex items-center justify-center text-3xl font-bold" style={{ width: 72, height: 72 }}>
         {queue.position}
       </div>
-      <p className="text-zinc-500 text-center">
+      <p className="text-zinc-500 text-center text-sm">
         {queue.total_ahead === 0
           ? "You're next! Hang tight."
           : `${queue.total_ahead} ${queue.total_ahead === 1 ? "person" : "people"} ahead of you`}
       </p>
-      <p className="text-zinc-400 text-sm">
+      <p className="text-zinc-400 text-xs">
         This page updates automatically.
       </p>
       <button
         onClick={handleLeave}
         disabled={leaving}
-        className="mt-2 text-sm text-zinc-400 hover:text-zinc-600 transition-colors disabled:opacity-50"
+        className="mt-1 text-xs text-zinc-400 hover:text-zinc-600 transition-colors disabled:opacity-50"
       >
         {leaving ? "Leaving..." : "Leave Queue"}
       </button>

@@ -83,8 +83,8 @@ export default function SelfieCapture({ onCapture }: SelfieCaptureProps) {
 
   if (captured) {
     return (
-      <div className="flex flex-col items-center gap-3">
-        <div className="w-40 h-40 rounded-full overflow-hidden border-2 border-zinc-200">
+      <div className="flex flex-col items-center gap-2">
+        <div className="w-28 h-28 rounded-full overflow-hidden border-2 border-zinc-200">
           <img
             src={captured}
             alt="Selfie preview"
@@ -93,7 +93,7 @@ export default function SelfieCapture({ onCapture }: SelfieCaptureProps) {
         </div>
         <button
           onClick={retake}
-          className="text-sm text-zinc-500 underline"
+          className="text-xs text-zinc-500 underline"
         >
           Retake
         </button>
@@ -102,10 +102,10 @@ export default function SelfieCapture({ onCapture }: SelfieCaptureProps) {
   }
 
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col items-center gap-2">
       {cameraAvailable && cameraStarted ? (
         <>
-          <div className="w-40 h-40 rounded-full overflow-hidden border-2 border-zinc-200">
+          <div className="w-28 h-28 rounded-full overflow-hidden border-2 border-zinc-200">
             <video
               ref={videoRef}
               autoPlay
@@ -116,17 +116,17 @@ export default function SelfieCapture({ onCapture }: SelfieCaptureProps) {
           </div>
           <button
             onClick={takePhoto}
-            className="rounded-full bg-zinc-900 text-white px-6 py-2 text-sm font-semibold"
+            className="rounded-full bg-zinc-900 text-white px-5 py-1.5 text-xs font-semibold"
           >
             Take Photo
           </button>
         </>
       ) : (
         <>
-          <div className="w-40 h-40 rounded-full bg-zinc-100 flex items-center justify-center border-2 border-dashed border-zinc-300">
-            <span className="text-zinc-400 text-3xl">📷</span>
+          <div className="w-28 h-28 rounded-full bg-zinc-100 flex items-center justify-center border-2 border-dashed border-zinc-300">
+            <span className="text-zinc-400 text-2xl">📷</span>
           </div>
-          <label className="rounded-full bg-zinc-900 text-white px-6 py-2 text-sm font-semibold cursor-pointer">
+          <label className="rounded-full bg-zinc-900 text-white px-5 py-1.5 text-xs font-semibold cursor-pointer">
             Choose Photo
             <input
               type="file"
