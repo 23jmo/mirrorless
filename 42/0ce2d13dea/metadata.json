@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "420ce2d13dea",
+  "strategy": "manual-commit",
+  "branch": "orb",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "CLAUDE.md",
+    "frontend/src/__tests__/emotion-parser.test.ts",
+    "frontend/src/__tests__/streaming-tts.test.ts",
+    "frontend/src/hooks/useOrbAvatar.ts",
+    "frontend/src/lib/emotion-parser.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/42/0ce2d13dea/0/metadata.json",
+      "transcript": "/42/0ce2d13dea/0/full.jsonl",
+      "context": "/42/0ce2d13dea/0/context.md",
+      "content_hash": "/42/0ce2d13dea/0/content_hash.txt",
+      "prompt": "/42/0ce2d13dea/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 17,
+    "cache_creation_tokens": 53305,
+    "cache_read_tokens": 638799,
+    "output_tokens": 5782,
+    "api_call_count": 9
+  }
+}

@@ -1,0 +1,141 @@
+Implement the following plan:
+
+# Plan: Document Voice/TTS Pipeline & Jenny in CLAUDE.md
+
+## Context
+
+CLAUDE.md currently has a one-liner about voice on line 20 but the actual pipeline spans ~10 files with sophisticated streaming, sentence buffering, scripted response matching, and avatar synchronization. The `jenny/` subdirectory (standalone prototype) and several voice pipeline files aren't documented. The project structure section is also outdated.
+
+## File Modified
+
+`/Users/johnathanmo/mirrorless/CLAUDE.md` — the only file being edited.
+
+---
+
+## Change 1: Add "Voice & TTS Pipeline" section after "Key Technical Decisions"
+
+Insert the following new section:
+
+```markdown
+## Voice & TTS Pipeline
+
+Mira's voice flows through a multi-stage pipeline from Claude's streaming output to audio playback:
+
+1. **Claude streaming** (`backend/agent/orchestrator.py`): `_call_claude()` streams via Anthropic async API. Each `content_block_delta` is emitted as a `mira_speech` Socket.io event with `{text, is_chunk: true}`. An empty event with `is_chunk: false` signals end-of-message.
+
+2. **Frontend accumulation** (`frontend/src/app/mirror/page.tsx`): Chunks accumulate in `responseAccumulatorRef` until end-of-message, then the full text is processed.
+
+3. **Scripted response check** (`frontend/src/lib/scripted-responses.ts`): 13 pre-recorded Memoji videos with baked-in audio (e.g., "okay i love that", "ew that's gross"). Two-pass matching: exact phrase `includes()`, then keyword scoring (threshold ≥ 4). If matched, plays the video directly — bypasses TTS entirely.
+
+4. **Sentence buffering** (`frontend/src/lib/sentence-buffer.ts`): For non-scripted responses, splits text on `.!?` + space boundaries. Negative lookbehind regex `(?<!\d)(?<!\.)` avoids false splits on decimals (`$29.99`) and ellipsis (`...`).
+
+5. **Speech queue** (`frontend/src/hooks/useMemojiAvatar.ts`): FIFO queue processes one sentence at a time. Avatar transitions: `idle` → `talking` → `idle`. Recursive `processQueue()` after each sentence completes.
+
+6. **TTS client** (`frontend/src/lib/elevenlabs-tts.ts`): POSTs sentence to backend proxy `/api/tts/speak`. Receives audio/mpeg blob, plays via HTMLAudioElement. Falls back to browser `SpeechSynthesis` if proxy fails.
+
+7. **Backend TTS proxy** (`backend/routers/tts.py`): Calls ElevenLabs API with `eleven_multilingual_v2` model, voice ID `EXAVITQu4vr4xnSDxMaL` (Sarah). Keeps API key server-side. Returns `StreamingResponse` audio/mpeg.
+
+**STT input** (`frontend/src/hooks/useDeepgramSTT.ts`): WebSocket connection to Deepgram, `nova-2` model, mic audio converted to Int16 PCM, `utterance_end_ms=1500`. Transcripts are queued while avatar is speaking, sent when idle.
+
+**Avatar states** (`frontend/src/lib/memoji-avatar.ts`): 6 muted looping videos (`idle`, `thinking`, `talking`, `happy`, `excited`, `concerned`) + 13 unmuted scripted one-shot videos. Happy/excited auto-revert to idle after 5s.
+```
+
+## Change 2: Update project structure
+
+Replace the current project structure block with an updated version that:
+- Changes `mcp/` → `mcp_server/`
+- Adds voice pipeline files under `frontend/src/lib/` and `frontend/src/hooks/`
+- Adds `routers/tts.py` under backend
+- Adds `jenny/` subdirectory
+
+```markdown
+frontend/           # Next.js app (mirror display + phone UI)
+  src/
+    app/
+      mirror/       # Full-screen mirror display page
+      phone/        # Phone onboarding + dashboard
+    lib/            # Shared utilities
+      elevenlabs-tts.ts    # TTS client (backend proxy + browser fallback)
+      sentence-buffer.ts   # Streaming text → sentence splitter
+      scripted-responses.ts # Phrase matching for pre-recorded videos
+      memoji-avatar.ts     # Avatar video state machine
+      socket.ts            # Socket.io client
+    hooks/
+      useMemojiAvatar.ts   # Avatar + TTS queue orchestration
+      useDeepgramSTT.ts    # Deepgram STT WebSocket hook
+    components/mirror/
+      AvatarPiP.tsx        # Avatar picture-in-picture
+      ProductCarousel.tsx  # Product recommendation display
+      VoiceIndicator.tsx   # Interim transcript indicator
+  public/avatar/           # Memoji video assets
+    loops/                 # 6 looping state videos (muted)
+    scripted/              # 13 pre-recorded response videos (with audio)
+backend/            # Python FastAPI
+  main.py           # FastAPI app entry
+  agent/            # Mira orchestrator, Claude API integration
+    orchestrator.py # Event-driven agent orchestrator
+    prompts.py      # Mira's personality prompt
+  routers/
+    tts.py          # ElevenLabs TTS proxy endpoint
+    mirror.py       # Mirror bridge endpoints
+  scraper/          # Gmail scraping, data extraction
+  mcp_server/       # MCP server for Poke integration (not mcp/ — avoids PyPI conflict)
+  models/           # Pydantic models, DB schemas
+    database.py     # Dual-mode DB connection (asyncpg + Neon HTTP)
+    schemas.py      # Pydantic request/response models
+  services/         # Serper.dev, Deepgram integrations
+    serper_search.py  # Serper.dev Shopping API (CLI + library)
+  migrations/       # Raw SQL migration files
+    001_initial_schema.sql
+  tests/            # Pytest test suite
+jenny/              # Standalone Mira prototype (vanilla JS, archived reference)
+  src/              # 9 JS modules (avatar, TTS, scripted responses, Gemini vision)
+  assets/           # Memoji PNGs, loop videos, scripted videos
+  bundle.py         # Self-contained HTML bundler
+```
+
+## Change 3: Update implementation status
+
+Move these from "In Progress / Planned" to "Completed":
+- Socket.io real-time communication
+- Memoji avatar with ElevenLabs TTS and scripted response videos
+- MCP server for Poke integration
+
+Updated sections:
+
+```markdown
+**Completed**:
+- Database schema and Neon Postgres integration
+- Serper.dev Shopping API integration with CLI tool
+- Basic FastAPI backend structure
+- Next.js frontend scaffolding with mirror/phone page structure
+- MediaPipe integration for body/hand tracking
+- Socket.io real-time communication
+- Memoji avatar with ElevenLabs TTS and scripted response videos
+- MCP server for Poke integration
+
+**In Progress / Planned**:
+- Gmail OAuth and scraping pipeline
+- Mira agent orchestrator (event-driven Claude API calls)
+- Clothing overlay rendering
+```
+
+## Verification
+
+- Read updated CLAUDE.md to confirm accuracy and formatting
+- Spot-check that referenced file paths exist
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+commit and push the claude.md
+
+---
+
+Is there a tool for Miro to take a photo of the screen
+
+---
+
+[Request interrupted by user for tool use]
