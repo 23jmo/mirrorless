@@ -382,8 +382,8 @@ class MiraOrchestrator:
         main culprits. Strategy: keep the last KEEP_RECENT messages intact and
         replace images / truncate tool results in everything before that.
         """
-        KEEP_RECENT = 8   # last ~4 turns untouched
-        MAX_TOOL_RESULT_CHARS = 600  # truncate older tool result strings
+        KEEP_RECENT = 6   # last ~3 turns untouched
+        MAX_TOOL_RESULT_CHARS = 400  # truncate older tool result strings
 
         history = session.conversation_history
         if len(history) <= KEEP_RECENT:
@@ -454,6 +454,105 @@ class MiraOrchestrator:
                 f"(kept last {KEEP_RECENT} messages intact)"
             )
 
+    @staticmethod
+    def _strip_data_urls(obj):
+        """Recursively replace base64 data: URLs with a short placeholder.
+
+        Used to sanitize tool results before storing in conversation history.
+        Returns a new object — does not mutate the original.
+        """
+        if isinstance(obj, dict):
+            return {k: MiraOrchestrator._strip_data_urls(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [MiraOrchestrator._strip_data_urls(item) for item in obj]
+        if isinstance(obj, str) and obj.startswith("data:image/"):
+            return "[image]"
+        return obj
+
+    def _estimate_history_tokens(self, session: SessionState) -> int:
+        """Rough token estimate for conversation history + system prompt.
+
+        Uses chars / 4 heuristic — not exact, but good enough for a safety net.
+        """
+        total_chars = len(session.system_prompt)
+        for msg in session.conversation_history:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        # tool_result content string, text blocks, image source data
+                        for val in block.values():
+                            if isinstance(val, str):
+                                total_chars += len(val)
+                            elif isinstance(val, dict):
+                                for v2 in val.values():
+                                    if isinstance(v2, str):
+                                        total_chars += len(v2)
+                    elif hasattr(block, "text"):
+                        total_chars += len(block.text)
+        return total_chars // 4
+
+    def _emergency_compact(self, session: SessionState) -> None:
+        """Aggressive compaction when estimated tokens exceed safety threshold.
+
+        Keeps only the last 2 messages intact, truncates tool results to 200 chars,
+        and strips ALL images and tool results outside the keep window.
+        """
+        KEEP_RECENT = 2
+        MAX_CHARS = 200
+
+        history = session.conversation_history
+        if len(history) <= KEEP_RECENT:
+            return
+
+        compact_boundary = len(history) - KEEP_RECENT
+
+        for idx in range(compact_boundary):
+            msg = history[idx]
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            new_content = []
+            for block in content:
+                if isinstance(block, dict):
+                    btype = block.get("type")
+                    if btype == "image":
+                        new_content.append({
+                            "type": "text",
+                            "text": "[image removed]",
+                        })
+                        continue
+                    if btype == "tool_result":
+                        rc = block.get("content", "")
+                        if isinstance(rc, str) and len(rc) > MAX_CHARS:
+                            block = {**block, "content": rc[:MAX_CHARS] + " ...[truncated]"}
+                        elif isinstance(rc, list):
+                            new_rc = []
+                            for sub in rc:
+                                if isinstance(sub, dict) and sub.get("type") == "image":
+                                    new_rc.append({"type": "text", "text": "[image removed]"})
+                                else:
+                                    new_rc.append(sub)
+                            block = {**block, "content": new_rc}
+                    new_content.append(block)
+                    continue
+
+                if hasattr(block, "type") and block.type == "image":
+                    new_content.append({
+                        "type": "text",
+                        "text": "[image removed]",
+                    })
+                    continue
+
+                new_content.append(block)
+
+            history[idx]["content"] = new_content
+
+        print(f"[mira] Emergency compaction done for {session.user_id} (kept last {KEEP_RECENT})")
+
     async def _call_claude(self, session: SessionState, tool_depth: int = 0) -> None:
         """Make a streaming Claude API call with tool use."""
         if session.wrapping_up:
@@ -475,6 +574,13 @@ class MiraOrchestrator:
 
         # Compact old images and tool results to stay under 200k token limit
         self._compact_history(session)
+
+        # Safety net: estimate tokens and trigger emergency compaction if needed
+        estimated_tokens = self._estimate_history_tokens(session)
+        print(f"[mira] Estimated history tokens: {estimated_tokens:,} for {session.user_id}")
+        if estimated_tokens > 120_000:
+            print(f"[mira] Emergency compaction triggered ({estimated_tokens:,} > 120,000)")
+            self._emergency_compact(session)
 
         session.api_calls += 1
         model, max_tokens = self._select_model(session)
@@ -640,7 +746,7 @@ class MiraOrchestrator:
             tool_result_block = {
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
-                "content": json.dumps(result),
+                "content": json.dumps(self._strip_data_urls(result)),
             }
             if "error" in result:
                 tool_result_block["is_error"] = True
