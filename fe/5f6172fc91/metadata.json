@@ -3,7 +3,7 @@
   "checkpoint_id": "fe5f6172fc91",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 6,
+  "checkpoints_count": 5,
   "files_touched": [
     "README.md",
     "backend/agent/orchestrator.py",
@@ -21,6 +21,7 @@
     "frontend/src/app/api/queue/join/route.ts",
     "frontend/src/app/api/queue/leave/[userId]/route.ts",
     "frontend/src/app/api/queue/status/[userId]/route.ts",
+    "frontend/src/app/api/users/[userId]/onboarding/route.ts",
     "frontend/src/app/api/users/[userId]/route.ts",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/lib/api.ts",
@@ -72,10 +73,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 337,
-    "cache_creation_tokens": 264783,
-    "cache_read_tokens": 9371845,
-    "output_tokens": 16763,
-    "api_call_count": 122
+    "input_tokens": 301,
+    "cache_creation_tokens": 226539,
+    "cache_read_tokens": 7672686,
+    "output_tokens": 13458,
+    "api_call_count": 84
   }
 }
