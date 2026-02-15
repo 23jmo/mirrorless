@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "38a6118020db",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "frontend/src/components/mirror/ClothingCanvas.tsx",
+    "frontend/src/hooks/usePoseDetection.ts",
+    "frontend/src/lib/clothing-transform.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/38/a6118020db/0/metadata.json",
+      "transcript": "/38/a6118020db/0/full.jsonl",
+      "context": "/38/a6118020db/0/context.md",
+      "content_hash": "/38/a6118020db/0/content_hash.txt",
+      "prompt": "/38/a6118020db/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 44481,
+    "cache_read_tokens": 927987,
+    "output_tokens": 5832,
+    "api_call_count": 14
+  }
+}

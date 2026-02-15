@@ -1,0 +1,102 @@
+Implement the following plan:
+
+# Plan: Mirror Pose Coordinates for Mirror V2
+
+## Context
+
+The user sees their reflection through a physical two-way mirror (inherently mirrored), but MediaPipe pose landmarks are in raw camera coordinates (not mirrored). When the user leans left, the debug skeleton moves right on screen. The clothing canvas overlay has the same problem. The pose input needs to be mirrored so everything matches the mirror view.
+
+The clothing image pipeline (Gemini flat lay → rembg background removal) is correct and stays as-is — just needs `GOOGLE_API_KEY` set.
+
+## Change: Mirror Pose at the Source
+
+### 1. Flip x-coordinates in pose detection
+
+**File:** `frontend/src/hooks/usePoseDetection.ts` (~line 105)
+
+```ts
+// Before:
+x: lm.x,
+
+// After:
+x: 1 - lm.x,
+```
+
+This mirrors ALL downstream consumers automatically: DebugOverlay skeleton, ClothingCanvas placement, GestureIndicator, etc.
+
+### 2. Remove rotation compensations in clothing-transform.ts
+
+**File:** `frontend/src/lib/clothing-transform.ts`
+
+- **Line 113** (`calculateTopTransform`): Remove `+ Math.PI` from rotation
+- **Line 165** (`calculateBottomTransform`): Remove `+ Math.PI` from rotation
+
+The `+ Math.PI` was compensating for non-mirrored coordinates. With mirrored landmarks, the shoulder/hip angle already points the right direction.
+
+### 3. Remove render compensations in ClothingCanvas.tsx
+
+**File:** `frontend/src/components/mirror/ClothingCanvas.tsx`
+
+In the `render()` callback:
+- **Shoulder-seam tops path (~line 315)**: Remove `+ Math.PI` from rotation calculation
+- **Shoulder-seam tops path (~line 323)**: Remove `ctx.scale(-1, 1)`
+- **Waistband bottoms path (~line 384)**: Remove `+ Math.PI` from rotation calculation
+- **Waistband bottoms path (~line 389)**: Remove `ctx.scale(-1, 1)`
+- **Fallback path (~line 434)**: Remove `+ Math.PI` from rotation calculation
+
+These were all compensating for non-mirrored input. With mirrored landmarks, they'd double-flip.
+
+## Why This Works
+
+In camera coordinates: LEFT_SHOULDER (person's left) is at high x-value (right side of frame).
+After `x → 1-x`: LEFT_SHOULDER is at low x-value (left side of frame) — matching mirror view.
+
+The `+ Math.PI` rotation existed because `atan2(dy, dx)` between shoulders pointed "backwards" in camera space. After mirroring, it points naturally in the correct direction.
+
+The `ctx.scale(-1, 1)` horizontal flip existed to mirror the clothing image. After mirroring the landmarks, the clothing is already placed at the correct mirrored position — no image flip needed.
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `frontend/src/hooks/usePoseDetection.ts` | `x: 1 - lm.x` |
+| `frontend/src/lib/clothing-transform.ts` | Remove `+ Math.PI` (2 locations) |
+| `frontend/src/components/mirror/ClothingCanvas.tsx` | Remove `+ Math.PI` (3 locations) + `ctx.scale(-1, 1)` (2 locations) |
+
+## Verification
+
+1. Open `/mirror-v2`, press `d` for debug skeleton
+2. Lean left → skeleton should move left on screen
+3. Raise right hand → right hand rises on right side
+4. Start a session with `GOOGLE_API_KEY` set → clothing should overlay correctly on mirrored body
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+Okay cool. Can you just commit and push
+
+---
+
+commit and push everything
+
+---
+
+Okay make a PR domain and then merge the PR domain
+
+---
+
+[Request interrupted by user]
+
+---
+
+Take a PR to main and then merge the PR to main
+
+---
+
+Yeah right now the queue is completely fucked. It continues incrementing always forever. Even if you leave the queue it won't decrement the queue. We need to probably have some sort of async lock on it. This is a classic concurrency problem but yeah right now the queue does not update properly. You can't force quit a session from the admin panel, which you should be able to, and so people wait in line with zero people ahead of them forever
+
+---
+
+[Request interrupted by user for tool use]
