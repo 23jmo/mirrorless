@@ -1,0 +1,156 @@
+Implement the following plan:
+
+# Plan: Next.js API Routes for Phone Flow (Auth + Queue)
+
+## Context
+
+The phone onboarding flow (Google sign-in → queue → wait) currently calls the Python backend at `NEXT_PUBLIC_API_URL` (`localhost:8000`). This works on the developer's computer but fails on phones accessing `mirrorless.vercel.app` because `localhost:8000` doesn't exist on the phone. The backend is difficult to deploy to Render right now.
+
+**Solution:** Create Next.js API routes (`app/api/*/route.ts`) that run as Vercel serverless functions. These handle auth + queue by connecting directly to Neon Postgres. The mirror AI session continues to use the local backend.
+
+**Architecture split after this change:**
+- **Vercel (serverless):** Google OAuth, user CRUD, queue management
+- **Local backend:** AI orchestrator, Socket.io, TTS, STT config, admin endpoints, Gmail scraping
+
+## Dependencies to Install
+
+```bash
+cd frontend && npm install @neondatabase/serverless google-auth-library
+```
+
+## Environment Variables
+
+**Add to `frontend/.env.local`** (for local dev):
+```
+DATABASE_URL=postgresql://neondb_owner:npg_Rm72AcywTWzI@ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/neondb?sslmode=require
+GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
+```
+
+**Add to Vercel project env vars** (via API, same values):
+- `DATABASE_URL`
+- `GOOGLE_CLIENT_SECRET`
+
+Note: These are server-side only (no `NEXT_PUBLIC_` prefix) — they're only accessible in API routes, never exposed to the browser.
+
+## Files to Create
+
+### 1. `frontend/src/lib/db.ts` — Neon DB helper
+
+Thin wrapper using `@neondatabase/serverless`:
+```ts
+import { neon } from '@neondatabase/serverless';
+export function getDb() {
+  return neon(process.env.DATABASE_URL!);
+}
+```
+
+### 2. `frontend/src/app/api/auth/google/route.ts` — Google OAuth exchange
+
+- `POST` handler
+- Use `google-auth-library` `OAuth2Client` to exchange auth code for tokens
+- Verify ID token to extract email + name
+- Upsert user in Neon: `INSERT INTO users (name, email, google_oauth_token) VALUES (...) ON CONFLICT (email) DO UPDATE ... RETURNING id, name, email, phone, poke_id`
+- Store full token data (access_token, refresh_token, id_token) as JSONB for Gmail scraping later
+- Return `UserProfile`
+
+### 3. `frontend/src/app/api/auth/profile/route.ts` — Update profile
+
+- `POST` handler
+- `UPDATE users SET name = $1, phone = $2 WHERE id = $3 RETURNING id, name, email, phone, poke_id`
+
+### 4. `frontend/src/app/api/auth/selfie/route.ts` — Upload selfie
+
+- `POST` handler
+- Strip `data:image/...;base64,` prefix
+- `UPDATE users SET selfie_base64 = $1 WHERE id = $2 RETURNING id, name, email, phone, poke_id`
+
+### 5. `frontend/src/app/api/queue/join/route.ts` — Join queue
+
+- `POST` handler
+- Check if user already in queue (status IN waiting/active)
+- If not, calculate next position + insert
+- Auto-activate if no one else is active (same subquery UPDATE as backend)
+- Return `QueueInfo { queue_id, position, status, total_ahead }`
+
+### 6. `frontend/src/app/api/queue/status/[userId]/route.ts` — Queue status
+
+- `GET` handler
+- Fetch user's queue entry + count ahead
+- Return `QueueInfo`
+
+### 7. `frontend/src/app/api/queue/leave/[userId]/route.ts` — Leave queue
+
+- `POST` handler
+- Mark as completed: `UPDATE queue SET status = 'completed' WHERE user_id = $1 AND status IN ('waiting', 'active')`
+- Auto-advance next waiting user
+- Return `{ status: "left" }`
+
+### 8. `frontend/src/app/api/users/[userId]/route.ts` — Get user
+
+- `GET` handler
+- `SELECT id, name, email, phone, poke_id FROM users WHERE id = $1`
+- Return `UserProfile`
+
+## Files to Modify
+
+### `frontend/src/lib/api.ts` — Route auth/queue to Next.js API
+
+Add a second request helper for Next.js API routes (relative paths):
+```ts
+async function localRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || body.error || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+```
+
+Update these functions to use `localRequest` with `/api/...` paths:
+- `googleLogin()` → `POST /api/auth/google`
+- `updateProfile()` → `POST /api/auth/profile`
+- `uploadSelfie()` → `POST /api/auth/selfie`
+- `joinQueue()` → `POST /api/queue/join`
+- `getQueueStatus()` → `GET /api/queue/status/{userId}`
+- `leaveQueue()` → `POST /api/queue/leave/{userId}`
+- `getUser()` → `GET /api/users/{userId}`
+
+All other functions (admin, STT, scrape, session) continue using `API_URL`/`API_BASE` (local backend).
+
+## What's NOT Changing
+
+- Socket.io events (`queue_updated` to mirror) — the mirror still uses the local backend
+- Admin endpoints (`/admin/*`) — still on local backend
+- STT config — still on local backend
+- Scraping pipeline — still on local backend
+- AI orchestrator — still on local backend
+- `submitOnboarding()` — stays on `API_BASE` (local backend)
+- Mirror page — unchanged
+
+## Queue Without Socket.io
+
+The phone already polls `GET /queue/status/{userId}` every 5 seconds. It doesn't rely on Socket.io for queue updates. The only Socket.io event the phone listens for is `session_ended` (after the mirror session), which still comes from the local backend when the mirror is running.
+
+The mirror display receives `queue_updated` via Socket.io from the local backend. Since the Vercel API routes can't emit Socket.io events, the mirror won't auto-update when someone joins via phone. **Workaround:** The mirror already polls or the admin can refresh. For the demo, this is acceptable — the primary goal is phone sign-in working from any device.
+
+## Verification
+
+1. Deploy to Vercel with `DATABASE_URL` + `GOOGLE_CLIENT_SECRET` env vars
+2. Open `mirrorless.vercel.app/phone` on a phone
+3. Google Sign-In → should succeed and show user name
+4. Complete questionnaire → transitions to queue
+5. Queue shows position and polls every 5s
+6. Leave queue works
+7. Returning user check (refresh page) finds existing user
+8. Admin dashboard + mirror still work via local backend
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+can we push and deploy to vercel

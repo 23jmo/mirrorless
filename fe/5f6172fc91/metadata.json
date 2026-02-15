@@ -3,7 +3,7 @@
   "checkpoint_id": "fe5f6172fc91",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
+  "checkpoints_count": 7,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/agent/prompts.py",
@@ -13,8 +13,16 @@
     "backend/routers/admin.py",
     "backend/scraper/routes.py",
     "backend/services/background_removal.py",
+    "frontend/.env.local",
     "frontend/.vercel/project.json",
     "frontend/src/app/admin/page.tsx",
+    "frontend/src/app/api/auth/google/route.ts",
+    "frontend/src/app/api/auth/profile/route.ts",
+    "frontend/src/app/api/auth/selfie/route.ts",
+    "frontend/src/app/api/queue/join/route.ts",
+    "frontend/src/app/api/queue/leave/[userId]/route.ts",
+    "frontend/src/app/api/queue/status/[userId]/route.ts",
+    "frontend/src/app/api/users/[userId]/route.ts",
     "frontend/src/app/mirror/page.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/lib/api.ts",
@@ -56,13 +64,20 @@
       "context": "/fe/5f6172fc91/4/context.md",
       "content_hash": "/fe/5f6172fc91/4/content_hash.txt",
       "prompt": "/fe/5f6172fc91/4/prompt.txt"
+    },
+    {
+      "metadata": "/fe/5f6172fc91/5/metadata.json",
+      "transcript": "/fe/5f6172fc91/5/full.jsonl",
+      "context": "/fe/5f6172fc91/5/context.md",
+      "content_hash": "/fe/5f6172fc91/5/content_hash.txt",
+      "prompt": "/fe/5f6172fc91/5/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 299,
-    "cache_creation_tokens": 279574,
-    "cache_read_tokens": 8107349,
-    "output_tokens": 16254,
-    "api_call_count": 90
+    "input_tokens": 365,
+    "cache_creation_tokens": 343912,
+    "cache_read_tokens": 11727537,
+    "output_tokens": 20691,
+    "api_call_count": 148
   }
 }
