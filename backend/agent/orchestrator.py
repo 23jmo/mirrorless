@@ -6,6 +6,7 @@ tool results to the frontend via Socket.io.
 """
 
 import asyncio
+import copy
 import json
 import os
 import time
@@ -148,6 +149,14 @@ class MiraOrchestrator:
             "calendar_events": calendar_events,
         }
 
+        # Signal frontend that user data is loaded (drives loading screen text)
+        if self.sio:
+            await self.sio.emit("session_data_loaded", {
+                "user_name": profile.get("name", ""),
+                "has_purchases": len(purchases) > 0,
+                "purchase_count": len(purchases),
+            }, room=user_id)
+
         # Build system prompt with all user data
         session.system_prompt = build_system_prompt(
             user_profile=profile,
@@ -187,6 +196,10 @@ class MiraOrchestrator:
 
         # Start silence detection
         self._start_silence_timer(user_id)
+
+        # Brief pause so frontend can initialize TTS (MediaSource + SourceBuffer)
+        # before the first audio chunks arrive
+        await asyncio.sleep(1.5)
 
         # Trigger Mira's opening line
         await self.handle_event(user_id, {
@@ -811,9 +824,19 @@ class MiraOrchestrator:
                 tool_uses.append(block)
 
         # Add assistant message to history
+        # Deep copy to prevent tool execution from mutating stored assistant message
         session.conversation_history.append({
             "role": "assistant",
-            "content": final_message.content,
+            "content": copy.deepcopy([
+                {
+                    "type": block.type,
+                    "id": getattr(block, "id", None),
+                    "name": getattr(block, "name", None),
+                    "input": getattr(block, "input", None),
+                    "text": getattr(block, "text", None),
+                }
+                for block in final_message.content
+            ]),
         })
 
         # Handle tool calls
