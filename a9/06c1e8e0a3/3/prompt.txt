@@ -1,0 +1,90 @@
+Implement the following plan:
+
+# Plan: Add "Leave Queue" Button to Phone Queue Screen
+
+## Context
+
+The phone queue screen (`QueueStatus` component) currently has no way for a user to leave the queue or log out. Once they join, they're stuck until an admin skips them or their session ends. Users need a self-service way to bail out — leave the queue, clear their session, and return to the sign-in screen.
+
+**Goal:** Add a "Leave Queue" button visible on the queue screen (both waiting and active states) that removes the user from the queue and logs them out.
+
+---
+
+## Files to Modify
+
+### 1. `backend/routers/queue.py` — New `/queue/leave/{user_id}` endpoint
+
+Add a `POST /queue/leave/{user_id}` endpoint. Reuses existing `_try_advance_next()` and `_emit_queue_updated()` helpers.
+
+```python
+@router.post("/leave/{user_id}")
+async def leave_queue(user_id: str, request: Request):
+    """User voluntarily leaves the queue."""
+    db = NeonHTTPClient()
+    try:
+        rows = await db.execute(
+            """
+            UPDATE queue SET status = 'completed'
+            WHERE user_id = $1::uuid AND status IN ('waiting', 'active')
+            RETURNING id, status
+            """,
+            [user_id],
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="No queue entry found")
+
+        await _try_advance_next(db)
+        await _emit_queue_updated(request, db)
+
+        return {"status": "left"}
+    finally:
+        await db.close()
+```
+
+This mirrors `/queue/skip/{user_id}` but is a dedicated user-facing endpoint (skip is admin-facing). The logic is identical: mark as completed, advance queue, broadcast update.
+
+### 2. `frontend/src/lib/api.ts` — Add `leaveQueue()` function
+
+```typescript
+export function leaveQueue(userId: string) {
+  return request<{ status: string }>(`/queue/leave/${userId}`, {
+    method: "POST",
+  });
+}
+```
+
+### 3. `frontend/src/components/phone/QueueStatus.tsx` — Add Leave button + callback
+
+- Add `onLeave?: () => void` prop to `QueueStatusProps`
+- Import `leaveQueue` from `@/lib/api`
+- Add a "Leave Queue" button at the bottom of both the waiting and active states
+- On click: call `leaveQueue(userId)`, then fire `onLeave()` callback
+- Add a loading/disabled state while the leave request is in flight
+
+The button should be styled as a subtle secondary action (not the primary CTA) — text-only or ghost button so it doesn't compete with the queue status display.
+
+### 4. `frontend/src/app/phone/page.tsx` — Wire up the leave callback
+
+- Add `handleLeaveQueue` callback that:
+  1. Clears localStorage (`localStorage.removeItem(STORAGE_KEY)`)
+  2. Clears user state (`setUser(null)`)
+  3. Resets to signin (`setState("signin")`)
+- Pass it as `onLeave={handleLeaveQueue}` to `<QueueStatus>`
+
+This is the same cleanup logic as the existing `handleDone` callback used in RecapView.
+
+---
+
+## Verification
+
+1. `cd frontend && npm run build` — no TypeScript errors
+2. Manual test flow: Sign in → Join queue → Click "Leave Queue" → Confirm redirected to sign-in screen
+3. Verify backend: After leaving, `/queue/status/{user_id}` should return 404 (no active entry)
+4. Verify queue advances: If the leaving user was active, the next waiting user should be promoted
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+make commits for stuff we've written so far, make them granular - for everything that is dirty rn
