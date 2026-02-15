@@ -8,7 +8,7 @@ import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { usePoseDetection } from "@/hooks/usePoseDetection";
 import { useMiraVideoAvatar } from "@/hooks/useMiraVideoAvatar";
 import type { MiraEmotion } from "@/components/ui/mira-video-avatar";
-import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
+import { useDeepgramSTT, type DeepgramSTTConfig } from "@/hooks/useDeepgramSTT";
 import { detectEmotionFromText } from "@/lib/emotion-parser";
 import { MiraVideoAvatar } from "@/components/ui/mira-video-avatar";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
@@ -20,7 +20,7 @@ import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
 import SessionRecap from "@/components/mirror/SessionRecap";
 import { socket } from "@/lib/socket";
-import { skipQueueUser } from "@/lib/api";
+import { skipQueueUser, getSTTConfig } from "@/lib/api";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
@@ -107,9 +107,12 @@ function MirrorV2Page() {
     user_name?: string;
   } | null>(null);
 
+  // ── STT config (live-tunable from admin panel) ──
+  const [sttConfig, setSttConfig] = useState<DeepgramSTTConfig | undefined>();
+
   // ── Mira video avatar + voice ──
   const mira = useMiraVideoAvatar();
-  const stt = useDeepgramSTT();
+  const stt = useDeepgramSTT(sttConfig);
 
   // ── Speech display state ──
   const [speechText, setSpeechText] = useState("");
@@ -171,6 +174,23 @@ function MirrorV2Page() {
       socket.off("connect_error", onConnectError);
       socket.off("disconnect", onDisconnect);
       socket.disconnect();
+    };
+  }, []);
+
+  // ── Fetch initial STT config + listen for admin updates ──
+  useEffect(() => {
+    getSTTConfig()
+      .then(setSttConfig)
+      .catch(() => console.warn("[MirrorV2] Failed to fetch STT config, using defaults"));
+
+    const handleSttConfigUpdated = (data: DeepgramSTTConfig) => {
+      console.log("[MirrorV2] STT config updated:", data);
+      setSttConfig(data);
+    };
+
+    socket.on("stt_config_updated", handleSttConfigUpdated);
+    return () => {
+      socket.off("stt_config_updated", handleSttConfigUpdated);
     };
   }, []);
 

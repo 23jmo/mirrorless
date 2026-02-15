@@ -215,3 +215,22 @@ export function forceEndSession() {
     method: "POST",
   });
 }
+
+// --- STT Config APIs ---
+
+export interface STTConfig {
+  utterance_end_ms: number;
+  model: string;
+  smart_format: boolean;
+}
+
+export function getSTTConfig() {
+  return request<STTConfig>("/admin/stt-config");
+}
+
+export function updateSTTConfig(config: Partial<STTConfig>) {
+  return request<STTConfig>("/admin/stt-config", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}

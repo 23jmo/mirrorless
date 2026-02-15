@@ -5,13 +5,16 @@ import {
   getAdminQueue,
   getAdminSession,
   getBoothStats,
+  getSTTConfig,
+  updateSTTConfig,
   skipQueueUser,
   forceEndSession,
   startMirrorSession,
   advanceQueue,
-  AdminQueueEntry,
-  AdminSessionInfo,
-  BoothStats,
+  type AdminQueueEntry,
+  type AdminSessionInfo,
+  type BoothStats,
+  type STTConfig,
 } from "@/lib/api";
 
 const POLL_INTERVAL = 10_000;
@@ -20,18 +23,21 @@ export default function AdminPage() {
   const [queue, setQueue] = useState<AdminQueueEntry[]>([]);
   const [session, setSession] = useState<AdminSessionInfo | null>(null);
   const [stats, setStats] = useState<BoothStats | null>(null);
+  const [sttConfig, setSttConfig] = useState<STTConfig | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
-      const [q, s, st] = await Promise.all([
+      const [q, s, st, stt] = await Promise.all([
         getAdminQueue(),
         getAdminSession(),
         getBoothStats(),
+        getSTTConfig(),
       ]);
       setQueue(q);
       setSession(s);
       setStats(st);
+      setSttConfig(stt);
     } catch (err) {
       console.error("[Admin] Refresh failed:", err);
     } finally {
@@ -193,6 +199,11 @@ export default function AdminPage() {
             </div>
           )}
         </section>
+
+        {/* STT Settings */}
+        {sttConfig && (
+          <STTSettings config={sttConfig} onChange={setSttConfig} />
+        )}
       </div>
     </main>
   );
@@ -204,5 +215,111 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
       <p className="text-2xl font-bold">{value}</p>
       <p className="text-xs text-zinc-500 mt-1">{label}</p>
     </div>
+  );
+}
+
+const STT_MODELS = [
+  { value: "nova-2", label: "Nova 2 (default)" },
+  { value: "nova-2-general", label: "Nova 2 General" },
+  { value: "nova-2-phonecall", label: "Nova 2 Phone Call" },
+  { value: "nova-2-meeting", label: "Nova 2 Meeting" },
+];
+
+function STTSettings({
+  config,
+  onChange,
+}: {
+  config: STTConfig;
+  onChange: (config: STTConfig) => void;
+}) {
+  const [localUtterance, setLocalUtterance] = useState(config.utterance_end_ms);
+  const [saving, setSaving] = useState(false);
+
+  const save = useCallback(
+    async (patch: Partial<STTConfig>) => {
+      setSaving(true);
+      try {
+        const updated = await updateSTTConfig(patch);
+        onChange(updated);
+      } catch (err) {
+        console.error("[Admin] STT config update failed:", err);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [onChange],
+  );
+
+  return (
+    <section className="bg-white rounded-xl border border-zinc-200 p-6 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold">STT Settings</h2>
+        {saving && <span className="text-xs text-zinc-400">Saving...</span>}
+      </div>
+
+      <div className="space-y-5">
+        {/* Utterance End */}
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 mb-1">
+            Utterance End: {localUtterance}ms
+          </label>
+          <input
+            type="range"
+            min={500}
+            max={3000}
+            step={100}
+            value={localUtterance}
+            onChange={(e) => setLocalUtterance(Number(e.target.value))}
+            onMouseUp={() => save({ utterance_end_ms: localUtterance })}
+            onTouchEnd={() => save({ utterance_end_ms: localUtterance })}
+            className="w-full accent-blue-500"
+          />
+          <div className="flex justify-between text-xs text-zinc-400 mt-1">
+            <span>500ms (fast)</span>
+            <span>3000ms (slow)</span>
+          </div>
+        </div>
+
+        {/* Model */}
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 mb-1">
+            Model
+          </label>
+          <select
+            value={config.model}
+            onChange={(e) => save({ model: e.target.value })}
+            className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm bg-white"
+          >
+            {STT_MODELS.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Smart Format */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-zinc-700">Smart Format</p>
+            <p className="text-xs text-zinc-400">
+              Auto-punctuation, numerals, formatting
+            </p>
+          </div>
+          <button
+            onClick={() => save({ smart_format: !config.smart_format })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${
+              config.smart_format ? "bg-blue-500" : "bg-zinc-300"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                config.smart_format ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }
