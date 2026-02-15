@@ -1,0 +1,296 @@
+Implement the following plan:
+
+# Fix Mira "Never Shuts Up" — Silence Timer, Speech Queue, Turn-Taking, STT Resilience
+
+## Context
+
+During real E2E testing, Mira talks nonstop without ever pausing for user input. Three symptoms reported:
+1. **Mira never pauses** — new content each time, no opportunity for the user to speak
+2. **Voice input stopped working** — voice indicator worked once then went silent permanently
+3. **Speaks gibberish sometimes** — avatar output garbled from overlapping speech
+
+User confirmed they use headphones (no audio echo). Root cause investigation found **4 compounding bugs**.
+
+---
+
+## Bug Analysis
+
+### Bug 1: Silence timer starts too early (CRITICAL — primary cause of "never shuts up")
+
+The silence timer starts at the **top** of `handle_event` (line 194), before Mira even starts generating her response. The timer is only 5 seconds (`SILENCE_TIMEOUT_SECONDS`). Here's the timing problem:
+
+```
+t=0s  handle_event called → timer starts → _call_claude starts
+t=3s  _call_claude finishes (response streamed to avatar)
+t=5s  timer fires → sees is_processing=False → fires silence event
+      User had only 2 seconds of actual silence to respond!
+```
+
+With tool chains it's even worse — `_call_claude` recurses (search_clothing → present_items), taking 4-6 seconds total. The timer fires the instant processing ends, giving the user **zero** seconds of silence.
+
+The silence event message is also too aggressive: *"Say something to keep the conversation going"* — this prompts Mira to launch into new content rather than a gentle nudge.
+
+**Files**: `backend/agent/orchestrator.py` (lines 192-194, 234-235, 490-492, 517-530)
+
+### Bug 2: No speech queue for HeyGen (HIGH — causes gibberish)
+
+`_call_claude` recurses for tool chains, and `_stream_text_end` fires after **each** recursive call (line 295-296). This triggers the sentence buffer to `flush()` multiple times during a single tool chain. The buffer's callback calls `avatar.speak()` for each sentence, so during a typical search+present flow:
+
+```
+_call_claude(depth=0): "Let me find something..." → speak("Let me find something...")
+  → _stream_text_end fires, buffer flushes
+  → tool executes (search_clothing)
+_call_claude(depth=1): "Okay here's what I found..." → speak("Okay here's what I found...")
+  → _stream_text_end fires, buffer flushes
+  → tool executes (present_items)
+_call_claude(depth=2): "This jacket would look amazing..." → speak("This jacket would...")
+  → _stream_text_end fires, buffer flushes
+```
+
+Three `speak()` calls fire in rapid succession. HeyGen's behavior with overlapping calls is undefined — it may interrupt, queue, or garble them.
+
+**Files**: `frontend/src/hooks/useHeyGenAvatar.ts` (speak method), `backend/agent/orchestrator.py` (line 295-296)
+
+### Bug 3: Prompts encourage nonstop talking (HIGH — amplifies all other bugs)
+
+The personality prompt has zero concept of conversational turn-taking:
+- Line 11: *"You DRIVE the conversation — never ask open-ended questions or wait passively."*
+- Line 57: *"Keep momentum — after every reaction, transition into the next search or pick. Never stall."*
+
+Combined with the silence timer firing too fast, Mira is literally instructed to never stop. The silence event message (line 492) reinforces this: *"Say something to keep the conversation going."*
+
+**Files**: `backend/agent/prompts.py` (lines 11, 57), `backend/agent/orchestrator.py` (line 492)
+
+### Bug 4: Deepgram WebSocket drops permanently (MEDIUM — voice input stops working)
+
+The Deepgram STT hook only attempts **one** reconnect (line 28: `reconnectAttempted` ref). After that single retry, if it fails, `setIsListening(false)` and the mic goes permanently silent. Possible causes of the initial disconnect:
+- Browser suspends AudioContext after inactivity (tab background or idle)
+- Deepgram session length limit exceeded
+- Network hiccup during avatar playback
+
+Also, on reconnect, a **new** AudioContext and ScriptProcessorNode are created inside `ws.onopen`, but the old ones from the previous connection are never cleaned up — they keep running but send to a dead WebSocket.
+
+**Files**: `frontend/src/hooks/useDeepgramSTT.ts` (lines 28, 109-121, 55-80)
+
+---
+
+## Fixes
+
+### Fix 1: Move silence timer to AFTER response completes + increase timeout (CRITICAL)
+
+**File**: `backend/agent/orchestrator.py`
+
+**Change 1**: Increase `SILENCE_TIMEOUT_SECONDS` from `5` to `12`.
+
+**Change 2**: At the top of `handle_event` (line 192-194), cancel the existing timer but do NOT start a new one yet:
+
+```python
+# BEFORE (line 192-194):
+if event.get("type") != "silence":
+    session.last_input_time = time.time()
+    self._start_silence_timer(user_id)
+
+# AFTER:
+if event.get("type") != "silence":
+    session.last_input_time = time.time()
+    self._cancel_silence_timer(user_id)  # Cancel, don't restart yet
+```
+
+**Change 3**: Start the timer in the `finally` block (line 234), AFTER `_call_claude` completes:
+
+```python
+# BEFORE:
+finally:
+    session.is_processing = False
+
+# AFTER:
+finally:
+    session.is_processing = False
+    # Start silence timer AFTER response completes, so the full
+    # 12 seconds counts from when Mira FINISHES speaking
+    self._start_silence_timer(user_id)
+```
+
+**Change 4**: Soften the silence event message (line 490-492):
+
+```python
+# BEFORE:
+return f"The user has been silent for {duration} seconds. Say something to keep the conversation going."
+
+# AFTER:
+return (
+    f"The user has been quiet for {duration} seconds. "
+    "Give a brief, casual prompt to re-engage — one short sentence max. "
+    "Don't launch into a new topic or start searching. Just nudge."
+)
+```
+
+### Fix 2: Speech queue in useHeyGenAvatar (HIGH — prevents gibberish)
+
+**File**: `frontend/src/hooks/useHeyGenAvatar.ts`
+
+Instead of calling `avatar.speak()` directly, queue sentences and process one at a time:
+
+```typescript
+const speechQueueRef = useRef<string[]>([]);
+const isProcessingQueueRef = useRef(false);
+
+const processQueue = useCallback(async () => {
+  if (isProcessingQueueRef.current || !avatarRef.current) return;
+  const next = speechQueueRef.current.shift();
+  if (!next) {
+    setIsSpeaking(false);
+    return;
+  }
+  isProcessingQueueRef.current = true;
+  setIsSpeaking(true);
+  await avatarRef.current.speak({ text: next, taskType: TaskType.REPEAT });
+  // isProcessingQueueRef reset by AVATAR_STOP_TALKING handler
+}, []);
+
+// speak() becomes "enqueue + try process"
+const speak = useCallback(async (text: string) => {
+  if (!text.trim()) return;
+  speechQueueRef.current.push(text);
+  setIsSpeaking(true);  // Immediately show speaking state
+  processQueue();
+}, [processQueue]);
+
+// In AVATAR_STOP_TALKING handler:
+avatar.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
+  isProcessingQueueRef.current = false;
+  processQueue(); // Speak next queued sentence, or set isSpeaking=false
+});
+```
+
+Add `clearQueue()` for interrupts and session cleanup:
+
+```typescript
+const clearQueue = useCallback(() => {
+  speechQueueRef.current = [];
+  isProcessingQueueRef.current = false;
+}, []);
+```
+
+Update the `UseHeyGenAvatarReturn` interface to include `clearQueue`.
+
+### Fix 3: Add turn-taking instruction to prompts (HIGH)
+
+**File**: `backend/agent/prompts.py`
+
+Add to "Your Voice" section (after line 31, before "## Session Flow"):
+```
+- After you speak, STOP and listen. This is a real-time two-way conversation.
+  The user needs a few seconds to process what you said and respond.
+  Do NOT keep talking unprompted — wait for their voice input or a gesture.
+```
+
+Soften line 57 from:
+```
+- Keep momentum — after every reaction, transition into the next search or pick. Never stall.
+```
+to:
+```
+- After reacting to a gesture, briefly transition to the next action, then PAUSE and wait for their response.
+```
+
+### Fix 4: Deepgram reconnection resilience (MEDIUM)
+
+**File**: `frontend/src/hooks/useDeepgramSTT.ts`
+
+**Change 1**: Replace single-reconnect with exponential backoff (max 3 attempts):
+
+```typescript
+const reconnectCountRef = useRef(0);
+const MAX_RECONNECTS = 3;
+
+ws.onclose = () => {
+  if (reconnectCountRef.current < MAX_RECONNECTS && streamRef.current) {
+    reconnectCountRef.current += 1;
+    const delay = Math.min(1000 * Math.pow(2, reconnectCountRef.current - 1), 5000);
+    setTimeout(() => {
+      if (streamRef.current) connectWebSocket(streamRef.current);
+    }, delay);
+  } else {
+    setIsListening(false);
+  }
+};
+
+// Reset counter on successful connection:
+ws.onopen = () => {
+  reconnectCountRef.current = 0;
+  // ...existing audio setup
+};
+```
+
+**Change 2**: Clean up the old AudioContext/processor before creating new ones in `ws.onopen`:
+
+```typescript
+ws.onopen = () => {
+  setIsListening(true);
+  reconnectCountRef.current = 0;
+
+  // Clean up old audio pipeline if reconnecting
+  processorRef.current?.disconnect();
+  audioCtxRef.current?.close().catch(() => {});
+
+  // Create fresh audio pipeline
+  const audioCtx = new AudioContext({ sampleRate: 16000 });
+  // ... rest of existing setup
+};
+```
+
+**Change 3**: Resume suspended AudioContext (browsers suspend it after idle/tab switch). Add a periodic check:
+
+```typescript
+// In ws.onopen, after creating audioCtx:
+const resumeInterval = setInterval(() => {
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+}, 3000);
+
+// Store interval for cleanup
+// Clean up in the cleanup() callback
+```
+
+---
+
+## Files to Modify (4)
+
+| File | Changes |
+|------|---------|
+| `backend/agent/orchestrator.py` | Increase silence timeout to 12s, move timer start to `finally` block, cancel timer at top of handle_event, soften silence message |
+| `backend/agent/prompts.py` | Add turn-taking instruction to "Your Voice", soften "never stall" in Turn 3+ |
+| `frontend/src/hooks/useHeyGenAvatar.ts` | Add speech queue (one sentence at a time), `clearQueue()`, update `isSpeaking` for full queue state |
+| `frontend/src/hooks/useDeepgramSTT.ts` | Exponential backoff reconnect (max 3 attempts), clean up old audio pipeline on reconnect, resume suspended AudioContext |
+| `frontend/src/app/mirror/page.tsx` | Wire `clearQueue()` on session end |
+
+## Execution Order
+
+1. **Backend: orchestrator + prompts** — independent, addresses the primary cause
+2. **Frontend: useHeyGenAvatar speech queue** — independent of other frontend changes
+3. **Frontend: useDeepgramSTT resilience** — independent of speech queue
+4. **Frontend: mirror page wiring** — connect clearQueue on session end
+
+## Verification
+
+1. Start backend + frontend
+2. Open mirror + trigger session from phone/chat tab
+3. **Check: Mira speaks her opener, then STOPS** — no immediate follow-up monologue
+4. **Check: Speak into mic while Mira is silent** — voice indicator stays active, shows transcript, Mira responds to what you said
+5. **Check: Mira's speech is clean** — no garbled overlapping sentences
+6. **Check: After ~12 seconds of real silence, Mira gently nudges** — one short sentence, not a new monologue
+7. **Check: Voice indicator stays active** through entire session (doesn't die after first utterance)
+8. Run `cd frontend && npm run test` and `cd backend && pytest tests/test_pipeline.py tests/test_socket_events.py tests/test_heygen_routes.py tests/test_users.py -v`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+btw can we just add a start session button on the main mirror ui - i don't wanna do this weird chat workaround - everything should be in the main mirror ui from now on
+
+---
+
+[Request interrupted by user for tool use]

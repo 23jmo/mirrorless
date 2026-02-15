@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "097d313542ff",
+  "session_id": "4b177522-4287-492b-8af6-3014e1a68530",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T03:56:09.47073Z",
+  "branch": "AGENT",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/agent/orchestrator.py",
+    "backend/agent/prompts.py",
+    "backend/mcp_server/__init__.py",
+    "backend/mcp_server/render.yaml",
+    "backend/mcp_server/requirements.txt",
+    "backend/mcp_server/server.py",
+    "backend/mcp_server/shopping.py",
+    "backend/mcp_server/tests/__init__.py",
+    "backend/mcp_server/tests/test_present_items.py",
+    "backend/mcp_server/tests/test_search_clothing.py",
+    "backend/mcp_server/tests/test_send_to_mirror.py",
+    "backend/mcp_server/tests/test_sessions.py",
+    "frontend/src/app/mirror/page.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
+    "frontend/src/hooks/useHeyGenAvatar.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 23,
+    "cache_creation_tokens": 60536,
+    "cache_read_tokens": 963353,
+    "output_tokens": 2154,
+    "api_call_count": 17
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T03:56:09.395679Z",
+    "agent_lines": 262,
+    "human_added": 492,
+    "human_modified": 1020,
+    "human_removed": 0,
+    "total_committed": 1774,
+    "agent_percentage": 14.768883878241262
+  }
+}
