@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
-from routers import auth, queue, users, tts, admin
+from routers import auth, queue, users, tts, admin, sessions
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
 from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction, _outfits_to_display_payloads
@@ -46,6 +46,7 @@ app.include_router(scraper_router)
 app.include_router(judges_router)
 app.include_router(tts.router)
 app.include_router(admin.router)
+app.include_router(sessions.router)
 
 # Make sio and Mira accessible to routes
 app.state.sio = sio
@@ -394,8 +395,25 @@ async def start_session(sid, data):
         return
 
     print(f"[mira] Starting session for user {user_id}")
+
+    # Fetch user profile to get phone and session_id for Poke context
+    db = await get_neon_client()
+    try:
+        profile_rows = await db.execute(
+            "SELECT phone FROM users WHERE id = $1::uuid",
+            [user_id]
+        )
+        phone = profile_rows[0]["phone"] if profile_rows else None
+    finally:
+        await db.close()
+
     # Notify frontend that session is active (starts avatar + STT)
-    await sio.emit("session_active", {"user_id": user_id}, room=user_id)
+    # Include phone for Poke MCP integration
+    await sio.emit("session_active", {
+        "user_id": user_id,
+        "phone": phone
+    }, room=user_id)
+
     try:
         await mira.start_session(user_id)
     except Exception as e:

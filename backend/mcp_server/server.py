@@ -258,6 +258,11 @@ def _create_mcp_server():
     async def save_session(phone: str, session_id: str, summary: str) -> dict:
         """Save a summary for a completed mirror session.
 
+        Before calling this tool, Poke should:
+        1. Receive session_id from mirror session context
+        2. Call GET /api/sessions/{session_id}/info to get user's phone
+        3. Use the phone number when calling save_session(phone, session_id, summary)
+
         Verifies the session belongs to the user identified by phone number,
         then stores the summary text.
 
@@ -265,6 +270,9 @@ def _create_mcp_server():
             phone: The user's phone number (e.g. "+15551234567")
             session_id: UUID of the session to save the summary for
             summary: The session summary text
+
+        Returns:
+            dict: Status message indicating success or failure
         """
         log.info("save_session | phone=%s session=%s", phone, session_id)
         pool = await _get_pool()
@@ -308,8 +316,12 @@ if __name__ == "__main__":
     cwd = os.getcwd()
     sys.path = [p for p in sys.path if os.path.abspath(p) != os.path.abspath(cwd)]
 
-    log.info("Starting Mirrorless Poke MCP server (stdio mode)...")
+    MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
+
+    log.info("Starting Mirrorless Poke MCP server (HTTP on port %d)...", MCP_PORT)
     log.info("DATABASE_URL: %s", DATABASE_URL[:30] + "..." if DATABASE_URL else "(not set)")
     mcp = _create_mcp_server()
     log.info("MCP server created with tools: get_past_sessions, save_session")
-    mcp.run()
+
+    import uvicorn
+    uvicorn.run(mcp.http_app(), host="0.0.0.0", port=MCP_PORT)

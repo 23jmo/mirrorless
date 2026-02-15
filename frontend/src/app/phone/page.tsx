@@ -14,6 +14,7 @@ import type { OnboardingData } from "@/lib/types";
 import GoogleSignIn from "@/components/phone/GoogleSignIn";
 import SelfieCapture from "@/components/phone/SelfieCapture";
 import QueueStatus from "@/components/phone/QueueStatus";
+import PhoneInput from "@/components/phone/PhoneInput";
 
 type PhoneState = "loading" | "signin" | "questionnaire" | "queue" | "idle" | "recap";
 
@@ -79,12 +80,12 @@ export default function PhonePage() {
   }, [user]);
 
   const handleSignInComplete = useCallback(
-    (profile: UserProfile, selfieBase64: string | null, displayName: string) => {
+    (profile: UserProfile, selfieBase64: string | null, displayName: string, phone: string) => {
       setUser(profile);
       localStorage.setItem(STORAGE_KEY, profile.id);
 
-      // Fire-and-forget: update name, upload selfie, start scrape
-      updateProfile(profile.id, displayName).catch(() => {});
+      // Fire-and-forget: update name and phone, upload selfie, start scrape
+      updateProfile(profile.id, displayName, phone).catch(() => {});
       if (selfieBase64) {
         uploadSelfie(profile.id, selfieBase64).catch(() => {});
       }
@@ -157,11 +158,13 @@ function SignInView({
   error,
   setError,
 }: {
-  onComplete: (user: UserProfile, selfie: string | null, name: string) => void;
+  onComplete: (user: UserProfile, selfie: string | null, name: string, phone: string) => void;
   error: string;
   setError: (e: string) => void;
 }) {
   const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [phoneError, setPhoneError] = useState("");
   const [selfie, setSelfie] = useState<string | null>(null);
   const [oauthUser, setOauthUser] = useState<UserProfile | null>(null);
 
@@ -182,8 +185,16 @@ function SignInView({
       setError("Please enter your name.");
       return;
     }
-    onComplete(oauthUser, selfie, name.trim());
-  }, [oauthUser, selfie, name, onComplete, setError]);
+    if (!phone.trim()) {
+      setPhoneError("Phone number required");
+      setError("Please enter your phone number.");
+      return;
+    }
+    // Clear errors and proceed
+    setPhoneError("");
+    setError("");
+    onComplete(oauthUser, selfie, name.trim(), phone.trim());
+  }, [oauthUser, selfie, name, phone, onComplete, setError]);
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 gap-4">
@@ -201,6 +212,14 @@ function SignInView({
           onChange={(e) => setName(e.target.value)}
           placeholder="Enter your name"
           className="w-full px-3 py-2.5 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900"
+        />
+      </div>
+
+      <div className="w-full max-w-sm">
+        <PhoneInput
+          value={phone}
+          onChange={setPhone}
+          error={phoneError}
         />
       </div>
 

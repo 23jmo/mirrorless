@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Optional
 
+import phonenumbers
+from phonenumbers import NumberParseException
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -50,14 +52,32 @@ async def update_profile(body: ProfileUpdateRequest):
     """Update user name and optionally phone number."""
     db = NeonHTTPClient()
     try:
+        # Validate and normalize phone if provided
+        e164_phone = None
         if body.phone is not None:
+            if not body.phone.strip():
+                raise HTTPException(status_code=400, detail="Phone number cannot be empty")
+
+            try:
+                # Parse phone number with default region US
+                parsed = phonenumbers.parse(body.phone, "US")
+                if not phonenumbers.is_valid_number(parsed):
+                    raise HTTPException(status_code=400, detail="Invalid phone number")
+
+                # Normalize to E.164 format (+15551234567)
+                e164_phone = phonenumbers.format_number(
+                    parsed, phonenumbers.PhoneNumberFormat.E164
+                )
+            except NumberParseException:
+                raise HTTPException(status_code=400, detail="Invalid phone number format")
+
             rows = await db.execute(
                 """
                 UPDATE users SET name = $1, phone = $2
                 WHERE id = $3::uuid
                 RETURNING id, name, email, phone, poke_id
                 """,
-                [body.name, body.phone, body.user_id],
+                [body.name, e164_phone, body.user_id],
             )
         else:
             rows = await db.execute(
