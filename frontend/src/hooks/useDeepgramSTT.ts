@@ -7,12 +7,16 @@ const MAX_RECONNECTS = 3;
 
 export interface DeepgramSTTConfig {
   utterance_end_ms: number;
+  endpointing: number;
+  confidence_threshold: number;
   model: string;
   smart_format: boolean;
 }
 
 const DEFAULT_CONFIG: DeepgramSTTConfig = {
   utterance_end_ms: 1500,
+  endpointing: 10,
+  confidence_threshold: 0.0,
   model: "nova-2",
   smart_format: true,
 };
@@ -24,6 +28,7 @@ function buildDeepgramUrl(config: DeepgramSTTConfig): string {
     interim_results: "true",
     vad_events: "true",
     utterance_end_ms: String(config.utterance_end_ms),
+    endpointing: String(config.endpointing),
     encoding: "linear16",
     sample_rate: "16000",
   });
@@ -210,7 +215,7 @@ export function useDeepgramSTT(config?: DeepgramSTTConfig): UseDeepgramSTTReturn
     // Reconnect with existing mic stream (no re-prompt)
     connectWebSocket(streamRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConfig.utterance_end_ms, activeConfig.model, activeConfig.smart_format]);
+  }, [activeConfig.utterance_end_ms, activeConfig.endpointing, activeConfig.model, activeConfig.smart_format]);
 
   const startListening = useCallback(async () => {
     if (wsRef.current) return;

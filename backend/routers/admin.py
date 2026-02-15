@@ -14,6 +14,8 @@ VALID_MODELS = {"nova-2", "nova-2-general", "nova-2-phonecall", "nova-2-meeting"
 
 _stt_config: dict = {
     "utterance_end_ms": 1500,
+    "endpointing": 10,
+    "confidence_threshold": 0.0,
     "model": "nova-2",
     "smart_format": True,
 }
@@ -21,6 +23,8 @@ _stt_config: dict = {
 
 class STTConfigUpdate(BaseModel):
     utterance_end_ms: Optional[int] = Field(None, ge=500, le=3000)
+    endpointing: Optional[int] = Field(None, ge=10, le=500)
+    confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     model: Optional[str] = None
     smart_format: Optional[bool] = None
 
@@ -42,6 +46,10 @@ async def update_stt_config(body: STTConfigUpdate, request: Request):
 
     if body.utterance_end_ms is not None:
         _stt_config["utterance_end_ms"] = body.utterance_end_ms
+    if body.endpointing is not None:
+        _stt_config["endpointing"] = body.endpointing
+    if body.confidence_threshold is not None:
+        _stt_config["confidence_threshold"] = body.confidence_threshold
     if body.model is not None:
         _stt_config["model"] = body.model
     if body.smart_format is not None:
@@ -244,6 +252,14 @@ async def force_end_session(request: Request):
         return {"status": "force_ended", "user_id": user_id}
     finally:
         await db.close()
+
+
+@router.get("/scrape-jobs")
+async def get_scrape_jobs():
+    """Return recent scrape job statuses for admin monitoring."""
+    from scraper.routes import get_scrape_jobs as _get_jobs
+
+    return _get_jobs()
 
 
 @router.post("/clear-queue")

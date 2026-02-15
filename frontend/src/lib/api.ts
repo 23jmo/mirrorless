@@ -226,6 +226,7 @@ export function clearQueue() {
 
 export interface STTConfig {
   utterance_end_ms: number;
+  endpointing: number;
   model: string;
   smart_format: boolean;
 }
@@ -239,4 +240,21 @@ export function updateSTTConfig(config: Partial<STTConfig>) {
     method: "POST",
     body: JSON.stringify(config),
   });
+}
+
+// --- Scrape Job APIs ---
+
+export interface ScrapeJob {
+  user_id: string;
+  user_name: string;
+  status: "running" | "completed" | "failed";
+  phase: string;
+  purchases_found: number;
+  started_at: string;
+  completed_at: string | null;
+  error: string | null;
+}
+
+export function getScrapeJobs() {
+  return request<ScrapeJob[]>("/admin/scrape-jobs");
 }

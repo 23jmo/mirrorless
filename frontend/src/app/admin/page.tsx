@@ -7,6 +7,7 @@ import {
   getBoothStats,
   getSTTConfig,
   updateSTTConfig,
+  getScrapeJobs,
   skipQueueUser,
   forceEndSession,
   clearQueue,
@@ -16,6 +17,7 @@ import {
   type AdminSessionInfo,
   type BoothStats,
   type STTConfig,
+  type ScrapeJob,
 } from "@/lib/api";
 
 const POLL_INTERVAL = 10_000;
@@ -25,20 +27,23 @@ export default function AdminPage() {
   const [session, setSession] = useState<AdminSessionInfo | null>(null);
   const [stats, setStats] = useState<BoothStats | null>(null);
   const [sttConfig, setSttConfig] = useState<STTConfig | null>(null);
+  const [scrapeJobs, setScrapeJobs] = useState<ScrapeJob[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
-      const [q, s, st, stt] = await Promise.all([
+      const [q, s, st, stt, jobs] = await Promise.all([
         getAdminQueue(),
         getAdminSession(),
         getBoothStats(),
         getSTTConfig(),
+        getScrapeJobs(),
       ]);
       setQueue(q);
       setSession(s);
       setStats(st);
       setSttConfig(stt);
+      setScrapeJobs(jobs);
     } catch (err) {
       console.error("[Admin] Refresh failed:", err);
     } finally {
@@ -219,6 +224,9 @@ export default function AdminPage() {
         {sttConfig && (
           <STTSettings config={sttConfig} onChange={setSttConfig} />
         )}
+
+        {/* Scrape Jobs */}
+        <ScrapeJobsSection jobs={scrapeJobs} />
       </div>
     </main>
   );
@@ -248,6 +256,7 @@ function STTSettings({
   onChange: (config: STTConfig) => void;
 }) {
   const [localUtterance, setLocalUtterance] = useState(config.utterance_end_ms);
+  const [localEndpointing, setLocalEndpointing] = useState(config.endpointing);
   const [saving, setSaving] = useState(false);
 
   const save = useCallback(
@@ -295,6 +304,28 @@ function STTSettings({
           </div>
         </div>
 
+        {/* Endpointing (Sensitivity) */}
+        <div>
+          <label className="block text-sm font-medium text-zinc-700 mb-1">
+            Sensitivity (Endpointing): {localEndpointing}ms
+          </label>
+          <input
+            type="range"
+            min={10}
+            max={500}
+            step={10}
+            value={localEndpointing}
+            onChange={(e) => setLocalEndpointing(Number(e.target.value))}
+            onMouseUp={() => save({ endpointing: localEndpointing })}
+            onTouchEnd={() => save({ endpointing: localEndpointing })}
+            className="w-full accent-blue-500"
+          />
+          <div className="flex justify-between text-xs text-zinc-400 mt-1">
+            <span>10ms (fast/sensitive)</span>
+            <span>500ms (slow/patient)</span>
+          </div>
+        </div>
+
         {/* Model */}
         <div>
           <label className="block text-sm font-medium text-zinc-700 mb-1">
@@ -335,6 +366,58 @@ function STTSettings({
           </button>
         </div>
       </div>
+    </section>
+  );
+}
+
+function formatElapsed(startedAt: string, completedAt: string | null): string {
+  const start = new Date(startedAt).getTime();
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  const seconds = Math.round((end - start) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+const STATUS_STYLES: Record<string, string> = {
+  running: "bg-blue-100 text-blue-700",
+  completed: "bg-green-100 text-green-700",
+  failed: "bg-red-100 text-red-700",
+};
+
+function ScrapeJobsSection({ jobs }: { jobs: ScrapeJob[] }) {
+  const visible = jobs.slice(0, 10);
+
+  return (
+    <section className="bg-white rounded-xl border border-zinc-200 p-6 mb-6">
+      <h2 className="text-lg font-semibold mb-4">Scrape Jobs</h2>
+      {visible.length === 0 ? (
+        <p className="text-zinc-400">No scrape jobs recorded</p>
+      ) : (
+        <div className="divide-y divide-zinc-100">
+          {visible.map((job) => (
+            <div key={job.user_id + job.started_at} className="py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span
+                  className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_STYLES[job.status] || "bg-zinc-100 text-zinc-600"}`}
+                >
+                  {job.status}
+                </span>
+                <div>
+                  <p className="font-medium text-sm">{job.user_name}</p>
+                  <p className="text-xs text-zinc-500">
+                    {job.phase} &middot; {job.purchases_found} purchases &middot; {formatElapsed(job.started_at, job.completed_at)}
+                  </p>
+                </div>
+              </div>
+              {job.error && (
+                <p className="text-xs text-red-500 max-w-xs truncate" title={job.error}>
+                  {job.error}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
