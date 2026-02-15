@@ -3,7 +3,7 @@
   "checkpoint_id": "097d313542ff",
   "strategy": "manual-commit",
   "branch": "AGENT",
-  "checkpoints_count": 10,
+  "checkpoints_count": 13,
   "files_touched": [
     ".claude/commands/poke.md",
     "CLAUDE.md",
@@ -28,6 +28,7 @@
     "backend/mcp_server/tests/test_send_to_mirror.py",
     "backend/mcp_server/tests/test_sessions.py",
     "backend/routers/heygen.py",
+    "backend/routers/users.py",
     "backend/scrape_debug.py",
     "backend/scraper/brand_scanner.py",
     "backend/scraper/db.py",
@@ -51,15 +52,19 @@
     "backend/tests/test_scraper_routes.py",
     "backend/tests/test_socket_events.py",
     "backend/tests/test_users.py",
+    "docs/plans/2026-02-14-mirror-wiring-spec.md",
     "frontend/src/__tests__/product-carousel.test.tsx",
     "frontend/src/__tests__/sentence-buffer.test.ts",
     "frontend/src/__tests__/voice-indicator.test.tsx",
     "frontend/src/app/mirror/page.tsx",
+    "frontend/src/app/phone/page.tsx",
     "frontend/src/components/mirror/AvatarPiP.tsx",
     "frontend/src/components/mirror/ProductCarousel.tsx",
     "frontend/src/components/mirror/VoiceIndicator.tsx",
+    "frontend/src/components/phone/ScrapeResults.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/hooks/useHeyGenAvatar.ts",
+    "frontend/src/lib/api.ts",
     "frontend/src/lib/sentence-buffer.ts",
     "frontend/vitest.config.ts"
   ],
@@ -91,13 +96,20 @@
       "context": "/09/7d313542ff/3/context.md",
       "content_hash": "/09/7d313542ff/3/content_hash.txt",
       "prompt": "/09/7d313542ff/3/prompt.txt"
+    },
+    {
+      "metadata": "/09/7d313542ff/4/metadata.json",
+      "transcript": "/09/7d313542ff/4/full.jsonl",
+      "context": "/09/7d313542ff/4/context.md",
+      "content_hash": "/09/7d313542ff/4/content_hash.txt",
+      "prompt": "/09/7d313542ff/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 749,
-    "cache_creation_tokens": 524022,
-    "cache_read_tokens": 20452524,
-    "output_tokens": 30954,
-    "api_call_count": 256
+    "input_tokens": 9505,
+    "cache_creation_tokens": 639949,
+    "cache_read_tokens": 25854015,
+    "output_tokens": 49399,
+    "api_call_count": 325
   }
 }

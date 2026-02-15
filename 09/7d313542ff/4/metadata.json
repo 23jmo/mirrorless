@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "097d313542ff",
+  "session_id": "85c13608-14be-46f9-a31f-a5af8ca2baee",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T03:56:10.47414Z",
+  "branch": "AGENT",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "backend/routers/users.py",
+    "backend/scraper/pipeline.py",
+    "backend/scraper/routes.py",
+    "backend/scraper/socket_events.py",
+    "docs/plans/2026-02-14-mirror-wiring-spec.md",
+    "frontend/src/app/phone/page.tsx",
+    "frontend/src/components/phone/ScrapeResults.tsx",
+    "frontend/src/lib/api.ts"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 8756,
+    "cache_creation_tokens": 115927,
+    "cache_read_tokens": 5401491,
+    "output_tokens": 18445,
+    "api_call_count": 69
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T03:56:10.367208Z",
+    "agent_lines": 0,
+    "human_added": 219,
+    "human_modified": 948,
+    "human_removed": 0,
+    "total_committed": 1167,
+    "agent_percentage": 0
+  }
+}

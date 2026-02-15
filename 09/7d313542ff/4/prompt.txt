@@ -1,0 +1,154 @@
+Implement the following plan:
+
+# Clear User Data Button + Scrape Streaming & Logging Improvements
+
+## Context
+
+Testing the full onboarding flow (login → scrape → queue) requires a fresh user state each time. Currently there's no way to reset without manually deleting from the DB. Additionally, the scrape pipeline only emits 3 Socket.io events total — start, per-email, and complete — with no visibility into email fetching, calendar fetching, or profile building phases. We also need to commit `calendar_fetch.py` which is referenced by committed code but still untracked.
+
+## Part 1: Clear User Data (Phone Page)
+
+### Backend — New endpoint `DELETE /users/{user_id}`
+**File: `backend/routes/auth.py`** (or wherever auth routes live — check actual file)
+
+Add a `DELETE /users/{user_id}` endpoint that:
+- Runs `DELETE FROM users WHERE id = $1` (cascade deletes handle purchases, style_profiles, sessions, queue, calendar_events)
+- Also resets `last_scraped_at` (lives on users table)
+- Returns `{"status": "deleted"}`
+
+The DB schema already has `ON DELETE CASCADE` on all child tables (purchases, style_profiles, sessions, queue, session_outfits). Calendar events table (migration 008) should also have cascade — verify.
+
+### Frontend — API client
+**File: `frontend/src/lib/api.ts`**
+
+Add:
+```ts
+export function clearUserData(userId: string) {
+  return request<{ status: string }>(`/users/${userId}`, { method: "DELETE" });
+}
+```
+
+### Frontend — "Clear & Restart" button on phone page
+**File: `frontend/src/app/phone/page.tsx`**
+
+Add a small "Reset" link/button visible after sign-in (when `user` is set). On click:
+1. Call `clearUserData(user.id)`
+2. Reset state: `setUser(null)`, `setStep("signin")`, `setError("")`
+
+This lets the tester sign in, scrape, then hit "Reset" to wipe everything and start over.
+
+## Part 2: More Scrape Streaming Events + Logging
+
+### Backend — New socket events
+**File: `backend/scraper/socket_events.py`**
+
+Add these new emit functions:
+- `emit_scrape_phase(sio, user_id, phase, detail)` — generic phase update with detail string
+  - Phases: `"fetching_emails"`, `"fetching_calendar"`, `"extracting"`, `"building_profile"`, `"storing"`
+
+### Backend — Emit events throughout pipeline
+**File: `backend/scraper/routes.py`** (`_background_scrape`)
+
+Add emits at each major step:
+1. Before `fast_scrape`: emit phase `"fetching_emails"` with detail `"Searching Gmail for receipts + calendar events..."`
+2. After emails fetched / during extraction: the existing `purchase_found` events continue
+3. After extraction done: emit phase `"building_profile"` with detail `"Rebuilding style profile from {n} purchases..."`
+4. After calendar events stored: emit phase `"calendar_done"` with detail `"Found {n} calendar events"`
+5. Keep existing `scrape_complete` at the end
+
+**File: `backend/scraper/pipeline.py`** (`fast_scrape`)
+
+Add logging (`print` statements matching the existing `[scrape]` pattern):
+- `[scrape] Fetching receipts ({n} queries)...`
+- `[scrape] Found {n} unique receipt emails`
+- `[scrape] Fetching brand subjects...`
+- `[scrape] Fetching calendar events...`
+- `[scrape] Extracting purchases from {n} emails...`
+- `[scrape] Extraction complete: {n} purchases from {n} emails`
+- `[scrape] Calendar: {n} events fetched`
+
+Also add a progress callback to `fast_scrape` so the route can emit per-phase updates.
+
+### Frontend — Show more phases
+**File: `frontend/src/components/phone/ScrapeResults.tsx`**
+
+Update the phase stepper to show more granular phases:
+- Listen for the new `scrape_phase` event
+- Add phases: `"fetching_emails"`, `"fetching_calendar"`, `"extracting"`, `"building_profile"`
+- Update `PHASE_LABELS` to include these new phases
+- Show detail text from each phase event (e.g., "Found 45 receipt emails", "12 calendar events")
+
+## Part 3: Commit calendar_fetch.py
+
+**File: `backend/scraper/calendar_fetch.py`** (currently untracked)
+
+Simply `git add` and include in the commit. This file is already imported by:
+- `backend/scraper/pipeline.py` line 14
+- `backend/agent/memory.py` line 6
+
+Without it committed, those imports will crash at runtime.
+
+Also commit `backend/tests/test_calendar_fetch.py` if it exists.
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `backend/services/auth.py` (or routes file) | Add `DELETE /users/{user_id}` endpoint |
+| `backend/scraper/socket_events.py` | Add `emit_scrape_phase()` function |
+| `backend/scraper/routes.py` | Emit phase events throughout `_background_scrape` |
+| `backend/scraper/pipeline.py` | Add print logging at each step |
+| `frontend/src/lib/api.ts` | Add `clearUserData()` function |
+| `frontend/src/app/phone/page.tsx` | Add "Reset" button after sign-in |
+| `frontend/src/components/phone/ScrapeResults.tsx` | Listen for `scrape_phase`, show more phases |
+| `backend/scraper/calendar_fetch.py` | Commit (currently untracked) |
+
+## Verification
+
+1. Start backend, navigate to phone page
+2. Sign in with Google → scrape runs → watch for granular phase updates in UI
+3. Check backend logs for `[scrape]` lines at each step
+4. Hit "Reset" button → confirm user data cleared, return to sign-in
+5. Sign in again → scrape runs fresh (no incremental, since user was deleted)
+6. Verify calendar events appear in backend logs
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+How do I test this myself using the deployed app
+
+---
+
+what is dirty
+
+---
+
+yes
+
+---
+
+explain the state of the project rn
+
+---
+
+Base directory for this skill: /Users/johnathanmo/.claude/skills/interview
+
+Follow the user instructions and interview me in detail using the AskUserQuestionTool about literally anything: technical implementation, UI & UX, concerns, tradeoffs, etc. but make sure the questions are not obvious. be very in-depth and continue interviewing me continually until it's complete. then, write the spec to a file. <instructions>I want to wire everything together
+- connect the existing mira agent with the real mirror display, use heygen for avatar and voice streaming for now 
+- add deepgram speech to text to let users interact via voice 
+- change the show product tool call to display products as ui over the mirror display 
+- use the gesture stuff for real</instructions>
+
+---
+
+add unit tests -
+
+---
+
+cool - shall we make it?
+
+---
+
+[Request interrupted by user for tool use]
