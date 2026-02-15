@@ -26,3 +26,31 @@ push
 
 can you add a readme
 
+### Prompt 4
+
+yes
+
+### Prompt 5
+
+<bash-input>git status</bash-input>
+
+### Prompt 6
+
+<bash-stdout>On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   backend/mcp_server/server.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	backend/test_env/
+
+no changes added to commit (use "git add" and/or "git commit -a")</bash-stdout><bash-stderr></bash-stderr>
+
+### Prompt 7
+
+The QR code for Poke needs to point exactly to this link https://poke.com/r/fU6M2CeFtp6
+
