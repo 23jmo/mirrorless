@@ -3,10 +3,11 @@
   "checkpoint_id": "2a0bd76d66b5",
   "strategy": "manual-commit",
   "branch": "fix/admin-dashboard-sql-errors",
-  "checkpoints_count": 7,
+  "checkpoints_count": 8,
   "files_touched": [
     "backend/agent/orchestrator.py",
     "backend/main.py",
+    "backend/routers/admin.py",
     "backend/routers/queue.py",
     "backend/tests/test_history_integrity.py",
     "backend/tests/test_tts_dedup.py",
@@ -56,13 +57,20 @@
       "context": "/2a/0bd76d66b5/5/context.md",
       "content_hash": "/2a/0bd76d66b5/5/content_hash.txt",
       "prompt": "/2a/0bd76d66b5/5/prompt.txt"
+    },
+    {
+      "metadata": "/2a/0bd76d66b5/6/metadata.json",
+      "transcript": "/2a/0bd76d66b5/6/full.jsonl",
+      "context": "/2a/0bd76d66b5/6/context.md",
+      "content_hash": "/2a/0bd76d66b5/6/content_hash.txt",
+      "prompt": "/2a/0bd76d66b5/6/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 185,
-    "cache_creation_tokens": 374082,
-    "cache_read_tokens": 9359616,
-    "output_tokens": 22112,
-    "api_call_count": 141
+    "input_tokens": 209,
+    "cache_creation_tokens": 400270,
+    "cache_read_tokens": 10040388,
+    "output_tokens": 23158,
+    "api_call_count": 159
   }
 }

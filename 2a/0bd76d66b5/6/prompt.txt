@@ -1,0 +1,141 @@
+Implement the following plan:
+
+# Plan: Fix admin dashboard 500 errors — SQL column/table mismatches
+
+## Context
+
+The admin dashboard (`/admin/session` and `/admin/stats`) crashes with 500 errors because the SQL queries reference columns and tables that don't exist in the database schema. The queries were written speculatively during the initial admin dashboard implementation without matching the actual migration in `001_initial_schema.sql`.
+
+**Errors observed:**
+- `column "api_call_count" does not exist` — on `/admin/session`
+- `column "created_at" does not exist` — on `/admin/stats`
+
+## Root Cause
+
+The `sessions` table (defined in `backend/migrations/001_initial_schema.sql:36-42`) has:
+```
+id, user_id, started_at, ended_at, status
+```
+
+The admin queries incorrectly reference:
+1. `api_call_count` — never existed; api_calls are tracked in-memory by the orchestrator (`SessionState.api_calls`), not in the DB
+2. `created_at` — should be `started_at`
+3. `outfit_items` table — should be `session_outfits` (the actual table name per migration)
+
+## Fix
+
+**File: `backend/routers/admin.py`**
+
+### `/admin/session` endpoint (lines 60-67)
+
+| Line | Bug | Fix |
+|------|-----|-----|
+| 62 | `SELECT id, api_call_count` | `SELECT id` (remove `api_call_count`) |
+| 64 | `ORDER BY created_at DESC` | `ORDER BY started_at DESC` |
+| 73 | `api_calls = session_rows[0].get("api_call_count", 0)` | `api_calls = 0` (not available from DB) |
+| 80 | `FROM outfit_items` | `FROM session_outfits` |
+| 86 | `FROM outfit_items` | `FROM session_outfits` |
+
+### `/admin/stats` endpoint (lines 115-138)
+
+| Line | Bug | Fix |
+|------|-----|-----|
+| 119 | `ended_at - created_at` | `ended_at - started_at` |
+| 121 | `created_at::date = CURRENT_DATE` | `started_at::date = CURRENT_DATE` |
+| 127 | `FROM outfit_items oi` | `FROM session_outfits oi` |
+| 129 | `s.created_at::date` | `s.started_at::date` |
+| 133 | `FROM outfit_items oi` | `FROM session_outfits oi` |
+| 135 | `s.created_at::date` | `s.started_at::date` |
+
+### `api_calls` field
+
+The `api_calls` count is tracked in the orchestrator's in-memory `SessionState`, not persisted to the DB. The admin endpoint will return `0` for now. The frontend type (`AdminSessionInfo.api_calls`) stays — it just gets `0` until we add DB persistence (out of scope).
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| `backend/routers/admin.py` | Fix all `created_at` → `started_at`, `outfit_items` → `session_outfits`, remove `api_call_count` |
+
+## Verification
+
+1. `curl http://localhost:8000/admin/queue` — should return 200 (already works)
+2. `curl http://localhost:8000/admin/session` — should return 200 (currently 500)
+3. `curl http://localhost:8000/admin/stats` — should return 200 (currently 500)
+4. Open admin dashboard in browser — all three panels should load without errors
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+commit and push
+
+---
+
+## Context
+
+- Current git status: On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   CLAUDE.md
+	modified:   backend/agent/orchestrator.py
+	modified:   backend/models/database.py
+	modified:   backend/requirements.txt
+	modified:   backend/routers/admin.py
+	modified:   frontend/src/app/mirror/page.tsx
+	modified:   frontend/src/app/phone/page.tsx
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.claude/
+	.entire/
+	MERGE_RESOLUTION_SPEC.md
+	backend/tests/test_history_integrity.py
+	backend/tests/test_tts_dedup.py
+	frontend/src/components/mirror/SessionRecap.tsx
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): <persisted-output>
+Output too large (41.7KB). Full output saved to: /Users/johnathanmo/.REDACTED.txt
+
+Preview (first 2KB):
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 06ad826..d806cb1 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -8,7 +8,7 @@ Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth)
+ 
+ ## Architecture
+ 
+-- **Frontend (Next.js)**: Mirror display (full-screen Chrome on TV), phone UI (onboarding + dashboard), deployed on Vercel
++- **Frontend (Next.js)**: Mirror display (full-screen Chrome on TV), phone UI (onboarding + dashboard), admin dashboard, deployed on Vercel
+ - **Backend (Python FastAPI)**: Agent orchestrator, Gmail scraping, Serper.dev integration, MCP server, deployed on Render
+ - **Database**: Neon Postgres
+ - **Real-time**: Socket.io connecting mirror display, phone, and backend
+@@ -18,32 +18,57 @@ Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth)
+ - **AI Agent**: Custom event-driven orchestrator calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude.
+ - **Claude Model**: Haiku 4.5 via Anthropic API with OAuth setup token + beta headers
+ - **Voice**: Deepgram streaming STT (input) → ElevenLabs streaming TTS via backend proxy `/api/tts/stream` (output)
+-- **Avatar**: ElevenLabs UI Orb (Three.js WebGL sphere) with context-aware positioning and emotion-based color gradients. 4 states: idle, listening, thinking, speaking.
++- **Avatar**: MiraVideoAvatar — pre-recorded MP4 emotion loop videos (26 emotions with idle/talking variants). Fixed position top-right corner. Replaced the ElevenLabs Orb.
+ - **Body tracking**: MediaPipe BlazePose (pose) + MediaPipe Hands (gestures) in browser
+ - **Clothing overlay**: 2D affine transforms based on pose landmarks. Fallback: side-by-side display
+ - **Clothing data**: Serper.dev Google Shopping API (not SerpAPI)
+ - **Scraping strategy**: Fast parallel pass (~15s) for immediate agent context, background deep scrape async
+...
+</persisted-output>
+- Current branch: main
+
+## Your task
+
+Based on the above changes:
+
+1. Create a new branch if on main
+2. Create a single commit with an appropriate message
+3. Push the branch to origin
+4. Create a pull request using `gh pr create`
+5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
