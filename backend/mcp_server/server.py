@@ -276,18 +276,39 @@ def _create_mcp_server():
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# HTTP app for deployment (uvicorn mcp_server.server:app)
+# ---------------------------------------------------------------------------
+
+
+def _create_http_app():
+    """Create the ASGI app for HTTP deployment (Render, Railway, etc.)."""
+    import sys
+
+    # Remove backend/ from sys.path to prevent local mcp/ package shadowing
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path = [p for p in sys.path if os.path.abspath(p) != backend_dir]
+
+    log.info("Starting Mirrorless Poke MCP server (HTTP mode)...")
+    log.info("DATABASE_URL: %s", DATABASE_URL[:30] + "..." if DATABASE_URL else "(not set)")
+    server = _create_mcp_server()
+    log.info("MCP server created with tools: get_past_sessions, save_session")
+    return server.http_app()
+
+
+app = _create_http_app()
+
+
+# ---------------------------------------------------------------------------
+# Entry point (local dev: python -m mcp_server.server)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
 
-    # Remove cwd from sys.path to prevent the local backend/mcp/ directory
-    # from shadowing the PyPI `mcp` package that fastmcp depends on.
     cwd = os.getcwd()
     sys.path = [p for p in sys.path if os.path.abspath(p) != os.path.abspath(cwd)]
 
-    log.info("Starting Mirrorless Poke MCP server...")
+    log.info("Starting Mirrorless Poke MCP server (stdio mode)...")
     log.info("DATABASE_URL: %s", DATABASE_URL[:30] + "..." if DATABASE_URL else "(not set)")
     mcp = _create_mcp_server()
     log.info("MCP server created with tools: get_past_sessions, save_session")
