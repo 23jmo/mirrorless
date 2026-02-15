@@ -54,7 +54,7 @@ function MirrorV2Page() {
   const pendingQueueRef = useRef<ActiveUser | null | undefined>(undefined);
 
   // ── Camera (hidden, 1080p for better pose accuracy) ──
-  const { videoRef, isReady: isCameraReady } = useCamera({ width: 1920, height: 1080 });
+  const { videoRef, isReady: isCameraReady } = useCamera();
 
   // ── Gesture recognition ──
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
