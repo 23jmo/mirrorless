@@ -1,0 +1,223 @@
+Implement the following plan:
+
+# Migrate from HeyGen Streaming Avatar to LiveAvatar SDK
+
+## Context
+
+The project uses the deprecated `@heygen/streaming-avatar` SDK (old HeyGen API at `api.heygen.com`). HeyGen has moved to **LiveAvatar** — a separate product with a new SDK (`@heygen/liveavatar-web-sdk`), new API (`api.liveavatar.com`), and event-driven architecture via LiveKit. The old API key returns 401. This migration swaps the SDK, updates the backend token endpoint, and re-integrates the avatar into the stripped-down mirror page.
+
+## Files to Modify/Create
+
+| # | File | Action | Purpose |
+|---|------|--------|---------|
+| 1 | `frontend/package.json` | Modify | Add `@heygen/liveavatar-web-sdk`, remove `@heygen/streaming-avatar` if present |
+| 2 | `backend/routers/heygen.py` | Rewrite | Token endpoint → LiveAvatar API |
+| 3 | `backend/main.py` | Modify | Add heygen router import, fix deleted orchestrator refs |
+| 4 | `frontend/src/hooks/useLiveAvatar.ts` | **Create** | New hook using LiveAvatar SDK |
+| 5 | `frontend/src/hooks/useHeyGenAvatar.ts` | Delete | Old hook, replaced by #4 |
+| 6 | `frontend/src/app/mirror/page.tsx` | Rewrite | Full re-integration: avatar, session, voice, products, start button |
+| 7 | `backend/tests/test_heygen_routes.py` | Rewrite | Tests for new token endpoint |
+
+## Step 1: Install new SDK
+
+```bash
+cd frontend && npm install @heygen/liveavatar-web-sdk
+```
+
+(`@heygen/streaming-avatar` is already removed from package.json.)
+
+## Step 2: Rewrite backend token endpoint
+
+**File**: `backend/routers/heygen.py`
+
+Old: `GET /api/heygen/token` → `POST https://api.heygen.com/v1/streaming.create_token`
+New: `POST /api/heygen/token` → `POST https://api.liveavatar.com/v1/sessions/token`
+
+Key changes:
+- Method: GET → POST (accepts optional `{ is_sandbox: bool }`)
+- URL: `api.heygen.com` → `api.liveavatar.com`
+- Header: `x-api-key` → `X-API-KEY`
+- Request body: must include `mode`, `avatar_id`, `avatar_persona` (from env vars)
+- Response: `{ data: { token } }` → `{ session_token, session_id }`
+- New env vars: `LIVEAVATAR_AVATAR_ID`, `LIVEAVATAR_VOICE_ID`, `LIVEAVATAR_CONTEXT_ID`
+
+## Step 3: Fix `backend/main.py`
+
+Current state: imports deleted `agent.orchestrator.MiraOrchestrator` (crashes on startup). Needs:
+- Remove orchestrator import + references
+- Add `from routers import heygen` and `app.include_router(heygen.router)`
+- Keep existing `start_session` socket handler but emit `session_active` instead of calling orchestrator
+- Keep `mirror_event` handler (forward to Poke via socket rooms)
+- Keep `join_room` with `mirror_id` support
+
+## Step 4: Create `useLiveAvatar.ts` hook
+
+**File**: `frontend/src/hooks/useLiveAvatar.ts`
+
+Public interface (similar shape to old hook):
+```typescript
+export interface UseLiveAvatarReturn {
+  isReady: boolean;
+  isSpeaking: boolean;
+  startSession: () => Promise<void>;
+  stopSession: () => Promise<void>;
+  speak: (text: string) => void;    // queues text, calls session.repeat()
+  interrupt: () => void;
+  clearQueue: () => void;
+  avatarRef: React.RefObject<HTMLVideoElement | null>;
+}
+```
+
+### SDK mapping (old → new)
+
+| Old (`StreamingAvatar`) | New (`LiveAvatarSession`) |
+|---|---|
+| `new StreamingAvatar({ token })` | `new LiveAvatarSession(sessionToken)` |
+| `createStartAvatar({ quality, avatarName })` | `session.start()` |
+| `stopAvatar()` | `session.stop()` |
+| `speak({ text, taskType: REPEAT })` | `session.repeat(text)` — **sync, returns void** |
+| `interrupt()` | `session.interrupt()` — **sync** |
+| `videoRef.srcObject = event.detail` | `session.attach(videoElement)` |
+| `StreamingEvents.STREAM_READY` | `SessionEvent.SESSION_STREAM_READY` |
+| `StreamingEvents.AVATAR_START_TALKING` | `AgentEventsEnum.AVATAR_SPEAK_STARTED` |
+| `StreamingEvents.AVATAR_STOP_TALKING` | `AgentEventsEnum.AVATAR_SPEAK_ENDED` |
+| `StreamingEvents.STREAM_DISCONNECTED` | `SessionEvent.SESSION_DISCONNECTED` |
+
+### Speech queue
+Port the existing one-at-a-time queue pattern from `useHeyGenAvatar.ts`:
+- `speak(text)` pushes to queue, calls `processQueue()`
+- `processQueue()` shifts next item, calls `session.repeat(next)` (sync, no await)
+- On `AVATAR_SPEAK_ENDED`: reset processing flag, call `processQueue()` for next sentence
+- `clearQueue()` empties queue + resets flag
+
+### Key detail: `attach()` timing
+Call `session.attach(avatarRef.current!)` inside the `SESSION_STREAM_READY` event callback. The `<video>` element must already be in the DOM at that point — guaranteed because `AvatarPiP` renders with `avatarRef` before `startSession()` is called.
+
+### No voiceChat
+Don't enable LiveAvatar's built-in `voiceChat` — it routes audio to HeyGen's LLM. We need transcripts going to our Claude-based orchestrator via Deepgram + Socket.io.
+
+## Step 5: Delete `useHeyGenAvatar.ts`
+
+Remove `frontend/src/hooks/useHeyGenAvatar.ts` entirely.
+
+## Step 6: Re-integrate mirror page
+
+**File**: `frontend/src/app/mirror/page.tsx`
+
+Re-add everything that was stripped out, using the new `useLiveAvatar` hook:
+
+### Imports to add
+```typescript
+import { Suspense } from "react";     // for useSearchParams SSR fix
+import { useLiveAvatar } from "@/hooks/useLiveAvatar";
+import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
+import AvatarPiP from "@/components/mirror/AvatarPiP";
+import VoiceIndicator from "@/components/mirror/VoiceIndicator";
+import ProductCarousel, { ProductCard } from "@/components/mirror/ProductCarousel";
+import { SentenceBuffer } from "@/lib/sentence-buffer";
+```
+
+### State & hooks
+```typescript
+const [sessionActive, setSessionActive] = useState(false);
+const [isStarting, setIsStarting] = useState(false);
+const [products, setProducts] = useState<ProductCard[]>([]);
+const avatar = useLiveAvatar();
+const stt = useDeepgramSTT();
+```
+
+### Session flow
+1. **Start button click** → `setIsStarting(true)`, emit `start_session` socket event
+2. **`session_active` event** → `setSessionActive(true)`, `setIsStarting(false)`, call `avatar.startSession()`, call `stt.startListening()`
+3. **`mira_speech` events** → feed chunks to SentenceBuffer → `avatar.speak(sentence)`
+4. **`mira_speech` with `is_chunk: false`** → `sentenceBuffer.flush()`
+5. **Deepgram transcripts** → queue while `avatar.isSpeaking`, send via `mirror_event` when avatar quiet
+6. **`tool_result` events** → update `products` state for carousel
+7. **`session_ended` event** → cleanup: `avatar.stopSession()`, `stt.stopListening()`, reset state
+
+### Fallback session detection
+Listen for first `mira_speech` as backup session-start signal (in case `session_active` isn't emitted).
+
+### JSX structure
+```
+<Suspense fallback={null}>
+  <MirrorPage />      ← uses useSearchParams
+</Suspense>
+
+Inside MirrorPage:
+  - <video> webcam feed (mirrored, full screen)
+  - Start Session button (pre-session, centered overlay)
+  - <AvatarPiP> (top-right, session only)
+  - <GestureIndicator>
+  - <ProductCarousel> (bottom, when products exist)
+  - <VoiceIndicator> (bottom-left, session only)
+  - Error indicators
+```
+
+## Step 7: Update backend tests
+
+**File**: `backend/tests/test_heygen_routes.py`
+
+Update for new endpoint:
+- Method: GET → POST
+- Mock URL: `api.liveavatar.com` instead of `api.heygen.com`
+- Mock response: `{ "session_token": "...", "session_id": "..." }`
+- Add env var patches for `LIVEAVATAR_AVATAR_ID`
+- Add test for missing avatar ID → 500
+- Add test for sandbox mode
+
+## Environment Variables Needed
+
+Add to `backend/.env`:
+```
+LIVEAVATAR_AVATAR_ID=<from LiveAvatar dashboard>
+LIVEAVATAR_VOICE_ID=<voice id>
+LIVEAVATAR_CONTEXT_ID=<context id>
+```
+
+`HEYGEN_API_KEY` stays but value must be a **LiveAvatar** API key (migrated from HeyGen dashboard).
+
+Sandbox mode (free dev testing, 1-min sessions): pass `is_sandbox: true` to token endpoint. Uses avatar `dd73ea75-1218-4ef3-92ce-606d5f7fbc0a` (Wayne).
+
+## Verification
+
+1. `cd frontend && npm run build` — type-checks + builds
+2. `cd frontend && npm run test` — existing tests pass
+3. `cd backend && pytest tests/ -v` — all tests pass
+4. Open `http://localhost:3000/mirror?user_id=<uuid>` — Start Session button visible
+5. Click button → "Starting..." → avatar PiP appears → Mira speaks
+6. Gesture/voice interactions work through session
+7. Session end → cleanup, button reappears
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+where do i get my liveavatar id
+
+---
+
+yeah lets just do sandbox mode for now
+
+---
+
+okay how do i test this
+
+---
+
+how do i clear next cache
+
+---
+
+[socket] WKlMUHDgBuhkwc6sAAAF joined room a3e88c32-c832-4a44-99b8-0e3b278b6acf
+[session] Starting session for user a3e88c32-c832-4a44-99b8-0e3b278b6acf
+INFO:     127.0.0.1:56899 - "POST /api/heygen/token HTTP/1.1" 502 Bad Gateway
+
+am i doing smtg wrong - can you try writing a test and running it yourself that tests everything
+
+---
+
+Okay, I see the avatar now. This is really good. Can you commit this? 
+
+Another problem right now is that when I speak to it, it doesn't do anything

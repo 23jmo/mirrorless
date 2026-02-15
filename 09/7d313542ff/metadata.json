@@ -3,7 +3,7 @@
   "checkpoint_id": "097d313542ff",
   "strategy": "manual-commit",
   "branch": "AGENT",
-  "checkpoints_count": 23,
+  "checkpoints_count": 26,
   "files_touched": [
     ".claude/commands/poke.md",
     "CLAUDE.md",
@@ -78,6 +78,7 @@
     "frontend/src/components/phone/ScrapeResults.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/hooks/useHeyGenAvatar.ts",
+    "frontend/src/hooks/useLiveAvatar.ts",
     "frontend/src/lib/api.ts",
     "frontend/src/lib/sentence-buffer.ts",
     "frontend/vitest.config.ts"
@@ -124,13 +125,20 @@
       "context": "/09/7d313542ff/5/context.md",
       "content_hash": "/09/7d313542ff/5/content_hash.txt",
       "prompt": "/09/7d313542ff/5/prompt.txt"
+    },
+    {
+      "metadata": "/09/7d313542ff/6/metadata.json",
+      "transcript": "/09/7d313542ff/6/full.jsonl",
+      "context": "/09/7d313542ff/6/context.md",
+      "content_hash": "/09/7d313542ff/6/content_hash.txt",
+      "prompt": "/09/7d313542ff/6/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 9912,
-    "cache_creation_tokens": 860051,
-    "cache_read_tokens": 41927630,
-    "output_tokens": 68983,
-    "api_call_count": 489
+    "input_tokens": 9986,
+    "cache_creation_tokens": 940752,
+    "cache_read_tokens": 45810289,
+    "output_tokens": 82679,
+    "api_call_count": 549
   }
 }
