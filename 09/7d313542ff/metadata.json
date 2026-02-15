@@ -3,10 +3,16 @@
   "checkpoint_id": "097d313542ff",
   "strategy": "manual-commit",
   "branch": "AGENT",
-  "checkpoints_count": 1,
+  "checkpoints_count": 9,
   "files_touched": [
+    ".claude/commands/poke.md",
+    "backend/agent/memory.py",
     "backend/agent/orchestrator.py",
     "backend/agent/prompts.py",
+    "backend/agent/test_harness.py",
+    "backend/agent/tools.py",
+    "backend/main.py",
+    "backend/mcp/__init__.py",
     "backend/mcp_server/__init__.py",
     "backend/mcp_server/render.yaml",
     "backend/mcp_server/requirements.txt",
@@ -17,6 +23,27 @@
     "backend/mcp_server/tests/test_search_clothing.py",
     "backend/mcp_server/tests/test_send_to_mirror.py",
     "backend/mcp_server/tests/test_sessions.py",
+    "backend/scrape_debug.py",
+    "backend/scraper/brand_scanner.py",
+    "backend/scraper/db.py",
+    "backend/scraper/gmail_auth.py",
+    "backend/scraper/gmail_fetch.py",
+    "backend/scraper/pipeline.py",
+    "backend/scraper/profile_builder.py",
+    "backend/scraper/purchase_parser.py",
+    "backend/scraper/routes.py",
+    "backend/scraper/socket_events.py",
+    "backend/tests/test_brand_scanner.py",
+    "backend/tests/test_gmail_auth.py",
+    "backend/tests/test_gmail_fetch.py",
+    "backend/tests/test_mira.py",
+    "backend/tests/test_mira_live.py",
+    "backend/tests/test_pipeline.py",
+    "backend/tests/test_profile_builder.py",
+    "backend/tests/test_purchase_parser.py",
+    "backend/tests/test_scraper_db.py",
+    "backend/tests/test_scraper_routes.py",
+    "backend/tests/test_socket_events.py",
     "frontend/src/app/mirror/page.tsx",
     "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/hooks/useHeyGenAvatar.ts"
@@ -28,13 +55,20 @@
       "context": "/09/7d313542ff/0/context.md",
       "content_hash": "/09/7d313542ff/0/content_hash.txt",
       "prompt": "/09/7d313542ff/0/prompt.txt"
+    },
+    {
+      "metadata": "/09/7d313542ff/1/metadata.json",
+      "transcript": "/09/7d313542ff/1/full.jsonl",
+      "context": "/09/7d313542ff/1/context.md",
+      "content_hash": "/09/7d313542ff/1/content_hash.txt",
+      "prompt": "/09/7d313542ff/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 23,
-    "cache_creation_tokens": 60536,
-    "cache_read_tokens": 963353,
-    "output_tokens": 2154,
-    "api_call_count": 17
+    "input_tokens": 539,
+    "cache_creation_tokens": 194254,
+    "cache_read_tokens": 7111521,
+    "output_tokens": 11598,
+    "api_call_count": 102
   }
 }
