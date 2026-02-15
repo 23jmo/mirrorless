@@ -17,8 +17,8 @@ Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth)
 
 - **AI Agent**: Custom event-driven orchestrator calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude.
 - **Claude Model**: Haiku 4.5 via Anthropic API with OAuth setup token + beta headers
-- **Voice**: Deepgram streaming STT (input) → ElevenLabs TTS via backend proxy `/api/tts/speak` (output)
-- **Avatar**: Memoji video loops (idle/thinking/talking/happy/excited/concerned) + 13 scripted response videos with baked-in audio. Scripted matching restricted to first 80 chars of response with keyword threshold 8. After scripted video plays, remaining text drains via TTS.
+- **Voice**: Deepgram streaming STT (input) → ElevenLabs streaming TTS via backend proxy `/api/tts/stream` (output)
+- **Avatar**: ElevenLabs UI Orb (Three.js WebGL sphere) with context-aware positioning and emotion-based color gradients. 4 states: idle, listening, thinking, speaking.
 - **Body tracking**: MediaPipe BlazePose (pose) + MediaPipe Hands (gestures) in browser
 - **Clothing overlay**: 2D affine transforms based on pose landmarks. Fallback: side-by-side display
 - **Clothing data**: Serper.dev Google Shopping API (not SerpAPI)
@@ -27,25 +27,23 @@ Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth)
 
 ## Voice & TTS Pipeline
 
-Mira's voice flows through a multi-stage pipeline from Claude's streaming output to audio playback:
+Mira's voice flows through a streaming pipeline from Claude's output to audio playback with Orb visualization:
 
 1. **Claude streaming** (`backend/agent/orchestrator.py`): `_call_claude()` streams via Anthropic async API. Each `content_block_delta` is emitted as a `mira_speech` Socket.io event with `{text, is_chunk: true}`. An empty event with `is_chunk: false` signals end-of-message.
 
 2. **Frontend accumulation** (`frontend/src/app/mirror/page.tsx`): Chunks accumulate in `responseAccumulatorRef` until end-of-message, then the full text is processed.
 
-3. **Scripted response check** (`frontend/src/lib/scripted-responses.ts`): 13 pre-recorded Memoji videos with baked-in audio (e.g., "okay i love that", "ew that's gross"). Two-pass matching: exact phrase `includes()`, then keyword scoring (threshold ≥ 4). If matched, plays the video directly — bypasses TTS entirely.
+3. **Emotion parsing** (`frontend/src/lib/emotion-parser.ts`): Claude prefixes each response with `[emotion:X]` (neutral/proud/teasing). Parsed on frontend, tag stripped before TTS. Controls Orb color gradient.
 
-4. **Sentence buffering** (`frontend/src/lib/sentence-buffer.ts`): For non-scripted responses, splits text on `.!?` + space boundaries. Negative lookbehind regex `(?<!\d)(?<!\.)` avoids false splits on decimals (`$29.99`) and ellipsis (`...`).
+4. **Streaming TTS** (`frontend/src/lib/streaming-tts.ts`): POSTs full text to backend `/api/tts/stream`. Uses `MediaSource` + `SourceBuffer` for low-latency chunked playback. `AudioContext` + `AnalyserNode` extracts real-time volume (0-1) for Orb visualization.
 
-5. **Speech queue** (`frontend/src/hooks/useMemojiAvatar.ts`): FIFO queue processes one sentence at a time. Avatar transitions: `idle` → `talking` → `idle`. Recursive `processQueue()` after each sentence completes.
+5. **Backend TTS proxy** (`backend/routers/tts.py`): Streams audio from ElevenLabs `/stream` endpoint with `eleven_multilingual_v2` model, voice ID `EXAVITQu4vr4xnSDxMaL` (Sarah). Returns chunked `audio/mpeg`.
 
-6. **TTS client** (`frontend/src/lib/elevenlabs-tts.ts`): POSTs sentence to backend proxy `/api/tts/speak`. Receives audio/mpeg blob, plays via HTMLAudioElement. Falls back to browser `SpeechSynthesis` if proxy fails.
+6. **Orb avatar** (`frontend/src/hooks/useOrbAvatar.ts`): State machine (idle → listening → thinking → speaking → idle). Drives the ElevenLabs UI Orb component via `outputVolumeRef` and `colorsRef` (no React re-renders for 60fps updates).
 
-7. **Backend TTS proxy** (`backend/routers/tts.py`): Calls ElevenLabs API with `eleven_multilingual_v2` model, voice ID `EXAVITQu4vr4xnSDxMaL` (Sarah). Keeps API key server-side. Returns `StreamingResponse` audio/mpeg.
+**STT input** (`frontend/src/hooks/useDeepgramSTT.ts`): WebSocket connection to Deepgram, `nova-2` model, mic audio converted to Int16 PCM, `utterance_end_ms=1500`. Transcripts are queued while orb is speaking, sent when idle.
 
-**STT input** (`frontend/src/hooks/useDeepgramSTT.ts`): WebSocket connection to Deepgram, `nova-2` model, mic audio converted to Int16 PCM, `utterance_end_ms=1500`. Transcripts are queued while avatar is speaking, sent when idle.
-
-**Avatar states** (`frontend/src/lib/memoji-avatar.ts`): 6 muted looping videos (`idle`, `thinking`, `talking`, `happy`, `excited`, `concerned`) + 13 unmuted scripted one-shot videos. Happy/excited auto-revert to idle after 5s.
+**Orb states**: `idle` (pale white, corner), `listening` (mic active), `thinking` (pulsing, centered), `speaking` (volume-reactive deformation, emotion-colored). 4 emotion palettes: idle (#F0F0F5), neutral (#F5E6A0), proud (#4A6FA5), teasing (#FFF3B0).
 
 ## Build & Run Commands
 
@@ -83,26 +81,24 @@ frontend/           # Next.js app (mirror display + phone UI)
       mirror/       # Full-screen mirror display page
       phone/        # Phone onboarding + dashboard
     lib/            # Shared utilities
-      elevenlabs-tts.ts    # TTS client (backend proxy + browser fallback)
-      sentence-buffer.ts   # Streaming text → sentence splitter
-      scripted-responses.ts # Phrase matching for pre-recorded videos
-      memoji-avatar.ts     # Avatar video state machine
+      streaming-tts.ts     # Streaming TTS with MediaSource + volume extraction
+      emotion-parser.ts    # Parse [emotion:X] tags from Claude responses
       socket.ts            # Socket.io client
     hooks/
-      useMemojiAvatar.ts   # Avatar + TTS queue orchestration
+      useOrbAvatar.ts      # Orb state machine + streaming TTS integration
       useDeepgramSTT.ts    # Deepgram STT WebSocket hook
       useCamera.ts         # Camera access hook
       useGestureRecognizer.ts # MediaPipe hand gesture hook
+    components/
+      ui/
+        orb.tsx            # ElevenLabs Orb (Three.js WebGL, via shadcn registry)
     components/mirror/
-      AvatarPiP.tsx        # Avatar picture-in-picture
       ProductCarousel.tsx  # Product recommendation display
       VoiceIndicator.tsx   # Interim transcript indicator
       ClothingCanvas.tsx   # Clothing overlay rendering
       PriceStrip.tsx       # Minimal price strip on mirror page
     __tests__/             # Vitest test suites
-  public/avatar/           # Memoji video assets
-    loops/                 # 6 looping state videos (muted)
-    scripted/              # 13 pre-recorded response videos (with audio)
+  public/                  # Static assets
 backend/            # Python FastAPI
   main.py           # FastAPI app entry + Socket.io server
   agent/            # Mira orchestrator, Claude API integration
@@ -168,18 +164,17 @@ Or use the Neon SQL Editor in the dashboard.
 - Next.js frontend with mirror/phone page structure
 - MediaPipe integration for body/hand tracking
 - Mira agent orchestrator (event-driven Claude API calls via `agent/orchestrator.py`)
-- Memoji avatar with ElevenLabs TTS, scripted response videos, and per-sentence speech queue
-- ElevenLabs TTS backend proxy (`backend/routers/tts.py`) with proper blob lifecycle management
+- ElevenLabs UI Orb avatar with streaming TTS and emotion-based color gradients
+- ElevenLabs streaming TTS backend proxy (`backend/routers/tts.py`) with chunked audio
 - Deepgram streaming STT (`useDeepgramSTT` hook)
-- SentenceBuffer for per-sentence TTS delivery
-- Scripted response matching with TTS continuation for remaining text
-- Mirror UI components: AvatarPiP, ProductCarousel, VoiceIndicator
+- Emotion tag parsing (`[emotion:X]` prefix from Claude responses)
+- Mirror UI components: Orb, ProductCarousel, VoiceIndicator
 - MCP server for Poke integration (`backend/mcp_server/`)
 
 **In Progress / Planned**:
 - Gmail OAuth and scraping pipeline
 - Clothing overlay rendering
-- Orb-based avatar replacement (replacing Memoji video loops with animated orb)
+- Microphone volume input to Orb (manualInput from Deepgram audio)
 
 ## Conventions
 
