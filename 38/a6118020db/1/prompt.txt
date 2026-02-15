@@ -1,0 +1,128 @@
+Implement the following plan:
+
+# Plan: Fix Broken Queue System
+
+## Context
+
+The queue system has critical bugs causing: (1) admin "Force End" doesn't actually clean up the queue — it only emits socket events and relies on the mirror relaying them back, so if the mirror is disconnected or refreshed, the active user gets stuck forever; (2) positions increment forever because `MAX(position)` scans all historical entries including completed ones; (3) users wait with "0 people ahead" indefinitely because the stuck active user blocks promotion. There's also no admin escape hatch to reset a broken queue.
+
+## Changes (in order)
+
+### 1. Deduplicate `_auto_advance_queue` in main.py
+
+**File:** `backend/main.py` (lines 470-523)
+
+The 53-line `_auto_advance_queue()` duplicates logic from `queue.py`. Replace with a ~12-line version that imports and calls the shared functions:
+
+```python
+async def _auto_advance_queue(user_id: str):
+    from routers.queue import _try_advance_next, get_queue_snapshot
+    from models.database import NeonHTTPClient
+    db = NeonHTTPClient()
+    try:
+        await db.execute(
+            "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
+            [user_id],
+        )
+        await _try_advance_next(db)
+        snapshot = await get_queue_snapshot(db)
+        await sio.emit("queue_updated", snapshot, room="mirror")
+    finally:
+        await db.close()
+```
+
+Also **remove the dead `session_force_end` socket handler** (lines 456-467) — it's never triggered because the mirror relays force-end as `end_session`, not `session_force_end`.
+
+### 2. Fix force-end to clean up queue server-side (CRITICAL)
+
+**File:** `backend/routers/admin.py` — rewrite `force_end_session()`
+
+Instead of just emitting socket events, do the actual cleanup:
+
+1. Find active queue user (existing code)
+2. Call `mira.end_session(user_id)` via `request.app.state.mira` (wrap in try/except — proceed even if it fails)
+3. Mark queue entry as `completed` in DB
+4. Call `_try_advance_next(db)` (import from `queue.py`)
+5. Emit `session_force_end` to mirror + user rooms (UI cleanup)
+6. Emit `session_ended` with recap data to user room (phone transition)
+7. Emit `queue_updated` snapshot to mirror room (next-user display)
+
+Import `_try_advance_next` and `get_queue_snapshot` from `routers.queue`.
+
+### 3. Fix position calculation
+
+**File:** `backend/routers/queue.py` line 103
+
+```python
+# Before:
+"SELECT COALESCE(MAX(position), 0) FROM queue"
+
+# After:
+"SELECT COALESCE(MAX(position), 0) FROM queue WHERE status IN ('waiting', 'active')"
+```
+
+This restarts positions from 1 when the queue empties, instead of growing forever.
+
+### 4. Add admin "Clear Queue" endpoint + UI
+
+**Backend:** `backend/routers/admin.py` — add `POST /admin/clear-queue`
+- End any active Mira sessions (try/except each)
+- `UPDATE queue SET status = 'completed' WHERE status IN ('waiting', 'active')`
+- Emit empty `queue_updated` snapshot to mirror room
+- Return `{"status": "cleared"}`
+
+**Frontend API:** `frontend/src/lib/api.ts` — add `clearQueue()` function
+
+**Frontend UI:** `frontend/src/app/admin/page.tsx` — add "Clear Queue" button (confirmation before action)
+
+### 5. Fix mirror recap dismiss to re-fetch queue state
+
+**File:** `frontend/src/app/mirror-v2/page.tsx`
+
+Replace the fragile `pendingQueueRef` pattern in `handleRecapDismiss` with a fresh queue snapshot request:
+
+```typescript
+const handleRecapDismiss = useCallback(() => {
+    mira.stopSession();
+    setRecapData(null);
+    setActiveUser(null);
+    setKioskState("attract");
+    socket.emit("join_mirror_room"); // triggers queue_updated with fresh state
+}, []);
+```
+
+Remove `pendingQueueRef` and its usage in the `queue_updated` handler (the recap state branch). The `queue_updated` handler will automatically transition to `waiting` if there's an active user.
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `backend/main.py` | Replace `_auto_advance_queue` with shared imports; remove dead `session_force_end` handler |
+| `backend/routers/admin.py` | Rewrite `force_end_session()` with DB cleanup; add `clear_queue()` endpoint |
+| `backend/routers/queue.py` | Scope `MAX(position)` to active entries only |
+| `frontend/src/lib/api.ts` | Add `clearQueue()` API function |
+| `frontend/src/app/admin/page.tsx` | Add "Clear Queue" button |
+| `frontend/src/app/mirror-v2/page.tsx` | Replace `pendingQueueRef` with `join_mirror_room` re-emit on recap dismiss |
+
+## What We're NOT Doing (and why)
+
+- **Socket disconnect cleanup**: Mirror disconnect maps to `"mirror"` string (not a user UUID), so it can't identify which user to clean up. Phone disconnect shouldn't end the mirror session. The robust force-end (Fix 2) + clear queue (Fix 4) are the proper escape hatches.
+- **Async locking / transactions**: The subquery `UPDATE WHERE id = (SELECT ... LIMIT 1)` is already atomic in Postgres. The NeonHTTPClient uses HTTP API so full multi-statement transactions aren't straightforward. The current approach is sufficient for a single-mirror kiosk.
+- **Partial unique index migration**: The ON CONFLICT fallback already handles duplicates. Low priority.
+
+## Verification
+
+1. Start backend + frontend dev servers
+2. Join queue from phone → verify position starts at 1 (not some high number)
+3. Start session from mirror → verify active on admin dashboard
+4. Click "Force End" on admin → verify session ends, queue advances to next user (or returns to attract if empty)
+5. Join 2 users → force-end first → second user should become active automatically
+6. Click "Clear Queue" → verify all entries cleared, mirror goes to attract
+7. Let session end normally (recap) → dismiss recap → verify mirror correctly picks up next user or returns to attract
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+did u run tests
