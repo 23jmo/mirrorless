@@ -67,6 +67,9 @@ class SessionState:
     system_prompt: str = ""
     _last_shown_item: dict | None = None
     _event_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _snapshot_future: asyncio.Future | None = None
+    _photo_taken: bool = False
+    _interrupted: bool = False
 
 
 class MiraOrchestrator:
@@ -81,6 +84,17 @@ class MiraOrchestrator:
         self.sio = socket_io
         self.sessions: dict[str, SessionState] = {}
         self._silence_tasks: dict[str, asyncio.Task] = {}
+
+    async def interrupt(self, user_id: str) -> None:
+        """Request interruption of the current Claude stream for a user.
+
+        Sets a flag that the stream loop checks each iteration. No lock needed —
+        this runs outside _event_lock so it can fire while _call_claude holds it.
+        """
+        session = self.sessions.get(user_id)
+        if session:
+            session._interrupted = True
+            print(f"[mira] Interrupt requested for {user_id}")
 
     async def start_session(self, user_id: str) -> SessionState:
         """Initialize a new Mira session for a user."""
@@ -179,18 +193,6 @@ class MiraOrchestrator:
             "message": "A new user just stepped up to the mirror. Introduce yourself and start the session.",
         })
 
-        # Request a snapshot after a delay so it doesn't overlap with the greeting TTS.
-        # At session start, rapid-fire messages (greeting → snapshot → silence nudge)
-        # each increment the TTS generation counter, aborting the previous audio.
-        # A 10s delay lets the greeting play fully before the snapshot triggers.
-        async def _delayed_snapshot():
-            await asyncio.sleep(10)
-            if user_id in self.sessions and self.sessions[user_id].is_active:
-                await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
-
-        if self.sio:
-            asyncio.create_task(_delayed_snapshot())
-
         return session
 
     async def handle_event(self, user_id: str, event: dict) -> None:
@@ -202,6 +204,20 @@ class MiraOrchestrator:
         session = self.sessions.get(user_id)
         if not session or not session.is_active:
             print(f"[mira] handle_event: no active session for {user_id}, ignoring event {event.get('type', '?')}")
+            return
+
+        # If a take_photo Future is pending and this is a snapshot, resolve it
+        # immediately and return — do NOT acquire the event lock (the lock is
+        # already held by _handle_take_photo's caller chain, so acquiring it
+        # here would deadlock).
+        if (
+            event.get("type") == "snapshot"
+            and session._snapshot_future is not None
+            and not session._snapshot_future.done()
+        ):
+            image_data = event.get("image_base64", "")
+            session._snapshot_future.set_result(image_data)
+            print(f"[mira] take_photo: resolved snapshot Future for {user_id}")
             return
 
         # Block all new events once graceful shutdown has started
@@ -336,6 +352,21 @@ class MiraOrchestrator:
                         print(f"[mira] History validation: tool_use at index {i} followed by user message without tool_result — truncating")
                         break
 
+            # Check for empty text content blocks in assistant messages
+            if role == "assistant":
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    content = []
+                has_empty_text = any(
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and not block.get("text", "").strip()
+                    for block in content
+                )
+                if has_empty_text:
+                    print(f"[mira] History validation: empty text block at index {i} — truncating")
+                    break
+
             valid_up_to = i + 1
             i += 1
 
@@ -372,6 +403,7 @@ class MiraOrchestrator:
         tool_uses = []
         print(f"[mira] Calling Claude for {session.user_id} (turn #{session.api_calls})...")
 
+        interrupted = False
         try:
             async with self.client.messages.stream(
                 model=model,
@@ -381,6 +413,10 @@ class MiraOrchestrator:
                 tools=TOOL_DEFINITIONS,
             ) as stream:
                 async for event in stream:
+                    if session._interrupted:
+                        interrupted = True
+                        break
+
                     if event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
                             collected_text += event.delta.text
@@ -390,8 +426,32 @@ class MiraOrchestrator:
                     elif event.type == "content_block_stop":
                         pass
 
-                # Get the final message for tool use blocks
-                final_message = await stream.get_final_message()
+                if not interrupted:
+                    # Get the final message for tool use blocks
+                    final_message = await stream.get_final_message()
+
+            if interrupted:
+                stub = collected_text.strip()
+                if stub:
+                    # Partial response streamed — keep it as assistant message
+                    session.conversation_history.append({
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": stub}],
+                    })
+                else:
+                    # No text streamed yet — remove the user message that
+                    # triggered this call so history stays alternating.
+                    # The user's actual transcript was already forwarded
+                    # via the interrupt event.
+                    if (
+                        session.conversation_history
+                        and session.conversation_history[-1]["role"] == "user"
+                    ):
+                        session.conversation_history.pop()
+                await self._stream_text(session.user_id, "", end_of_message=True)
+                session._interrupted = False
+                print(f"[mira] Interrupted stream for {session.user_id}, stub len={len(stub)}")
+                return
 
             # Signal end-of-message so frontend flushes the sentence buffer
             if collected_text:
@@ -448,6 +508,18 @@ class MiraOrchestrator:
                 input_str = input_str[:200] + "..."
             print(f"[mira] Tool call: {tool_use.name}({input_str})")
 
+            # take_photo is handled in the orchestrator (needs Socket.io + session state)
+            if tool_use.name == "take_photo":
+                result = await self._handle_take_photo(session)
+                # Return image content blocks directly for Claude's tool_result
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use.id,
+                    "content": result,
+                }
+                tool_results.append(tool_result_block)
+                continue
+
             try:
                 result = await execute_tool(
                     tool_name=tool_use.name,
@@ -494,6 +566,53 @@ class MiraOrchestrator:
 
         # Continue the conversation — Claude needs to process tool results
         await self._call_claude(session, tool_depth=tool_depth + 1)
+
+    async def _handle_take_photo(self, session: SessionState) -> list:
+        """Handle the take_photo tool: request a snapshot from the mirror and return it.
+
+        Returns a list of content blocks for the tool_result (text + image, or error text).
+        Uses asyncio.Future to bridge the gap between the Socket.io request and
+        the snapshot response arriving via handle_event().
+        """
+        if session._photo_taken:
+            print(f"[mira] take_photo: already used for {session.user_id}")
+            return [{"type": "text", "text": "Photo already taken this session. Proceed with styling."}]
+
+        if not self.sio:
+            print(f"[mira] take_photo: no Socket.io available")
+            return [{"type": "text", "text": "Camera not available. Proceed based on their purchase history."}]
+
+        # Create a Future that handle_event() will resolve when the snapshot arrives
+        loop = asyncio.get_running_loop()
+        session._snapshot_future = loop.create_future()
+
+        # Ask the mirror to capture and send back a snapshot
+        print(f"[mira] take_photo: requesting snapshot from mirror for {session.user_id}")
+        await self.sio.emit("request_snapshot", {"user_id": session.user_id}, room=session.user_id)
+
+        try:
+            image_base64 = await asyncio.wait_for(session._snapshot_future, timeout=5.0)
+        except asyncio.TimeoutError:
+            print(f"[mira] take_photo: timeout waiting for snapshot from {session.user_id}")
+            session._snapshot_future = None
+            return [{"type": "text", "text": "Camera timed out. Proceed with styling based on their purchase history — skip the outfit check."}]
+        finally:
+            session._snapshot_future = None
+
+        session._photo_taken = True
+        print(f"[mira] take_photo: got snapshot for {session.user_id} ({len(image_base64)} chars)")
+
+        return [
+            {"type": "text", "text": "Here is the photo of the user at the mirror:"},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": image_base64,
+                },
+            },
+        ]
 
     async def end_session(self, user_id: str) -> dict | None:
         """End a session and save summary."""
