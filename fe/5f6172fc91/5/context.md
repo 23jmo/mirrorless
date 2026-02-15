@@ -70,3 +70,23 @@ move it to vercel api route too and then commit push and deploy
 
 We're looking at redoing the UI. Can you shrink everything more vertically so it fits in a vertical display-ish sort of thing? Right now we're running it on a pretty much vertical 16:9 or 9:16 display so we kind of want it to fit that, a little bit wider but about that
 
+### Prompt 9
+
+<task-notification>
+<task-id>a21300e</task-id>
+<status>completed</status>
+<summary>Agent "Deploy to Vercel production" completed</summary>
+<result>The deployment completed successfully. Here is the full output summary:
+
+- **Status**: Build and deployment succeeded
+- **Production URL**: https://mirrorless-828bytcnr-johnathans-projects-b2a37f0a.vercel.app
+- **Alias**: https://mirrorless.vercel.app
+- **Build time**: ~2 minutes
+- **Next.js version**: 15.5.12
+- **Static pages generated**: 17/17
+- **W...
+
+### Prompt 10
+
+'Can you swap the location of the avatar and the exit session button? Make the avatar on the left side now a little bit from the edge, maybe closer to the middle but still sleeping on the left. Then make the exit session button on the right the same position, symmetrical
+
