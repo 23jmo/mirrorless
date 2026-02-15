@@ -3,13 +3,21 @@
   "checkpoint_id": "c1cf2ae6d169",
   "strategy": "manual-commit",
   "branch": "jmo-attempt-merge",
-  "checkpoints_count": 2,
+  "checkpoints_count": 4,
   "files_touched": [
     "backend/agent/orchestrator.py",
+    "backend/main.py",
+    "backend/routers/heygen.py",
+    "backend/routers/tts.py",
+    "backend/tests/test_heygen_routes.py",
     "frontend/src/app/mirror/page.tsx",
+    "frontend/src/components/mirror/AvatarPiP.tsx",
+    "frontend/src/hooks/useDeepgramSTT.ts",
     "frontend/src/hooks/useLiveAvatar.ts",
+    "frontend/src/hooks/useMemojiAvatar.ts",
     "frontend/src/lib/elevenlabs-tts.ts",
-    "frontend/src/lib/scripted-responses.ts"
+    "frontend/src/lib/scripted-responses.ts",
+    "frontend/src/lib/sentence-buffer.ts"
   ],
   "sessions": [
     {
@@ -25,13 +33,20 @@
       "context": "/c1/cf2ae6d169/1/context.md",
       "content_hash": "/c1/cf2ae6d169/1/content_hash.txt",
       "prompt": "/c1/cf2ae6d169/1/prompt.txt"
+    },
+    {
+      "metadata": "/c1/cf2ae6d169/2/metadata.json",
+      "transcript": "/c1/cf2ae6d169/2/full.jsonl",
+      "context": "/c1/cf2ae6d169/2/context.md",
+      "content_hash": "/c1/cf2ae6d169/2/content_hash.txt",
+      "prompt": "/c1/cf2ae6d169/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 52,
-    "cache_creation_tokens": 90657,
-    "cache_read_tokens": 2504300,
-    "output_tokens": 11068,
-    "api_call_count": 32
+    "input_tokens": 84,
+    "cache_creation_tokens": 169840,
+    "cache_read_tokens": 3943745,
+    "output_tokens": 23605,
+    "api_call_count": 54
   }
 }

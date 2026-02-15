@@ -1,0 +1,66 @@
+Implement the following plan:
+
+# Fix: AvatarPiP container ref null + add logging
+
+## Context
+
+After the HeyGen → Memoji migration, clicking "Start Session" logs `[MemojiAvatar] No container ref — cannot start session`. The avatar never initializes.
+
+**Root cause**: React conditional-rendering + ref timing bug.
+
+```
+handleSessionActive():
+  setSessionActive(true)        ← state queued, NOT yet rendered
+  avatar.startSession()         ← runs NOW, containerRef.current is null
+
+JSX:
+  {sessionActive && <AvatarPiP containerRef={...} />}   ← mounts NEXT render
+```
+
+`startSession()` needs the container div from AvatarPiP, but that div only mounts after `sessionActive` becomes true on the next React render cycle. By then `startSession()` has already bailed.
+
+## Fix
+
+### 1. `frontend/src/components/mirror/AvatarPiP.tsx`
+- Add `visible` boolean prop
+- Always render the component (keep ref alive), hide with `display: "none"` when `visible` is false
+
+### 2. `frontend/src/app/mirror/page.tsx`
+- Always render `<AvatarPiP>` (remove `{sessionActive && ...}` conditional)
+- Pass `visible={sessionActive}` instead
+
+### 3. `frontend/src/hooks/useMemojiAvatar.ts`
+- Add more console logs for debugging:
+  - `startSession()`: log container ref state, init success/failure
+  - `processQueue()`: log queue length and current sentence
+  - `playScripted()`: log video path
+  - `stopSession()`: log cleanup
+
+## Verification
+- `npx tsc --noEmit` — no type errors
+- Open `/mirror?user_id=...`, click Start Session
+- Console: `[MemojiAvatar] Session started` (no "No container ref" error)
+- Idle loop video visible in PiP corner
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+Can we log all the text-to-speech that we're sending to the fucking agent and all the things that the agent's trying to say? Can we log that in the console logs and in the server logs, or whatever logs? Just put them in logs
+
+---
+
+[MemojiAvatar] startSession: containerRef.current = found
+useMemojiAvatar.ts:104 [MemojiAvatar] Session started successfully
+useDeepgramSTT.ts:79 [Deprecation] The ScriptProcessorNode is deprecated. Use AudioWorkletNode instead. (https://bit.ly/audio-worklet)
+useDeepgramSTT.useCallback[connectWebSocket] @ useDeepgramSTT.ts:79
+useDeepgramSTT.ts:122 [STT] Final transcript: Hello?
+page.tsx:217 [Mirror] Sending transcript to backend: Hello?
+2useDeepgramSTT.ts:122 [STT] Final transcript: Hello?
+
+i say this - backend never responds - why? - use 2 research agents
+
+---
+
+[Request interrupted by user for tool use]
