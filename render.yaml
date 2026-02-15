@@ -4,10 +4,13 @@ services:
     name: mirrorless-backend
     runtime: python
     plan: free
+    region: oregon
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn main:socket_app --host 0.0.0.0 --port $PORT
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: DATABASE_URL
         sync: false
       - key: ANTHROPIC_API_KEY
@@ -32,9 +35,12 @@ services:
     name: mirrorless-mcp
     runtime: python
     plan: free
+    region: oregon
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn mcp_server.server:app --host 0.0.0.0 --port $PORT
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: DATABASE_URL
         sync: false
