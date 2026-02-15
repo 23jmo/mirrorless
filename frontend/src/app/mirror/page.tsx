@@ -1,8 +1,8 @@
 "use client";
 
 import { Suspense } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { usePoseDetection } from "@/hooks/usePoseDetection";
@@ -15,10 +15,21 @@ import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
 import { socket } from "@/lib/socket";
+import { skipQueueUser } from "@/lib/api";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
 import { mapToClothingItems } from "@/lib/map-clothing-items";
+
+type KioskState = "attract" | "waiting" | "session";
+
+interface ActiveUser {
+  id: string;
+  name: string;
+}
+
+const PHONE_URL = process.env.NEXT_PUBLIC_PHONE_URL || "https://mirrorless.vercel.app/phone";
+const WAITING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
 export default function MirrorPageWrapper() {
   return (
@@ -29,8 +40,10 @@ export default function MirrorPageWrapper() {
 }
 
 function MirrorPage() {
-  const searchParams = useSearchParams();
-  const userId = searchParams.get("user_id");
+  // Kiosk state
+  const [kioskState, setKioskState] = useState<KioskState>("attract");
+  const [activeUser, setActiveUser] = useState<ActiveUser | null>(null);
+  const waitingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Camera + gesture recognition
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
@@ -65,6 +78,9 @@ function MirrorPage() {
   // Accumulate full response text before delivering
   const responseAccumulatorRef = useRef<string>("");
 
+  // Current user ID for session (from queue, not URL)
+  const userId = activeUser?.id ?? null;
+
   // Pose detection for clothing overlay
   const handlePoseUpdate = useCallback((result: PoseResult) => {
     setCurrentPose(result);
@@ -76,22 +92,67 @@ function MirrorPage() {
     onPoseUpdate: handlePoseUpdate,
   });
 
-  // Connect socket and join user room
+  // Connect socket and join mirror room
   useEffect(() => {
     socket.connect();
-
-    if (userId) {
-      socket.emit("join_room", { user_id: userId });
-    }
+    socket.emit("join_mirror_room");
 
     return () => {
       socket.disconnect();
     };
+  }, []);
+
+  // Join user-specific room when active user changes
+  useEffect(() => {
+    if (userId) {
+      socket.emit("join_room", { user_id: userId });
+    }
   }, [userId]);
+
+  // Listen for queue_updated events (drives attract ↔ waiting transitions)
+  useEffect(() => {
+    const handleQueueUpdated = (data: {
+      active_user: ActiveUser | null;
+      queue: Array<{ id: string; user_id: string; name: string; position: number; status: string }>;
+    }) => {
+      console.log("[Mirror] queue_updated:", data);
+      if (kioskState === "session") return; // Don't interrupt active sessions
+
+      if (data.active_user) {
+        setActiveUser(data.active_user);
+        setKioskState("waiting");
+      } else {
+        setActiveUser(null);
+        setKioskState("attract");
+      }
+    };
+
+    socket.on("queue_updated", handleQueueUpdated);
+    return () => {
+      socket.off("queue_updated", handleQueueUpdated);
+    };
+  }, [kioskState]);
+
+  // 2-minute timeout in waiting state
+  useEffect(() => {
+    if (kioskState === "waiting" && activeUser) {
+      waitingTimerRef.current = setTimeout(() => {
+        console.log("[Mirror] Waiting timeout — auto-skipping user");
+        skipQueueUser(activeUser.id).catch(() => {});
+      }, WAITING_TIMEOUT_MS);
+    }
+    return () => {
+      if (waitingTimerRef.current) {
+        clearTimeout(waitingTimerRef.current);
+        waitingTimerRef.current = null;
+      }
+    };
+  }, [kioskState, activeUser]);
 
   // Listen for session_active from backend
   useEffect(() => {
     const handleSessionActive = () => {
+      setKioskState("session");
       setSessionActive(true);
       setIsStarting(false);
       setCanvasOutfits([]);
@@ -112,6 +173,7 @@ function MirrorPage() {
     const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
       // Fallback session detection
       if (!sessionActive && !isStarting) {
+        setKioskState("session");
         setSessionActive(true);
         setIsStarting(false);
         mira.startSession();
@@ -119,14 +181,12 @@ function MirrorPage() {
       }
 
       if (data.is_chunk !== false) {
-        // Still accumulating — skip empty chunks
         if (!data.text) return;
         console.log("[Mirror] mira_speech chunk received");
         responseAccumulatorRef.current += data.text;
         mira.setOrbState("thinking");
         mira.setEmotion("thinking");
       } else {
-        // End of message — accumulate any final text, then deliver
         if (data.text) {
           responseAccumulatorRef.current += data.text;
         }
@@ -137,12 +197,12 @@ function MirrorPage() {
 
         // Parse emotion tag first, then detect from content as fallback
         let { emotion, cleanText } = parseEmotionTag(fullText);
-        
+
         // If no explicit emotion tag, try to detect from content
         if (emotion === "idle") {
           emotion = detectEmotionFromText(cleanText);
         }
-        
+
         console.log("[Mirror] Parsed emotion:", emotion);
         mira.speak(cleanText, emotion);
       }
@@ -165,7 +225,6 @@ function MirrorPage() {
       emotion?: string;
       outfit_name?: string;
     }) => {
-      // display_product: flat lay items from Gemini pipeline
       if (data.type === "display_product" && data.items) {
         const clothingItems = mapToClothingItems(data.items);
         const priceInfo: PriceStripItem[] = data.items.map((it) => ({
@@ -185,7 +244,6 @@ function MirrorPage() {
         }
         return;
       }
-      // voice_message: text for TTS / display
       if (data.type === "voice_message" && data.text) {
         const emotion = detectEmotionFromText(data.text);
         mira.speak(data.text, emotion);
@@ -200,7 +258,7 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mira.speak]);
 
-  // Listen for session_ended
+  // Listen for session_ended — return to attract or waiting
   useEffect(() => {
     const handleSessionEnded = () => {
       mira.stopSession();
@@ -208,6 +266,9 @@ function MirrorPage() {
       setSessionActive(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
+      setActiveUser(null);
+      setKioskState("attract");
+      // Queue advancement happens server-side, queue_updated will fire next
     };
 
     socket.on("session_ended", handleSessionEnded);
@@ -216,6 +277,20 @@ function MirrorPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Listen for session_force_end — same as session_ended
+  useEffect(() => {
+    const handleForceEnd = (data: { user_id?: string }) => {
+      if (userId && data.user_id === userId) {
+        socket.emit("end_session", { user_id: userId });
+      }
+    };
+
+    socket.on("session_force_end", handleForceEnd);
+    return () => {
+      socket.off("session_force_end", handleForceEnd);
+    };
+  }, [userId]);
 
   // Send transcripts to backend when mira stops speaking
   useEffect(() => {
@@ -284,7 +359,6 @@ function MirrorPage() {
       gestureKeyRef.current += 1;
       setGestureKey(gestureKeyRef.current);
 
-      // Navigate canvas outfits with swipe gestures
       if (canvasOutfits.length > 1) {
         if (gesture.type === "swipe_left") {
           setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
@@ -321,26 +395,15 @@ function MirrorPage() {
     ctx.resume().then(() => ctx.close());
 
     setIsStarting(true);
+
+    // Emit start via socket (server-side orchestrator)
     socket.emit("start_session", { user_id: userId });
   }, [userId, isStarting, sessionActive]);
 
-  // Context-aware avatar positioning
-  const avatarStyle = useMemo<React.CSSProperties>(() => {
-    const hasProducts = canvasOutfits.length > 0;
-    if (mira.orbState === "idle") {
-      return { top: 24, right: 24, width: 120, height: 120 };
-    }
-    if (mira.orbState === "thinking") {
-      return { top: "35%", left: "50%", transform: "translateX(-50%)", width: 180, height: 180 };
-    }
-    if (hasProducts) {
-      return { top: 24, right: 24, width: 150, height: 150 };
-    }
-    return { top: "25%", right: 40, width: 200, height: 200 };
-  }, [mira.orbState, canvasOutfits.length]);
-
-  // Get avatar size from style
-  const avatarSize = typeof avatarStyle.width === "number" ? avatarStyle.width : 200;
+  const handleSkipUser = useCallback(() => {
+    if (!activeUser) return;
+    skipQueueUser(activeUser.id).catch(() => {});
+  }, [activeUser]);
 
   return (
     <main
@@ -369,6 +432,121 @@ function MirrorPage() {
         }}
       />
 
+      {/* === ATTRACT STATE === */}
+      {kioskState === "attract" && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 20,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(20px)",
+          }}
+        >
+          <h1
+            style={{
+              color: "#fff",
+              fontSize: "3rem",
+              fontWeight: 700,
+              marginBottom: 8,
+              letterSpacing: "-0.02em",
+            }}
+          >
+            Mirrorless
+          </h1>
+          <p style={{ color: "rgba(255,255,255,0.6)", fontSize: "1.2rem", marginBottom: 40 }}>
+            Your AI stylist
+          </p>
+
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 16,
+              padding: 20,
+              marginBottom: 24,
+            }}
+          >
+            <QRCodeSVG
+              value={PHONE_URL}
+              size={180}
+              level="M"
+              includeMargin={false}
+            />
+          </div>
+
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: "0.9rem" }}>
+            Scan the QR code with your phone
+          </p>
+        </div>
+      )}
+
+      {/* === WAITING STATE === */}
+      {kioskState === "waiting" && activeUser && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 20,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.6)",
+            backdropFilter: "blur(10px)",
+          }}
+        >
+          <p style={{ color: "rgba(255,255,255,0.5)", fontSize: "1rem", marginBottom: 8 }}>
+            Up next
+          </p>
+          <h2 style={{ color: "#fff", fontSize: "2.5rem", fontWeight: 700, marginBottom: 40 }}>
+            {activeUser.name}
+          </h2>
+          <div style={{ display: "flex", gap: 16 }}>
+            <button
+              onClick={handleStartSession}
+              disabled={isStarting}
+              style={{
+                padding: "16px 48px",
+                fontSize: "1.2rem",
+                fontWeight: 600,
+                color: "#fff",
+                background: "rgba(100, 140, 255, 0.8)",
+                border: "none",
+                borderRadius: 12,
+                cursor: "pointer",
+                backdropFilter: "blur(10px)",
+                boxShadow: "0 4px 20px rgba(100, 140, 255, 0.4)",
+              }}
+            >
+              {isStarting ? "Starting..." : "Start Session"}
+            </button>
+            <button
+              onClick={handleSkipUser}
+              style={{
+                padding: "16px 32px",
+                fontSize: "1.2rem",
+                fontWeight: 600,
+                color: "#fff",
+                background: "rgba(255, 255, 255, 0.15)",
+                border: "1px solid rgba(255,255,255,0.3)",
+                borderRadius: 12,
+                cursor: "pointer",
+                backdropFilter: "blur(10px)",
+              }}
+            >
+              Skip
+            </button>
+          </div>
+          <WaitingCountdown />
+        </div>
+      )}
+
+      {/* === SESSION STATE === */}
+
       {/* Clothing overlay canvas */}
       {activeCanvasOutfit.length > 0 && currentPose && (
         <ClothingCanvas
@@ -391,68 +569,20 @@ function MirrorPage() {
         </div>
       )}
 
-      {/* Start Session button (pre-session overlay) */}
-      {!sessionActive && !isStarting && (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            zIndex: 20,
-          }}
-        >
-          <button
-            onClick={handleStartSession}
-            style={{
-              padding: "16px 40px",
-              fontSize: "1.3rem",
-              fontWeight: 600,
-              color: "#fff",
-              background: "rgba(100, 140, 255, 0.8)",
-              border: "none",
-              borderRadius: 12,
-              cursor: "pointer",
-              backdropFilter: "blur(10px)",
-              boxShadow: "0 4px 20px rgba(100, 140, 255, 0.4)",
-            }}
-          >
-            Start Session
-          </button>
-        </div>
-      )}
-
-      {/* Starting indicator */}
-      {isStarting && (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            color: "#fff",
-            fontSize: "1.5rem",
-            zIndex: 20,
-          }}
-        >
-          Starting...
-        </div>
-      )}
-
-      {/* Mira Video Avatar (context-aware positioning) */}
+      {/* Mira Video Avatar (fixed top-right corner) */}
       {sessionActive && (
         <div
           style={{
             position: "absolute",
+            top: 24,
+            right: 24,
             zIndex: 10,
-            transition: "all 0.6s ease-in-out",
-            ...avatarStyle,
           }}
         >
           <MiraVideoAvatar
             emotion={mira.emotion}
             state={mira.avatarState}
-            size={avatarSize}
+            size={180}
           />
         </div>
       )}
@@ -507,5 +637,30 @@ function MirrorPage() {
         </div>
       )}
     </main>
+  );
+}
+
+/* ---------- Waiting Countdown ---------- */
+
+function WaitingCountdown() {
+  const [remaining, setRemaining] = useState(120);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setRemaining((s) => {
+        if (s <= 0) return 0;
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+
+  return (
+    <p style={{ color: "rgba(255,255,255,0.3)", fontSize: "0.9rem", marginTop: 24 }}>
+      Auto-skip in {minutes}:{String(seconds).padStart(2, "0")}
+    </p>
   );
 }
