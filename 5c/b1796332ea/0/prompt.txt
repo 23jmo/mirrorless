@@ -1,0 +1,102 @@
+Implement the following plan:
+
+# Plan: Session Startup Loading Phase + Fix Speech Cutoffs
+
+## Context
+
+When a mirror session starts, Mira begins talking immediately with no loading screen, sometimes before user data has fully arrived. The opening often gets cut off mid-sentence (likely because STT activates at the same time and the mic picks up Mira's voice from the speakers, triggering an interrupt). The result is a janky, rushed startup where Mira has nothing good to say and then gets interrupted.
+
+**Goals:**
+1. Add a visible loading phase so the startup feels intentional
+2. Prevent speech cutoffs by delaying STT until Mira finishes her opening
+3. Signal from backend when data is loaded so the frontend knows when Mira is ready
+
+## Current Flow (broken)
+
+```
+Click "Start Session"
+  → Backend emits session_active IMMEDIATELY (before data loads)
+  → Frontend: starts TTS + starts STT (mic opens)
+  → Backend: loads data (100-500ms)
+  → Backend: calls Claude → streams opening
+  → Frontend: plays opening via TTS
+  → STT: mic picks up Mira's voice → interrupt → opening cut off
+```
+
+## Proposed Flow (fixed)
+
+```
+Click "Start Session"
+  → Backend emits session_active
+  → Frontend: shows "Mira is getting ready..." loading screen, starts TTS (but NOT STT)
+  → Backend: loads data (100-500ms), emits session_data_loaded with summary
+  → Frontend: updates loading screen ("Found 23 purchases...")
+  → Backend: calls Claude → streams opening
+  → Frontend: receives first mira_speech → hides loading screen, plays speech
+  → Mira finishes speaking (isSpeaking → false)
+  → Frontend: NOW starts STT (mic opens safely after speakers finish)
+```
+
+## Files to Modify
+
+### 1. `backend/main.py` — Emit `session_data_loaded` event
+
+In the `start_session` socket handler (line ~417), after `mira.start_session()` is called, the orchestrator already loads data internally. But we need to emit a signal DURING that process.
+
+**Change:** Have the orchestrator emit a `session_data_loaded` event after `asyncio.gather()` completes, before the first Claude call.
+
+### 2. `backend/agent/orchestrator.py` — Emit data-loaded signal + small delay
+
+In `start_session()` (line ~100):
+
+- After the `asyncio.gather()` data load (line ~117-123), emit `session_data_loaded` via `self.sio`:
+  ```python
+  if self.sio:
+      await self.sio.emit("session_data_loaded", {
+          "user_name": profile.get("name", ""),
+          "has_purchases": len(purchases) > 0,
+          "purchase_count": len(purchases),
+      }, room=user_id)
+  ```
+- Add a 1.5-second `asyncio.sleep(1.5)` after building the system prompt and before calling `handle_event(session_start)`. This gives the frontend time to fully initialize TTS, AudioContext, and MediaSource before audio starts streaming.
+
+### 3. `frontend/src/app/mirror/page.tsx` — Loading screen + delayed STT
+
+**a) Add loading sub-state:**
+- Add a `sessionLoading` state (boolean, default false)
+- In `handleSessionActive`: set `sessionLoading = true`, start TTS, but do NOT call `stt.startListening()`
+- Listen for `session_data_loaded` event: update loading screen with user info
+- On first `mira_speech` event: set `sessionLoading = false` (transition to full session view)
+
+**b) Delay STT activation:**
+- Track whether Mira has finished her opening response with a ref (`openingCompleteRef`)
+- Watch `mira.isSpeaking`: when it transitions from `true` → `false` for the first time in a session, set `openingCompleteRef.current = true` and call `stt.startListening()`
+- This ensures the mic only opens AFTER Mira's voice finishes playing through the speakers
+
+**c) Loading screen UI:**
+- Show the Mira video avatar in idle state (centered or top-left)
+- Show "Mira is getting ready..." text
+- When `session_data_loaded` arrives, show brief data summary ("Looking at your style profile...")
+- Fade out loading screen when first `mira_speech` arrives
+
+### 4. Prompt — No changes needed
+
+The 4-phase structure (Roast → Outfit Check → Styling → Wrap-up) already works phase-by-phase because each phase depends on tool results or user gestures. The cutoff issue is a timing/STT problem, not a prompt problem.
+
+## Key Decisions
+
+- **Why delay STT instead of echo cancellation?** Echo cancellation (AEC) would require WebRTC or complex DSP. Delaying STT until after the opening finishes is simpler and solves the immediate problem. STT activates after ~5-10 seconds (Mira's opening), which is fine for the flow.
+- **Why 1.5s delay before first Claude call?** The `MediaSource` + `SourceBuffer` initialization on the frontend takes a moment. Without a buffer, the first TTS audio chunk may arrive before the player is ready, causing a glitch. 1.5s is safe.
+- **Why not a longer loading screen?** The data load (asyncio.gather) is parallel and fast (~100-500ms). The 1.5s delay before Claude plus Claude's own latency (~500-1500ms) gives ~2-3 seconds of loading screen total — enough to feel intentional without dragging.
+
+## Verification
+
+1. Start a mirror session → should see "Mira is getting ready..." loading screen
+2. Loading screen should show for ~2-3 seconds
+3. Mira's opening plays fully without cutting off
+4. User's microphone doesn't activate until AFTER Mira finishes speaking
+5. After Mira's opening, STT activates and normal conversation proceeds
+6. Session still works end-to-end (gestures, search, display, recap)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
