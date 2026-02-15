@@ -1,0 +1,330 @@
+Implement the following plan:
+
+# Plan: Fix selfie upload 500 error
+
+## Context
+
+The `/auth/selfie` endpoint returns a 500 (Neon HTTP API 400) when called during onboarding. Two root causes:
+1. The `selfie_base64` column likely doesn't exist yet (migration `009` not run)
+2. Even after migration, the endpoint lacks error handling — a raw httpx exception crashes the server, and because the 500 happens mid-response, Starlette's CORS middleware doesn't add headers, producing a misleading CORS error in the browser
+
+## Changes
+
+### `backend/routers/auth.py` — `upload_selfie()`
+- Wrap the DB call in a try/except to catch httpx errors and return a clear 500 with detail message
+- Strip any `data:image/jpeg;base64,` prefix from the selfie string (defensive, in case the frontend accidentally sends the full data URI instead of raw base64)
+
+### Reminder to user
+- Run `psql $DATABASE_URL -f backend/migrations/009_add_selfie_column.sql` before testing
+
+## Verification
+1. Run the migration
+2. Restart backend
+3. Test phone sign-in flow → selfie upload should succeed
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.claude/projects/-Users-johnathanmo-mirrorless/a7dc16af-046e-4cca-b15b-6eca3a5c75ec.jsonl
+
+---
+
+can you run it for me
+
+---
+
+I'm first in queue rn but it never moves me out -> i have another tab with the /mirror open but nothing is happening. Shouldn't it be starting my session?
+
+---
+
+i seethis on forntend logs but no start session: IMENSIONS or use PROJECTION_MATRIX.
+page.tsx:124 [Mirror] queue_updated: 
+Object
+active_user
+: 
+null
+queue
+: 
+Array(6)
+0
+: 
+{id: '0012109d-dab8-4f48-aae1-73b62ee47a76', user_id: 'cee077b2-b367-4b73-8d84-7dcc04cc562c', name: 'Johnathan Y Mo', position: 1, status: 'waiting'}
+1
+: 
+{id: 'dd5697f9-e7c0-4b22-a8ed-254a392ff66b', user_id: 'cee077b2-b367-4b73-8d84-7dcc04cc562c', name: 'Johnathan Y Mo', position: 1, status: 'waiting'}
+2
+: 
+{id: 'bf5ad299-22ec-4c72-88d1-0ff69f9496c9', user_id: 'a3e88c32-c832-4a44-99b8-0e3b278b6acf', name: 'Johnathan Mo', position: 2, status: 'waiting'}
+3
+: 
+{id: '484cce47-927c-4a04-8244-4662cc4ffe66', user_id: 'a3e88c32-c832-4a44-99b8-0e3b278b6acf', name: 'Johnathan Mo', position: 2, status: 'waiting'}
+4
+: 
+{id: '7da9947b-7ab3-4b66-84fb-e27973451f25', user_id: '5dd9f799-05f0-45dd-9225-41312b17a42c', name: 'Johnathan Mo', position: 3, status: 'waiting'}
+5
+: 
+{id: '5f1cccce-ed81-43eb-a408-0400b19d1bb1', user_id: '5dd9f799-05f0-45dd-9225-41312b17a42c', name: 'Johnathan Mo', position: 3, status: 'waiting'}
+length
+: 
+6
+[[Prototype]]
+: 
+Array(0)
+[[Prototype]]
+: 
+Object
+page.tsx:124 [Mirror] queue_updated: 
+Object
+active_user
+: 
+null
+queue
+: 
+(6) [{…}, {…}, {…}, {…}, {…}, {…}]
+[[Prototype]]
+: 
+Object
+﻿
+
+---
+
+That worked - commit and push all
+
+---
+
+can we take a look at what the differences are? pls summarize
+
+---
+
+oh god okay yes. We need to do a lot of thinking about the vidoe avatars ngl. Use /interview for any conflicts
+
+---
+
+Base directory for this skill: /Users/johnathanmo/.claude/skills/interview
+
+Follow the user instructions and interview me in detail using the AskUserQuestionTool about literally anything: technical implementation, UI & UX, concerns, tradeoffs, etc. but make sure the questions are not obvious. be very in-depth and continue interviewing me continually until it's complete. then, write the spec to a file. <instructions>The mirror page (frontend/src/app/mirror/page.tsx) has merge conflicts between two branches. The user's local branch has kiosk mode (attract → waiting → session states, QR code, queue integration). The origin branch (Vivian's work) replaced the ElevenLabs Orb avatar with a MiraVideoAvatar (pre-recorded emotion loop videos). The non-conflicted code already uses `useMiraVideoAvatar` hook and `MiraVideoAvatar` component. I need to resolve these conflicts by understanding the user's intent for the avatar system and kiosk flow.</instructions>
+
+---
+
+install missing deps
+
+---
+
+new queue issues: INFO:     127.0.0.1:56423 - "POST /queue/join HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+    await route.handle(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/queue.py", line 103, in join_queue
+    rows = await db.execute(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 68, in execute
+    resp.raise_for_status()
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '400 Bad Request' for url 'https://ep-rapid-union-akw1jmpv-pooler.c-3.us-west-2.aws.neon.tech/sql'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+
+---
+
+Nice - i don't see it anymore. But I do ssee it hold on "starting.." forever
+
+---
+
+[Request interrupted by user]
+
+---
+
+INFO:     127.0.0.1:61558 - "POST /api/users/cee077b2-b367-4b73-8d84-7dcc04cc562c/onboarding HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61651 - "POST /queue/join HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+    await route.handle(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/queue.py", line 103, in join_queue
+    rows = await db.execute(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 75, in execute
+    raise httpx.HTTPStatusError(
+httpx.HTTPStatusError: Neon SQL error (400): duplicate key value violates unique constraint "uq_queue_user_active_waiting"
+
+we are not clearing the queue prperly i believe
+
+---
+
+Access to fetch at 'http://localhost:8000/queue/join' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource
+
+---
+
+raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/queue.py", line 103, in join_queue
+    rows = await db.execute(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 75, in execute
+    raise httpx.HTTPStatusError(
+httpx.HTTPStatusError: Neon SQL error (400): constraint "uq_queue_user_active_waiting" for table "queue" does not exist
+INFO:     127.0.0.1:63989 - "POST /queue/join HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 416, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/engineio/async_drivers/asgi.py", line 75, in __call__
+    await self.other_asgi_app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+    await route.handle(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+    await self.app(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/.pyenv/versions/3.11.8/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/routers/queue.py", line 103, in join_queue
+    rows = await db.execute(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/johnathanmo/mirrorless/backend/models/database.py", line 75, in execute
+    raise httpx.HTTPStatusError(
+httpx.HTTPStatusError: Neon SQL error (400): constraint "uq_queue_user_active_waiting" for table "queue" does not exist
+INFO:     127.0.0.1:64053 - "GET /queue/status/cee077b2-b367-4b73-8d84-7dcc04cc562c HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:64053 - "GET /queue/status/cee077b2-b367-4b73-8d84-7dcc04cc562c HTTP/1.1" 404 Not Found
+WARNING:  WatchFiles detected changes in 'routers/queue.py'. Reloading...
+INFO:     127.0.0.1:64053 - "GET /queue/status/cee077b2-b367-4b73-8d84-7dcc04cc562c HTTP/1.1" 404 Not Found
+
+this is the exception
+
+---
+
+[Request interrupted by user for tool use]
