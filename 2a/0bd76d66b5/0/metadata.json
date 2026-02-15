@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "2a0bd76d66b5",
+  "session_id": "2aa1b48e-c9c2-4ed5-916f-fde3c2cab6b9",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-15T10:51:01.536444Z",
+  "branch": "fix/admin-dashboard-sql-errors",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "backend/routers/queue.py"
+  ],
+  "agent": "Claude Code",
+  "checkpoint_transcript_start": 40,
+  "transcript_lines_at_start": 40,
+  "token_usage": {
+    "input_tokens": 19,
+    "cache_creation_tokens": 45194,
+    "cache_read_tokens": 792582,
+    "output_tokens": 5265,
+    "api_call_count": 13
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-15T10:51:01.439462Z",
+    "agent_lines": 0,
+    "human_added": 1487,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1487,
+    "agent_percentage": 0
+  }
+}

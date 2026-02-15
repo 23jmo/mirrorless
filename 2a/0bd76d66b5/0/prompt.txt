@@ -1,0 +1,45 @@
+Implement the following plan:
+
+# Plan: Fix queue join ON CONFLICT referencing non-existent constraint
+
+## Context
+
+`/queue/join` crashes with: `constraint "uq_queue_user_active_waiting" for table "queue" does not exist`.
+
+The unique index `uq_queue_user_active_waiting` exists (created via `CREATE UNIQUE INDEX`), but `ON CONFLICT ON CONSTRAINT` only works with **constraints** (created via `ALTER TABLE ADD CONSTRAINT`). In PostgreSQL, a unique index and a unique constraint are different catalog objects.
+
+## Fix
+
+### `backend/routers/queue.py` line ~107
+
+Change:
+```sql
+ON CONFLICT ON CONSTRAINT uq_queue_user_active_waiting DO NOTHING
+```
+
+To:
+```sql
+ON CONFLICT (user_id) WHERE status IN ('waiting', 'active') DO NOTHING
+```
+
+This matches the index by its column expression + WHERE clause instead of by name. Works with both unique indexes and constraints.
+
+## Verification
+1. Restart backend
+2. Join queue from phone — should succeed without 500
+3. Refresh phone page (triggers duplicate join) — should return existing entry gracefully
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/johnathanmo/.REDACTED.jsonl
+
+---
+
+nice commit and push this
+
+---
+
+Did we ever add some, like, it was like a 'on silent fire off', it basically just like interrupts if the user's been silent? Did we set like a limit for three times or something? Did we ever do that?
+
+---
+
+[Request interrupted by user for tool use]
