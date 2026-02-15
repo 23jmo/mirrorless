@@ -1,0 +1,148 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { StreamingTTS } from "@/lib/streaming-tts";
+import type { MiraEmotion, MiraAvatarState } from "@/components/ui/mira-video-avatar";
+
+export type { MiraEmotion, MiraAvatarState };
+
+export interface UseMiraVideoAvatarReturn {
+  emotion: MiraEmotion;
+  avatarState: MiraAvatarState;
+  isSpeaking: boolean;
+  speak: (text: string, emotion?: MiraEmotion) => void;
+  setEmotion: (emotion: MiraEmotion) => void;
+  setAvatarState: (state: MiraAvatarState) => void;
+  stop: () => void;
+  startSession: () => void;
+  stopSession: () => void;
+  // For compatibility with existing code expecting orb-like interface
+  orbState: "idle" | "listening" | "thinking" | "speaking";
+  setOrbState: (state: "idle" | "listening" | "thinking" | "speaking") => void;
+}
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+/**
+ * Hook to manage Mira video avatar state and TTS playback.
+ * Replaces useOrbAvatar but uses video loops instead of the WebGL orb.
+ */
+export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
+  const [emotion, setEmotionInternal] = useState<MiraEmotion>("idle");
+  const [avatarState, setAvatarStateInternal] = useState<MiraAvatarState>("idle");
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [orbState, setOrbStateInternal] = useState<"idle" | "listening" | "thinking" | "speaking">("idle");
+
+  const ttsRef = useRef<StreamingTTS | null>(null);
+
+  const setEmotion = useCallback((newEmotion: MiraEmotion) => {
+    setEmotionInternal(newEmotion);
+  }, []);
+
+  const setAvatarState = useCallback((state: MiraAvatarState) => {
+    setAvatarStateInternal(state);
+  }, []);
+
+  // Map orbState to avatarState for backward compatibility
+  const setOrbState = useCallback((state: "idle" | "listening" | "thinking" | "speaking") => {
+    setOrbStateInternal(state);
+    
+    if (state === "speaking") {
+      setAvatarStateInternal("speaking");
+    } else if (state === "thinking") {
+      setEmotionInternal("thinking");
+      setAvatarStateInternal("idle");
+    } else {
+      setAvatarStateInternal("idle");
+    }
+  }, []);
+
+  const speak = useCallback(
+    (text: string, speakEmotion: MiraEmotion = "idle") => {
+      if (!text.trim() || !ttsRef.current) return;
+
+      // Set emotion and switch to speaking state
+      setEmotionInternal(speakEmotion);
+      setAvatarStateInternal("speaking");
+      setIsSpeaking(true);
+      setOrbStateInternal("speaking");
+
+      console.log(`[MiraVideoAvatar] Speaking (emotion=${speakEmotion}):`, text.slice(0, 80));
+
+      ttsRef.current
+        .speak(
+          text,
+          () => {
+            // onStart — audio playback has begun
+            console.log("[MiraVideoAvatar] Playback started");
+          },
+          () => {
+            // onEnd — audio playback finished
+            console.log("[MiraVideoAvatar] Playback finished");
+            setIsSpeaking(false);
+            setAvatarStateInternal("idle");
+            setOrbStateInternal("idle");
+            // Keep the emotion for a moment, then fade to idle
+            setTimeout(() => {
+              setEmotionInternal("idle");
+            }, 500);
+          }
+        )
+        .catch(() => {
+          setIsSpeaking(false);
+          setAvatarStateInternal("idle");
+          setEmotionInternal("idle");
+          setOrbStateInternal("idle");
+        });
+    },
+    []
+  );
+
+  const stop = useCallback(() => {
+    ttsRef.current?.stop();
+    setIsSpeaking(false);
+    setAvatarStateInternal("idle");
+    setEmotionInternal("idle");
+    setOrbStateInternal("idle");
+  }, []);
+
+  const startSession = useCallback(() => {
+    if (ttsRef.current) return;
+    const tts = new StreamingTTS(API_URL);
+    ttsRef.current = tts;
+    console.log("[MiraVideoAvatar] Session started");
+  }, []);
+
+  const stopSession = useCallback(() => {
+    ttsRef.current?.destroy();
+    ttsRef.current = null;
+    setIsSpeaking(false);
+    setAvatarStateInternal("idle");
+    setEmotionInternal("idle");
+    setOrbStateInternal("idle");
+    console.log("[MiraVideoAvatar] Session stopped");
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      ttsRef.current?.destroy();
+      ttsRef.current = null;
+    };
+  }, []);
+
+  return {
+    emotion,
+    avatarState,
+    isSpeaking,
+    speak,
+    setEmotion,
+    setAvatarState,
+    stop,
+    startSession,
+    stopSession,
+    // Backward compatibility
+    orbState,
+    setOrbState,
+  };
+}
