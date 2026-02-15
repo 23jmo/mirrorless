@@ -144,16 +144,14 @@ export async function submitReaction(
   return res.json();
 }
 
-export async function submitOnboarding(
+export function submitOnboarding(
   userId: string,
   data: OnboardingData
 ): Promise<{ status: string }> {
-  const res = await fetch(`${API_BASE}/api/users/${userId}/onboarding`, {
+  return localRequest<{ status: string }>(`/api/users/${userId}/onboarding`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  return res.json();
 }
 
 // --- Queue control APIs ---
